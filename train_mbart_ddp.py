@@ -125,7 +125,8 @@ def model_create_load_run_save(gpu, args):
     print(f"Running DDP checkpoint example on rank {rank}.")
     #setup(rank, world_size)
 #    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    scaler = torch.cuda.amp.GradScaler()
+    if args.fp16:
+        scaler = torch.cuda.amp.GradScaler()
     model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, label_smoothing=args.label_smoothing, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
     torch.cuda.set_device(gpu)
 
@@ -194,7 +195,10 @@ def model_create_load_run_save(gpu, args):
             model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=map_location))
 
         try:
-            with torch.cuda.amp.autocast():
+            if args.fp16:
+                with torch.cuda.amp.autocast():
+                    loss = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))[0]
+            else:
                 loss = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))[0]
         except:
             print("NAN loss was computed or something messed up")
@@ -206,15 +210,22 @@ def model_create_load_run_save(gpu, args):
         #loss = torch.mean(loss)
         #print(loss)
         optimizer.zero_grad()
-        scaler.scale(loss).backward()
+        if args.fp16:
+            scaler.scale(loss).backward()
+        else:
+            loss = torch.mean(loss)
         lv = loss.detach().cpu().numpy()
         if ctr % 10 == 0 and rank == 0:
             print(ctr, lv)
             sys.stdout.flush()
         #loss.backward()
         #optimizer.step()
-        scaler.step(optimizer)
-        scaler.update()
+        if args.fp16:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
         scheduler.step()
         end = time.time()
         #print("Batch processing time:", end-start, "seconds")
@@ -252,6 +263,8 @@ def run_demo():
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
     parser.add_argument('--temperature', default=5.0, type=float, help="The value for model hidden size")
+    parser.add_argument('--fp16', action='store_true', 
+                        help='Should we use fp16 training?')
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
     #########################################################
