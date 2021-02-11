@@ -20,14 +20,16 @@ import torch.distributed as dist
 
 import random
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0):
-    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0, languages):
+    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
 
-    probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909}
-    probs = {lang: (probs[lang]/max(probs.values()))**(1.0/temperature) for lang in probs}
+    probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909} ## Get this by automatic calculation
     batch_count = 0
-    language_list = list(files.keys())
-    probs = [probs[lang] for lang in language_list]
+    language_list = list(files.keys()) if languages == "" else languages.strip().split(",")
+    probs = {lang: probs[lang] for lang in language_list} ## Narrow it down
+    files = {lang: files[lang] for lang in language_list} ## Narrow it down
+    probs = {lang: (probs[lang]/max(probs.values()))**(1.0/temperature) for lang in probs}
+    probs = [probs[lang] for lang in language_list] ## NARROW IT DOWN
     num_langs = len(language_list)
     language_indices = list(range(num_langs))
     language_file_dict = {}
@@ -108,8 +110,9 @@ def model_create_load_run_save(gpu, args):
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     tok = AutoTokenizer.from_pretrained("ai4bharat/indic-bert")
-
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>","<2as>", "<2bn>", "<2hi>", "<2en>", "<2gu>", "<2kn>", "<2ml>", "<2mr>", "<2or>", "<2pa>", "<2ta>", "<2te>"]}
+    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
+    
+    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
     #print(tok)
@@ -166,7 +169,7 @@ def model_create_load_run_save(gpu, args):
     
     
     ctr = 0
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.1, 0.5), rank, args.temperature): #infinite_same_sentence(10000):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.1, 0.5), rank, args.temperature, args.languages): #infinite_same_sentence(10000):
         start = time.time()
         
         if ctr % 1000 == 0:
@@ -235,6 +238,8 @@ def run_demo():
                         help='Name of the model')
     parser.add_argument('--initialization_model', default='', type=str, 
                         help='Name of the model')
+    parser.add_argument('-l', '--languages', default="", type=str, 
+                        help='Comma separated list of the language or languages to pre-train on.')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing. This has not yet been implemented.")
