@@ -28,8 +28,12 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
     language_list = list(files.keys()) if languages == "" else languages.strip().split(",")
     probs = {lang: probs[lang] for lang in language_list} ## Narrow it down
     files = {lang: files[lang] for lang in language_list} ## Narrow it down
-    probs = {lang: (probs[lang]/max(probs.values()))**(1.0/temperature) for lang in probs}
-    probs = [probs[lang] for lang in language_list] ## NARROW IT DOWN
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]**(1.0/temperature) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = [probs_temp[lang] for lang in language_list] ## NARROW IT DOWN
     num_langs = len(language_list)
     language_indices = list(range(num_langs))
     language_file_dict = {}
