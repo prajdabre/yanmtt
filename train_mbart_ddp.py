@@ -252,6 +252,11 @@ def model_create_load_run_save(gpu, args):
         end = time.time()
         #print("Batch processing time:", end-start, "seconds")
         ctr += 1
+    
+    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+    torch.save(checkpoint_dict, CHECKPOINT_PATH)
+    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
+
     dist.destroy_process_group()
 
 def run_demo():

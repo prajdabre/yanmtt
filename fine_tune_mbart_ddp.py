@@ -361,7 +361,9 @@ def model_create_load_run_save(gpu, args):
     # All processes should see same parameters as they all start from same
     # random parameters and gradients are synchronized in backward passes.
     # Therefore, saving it in one process is sufficient.
-    torch.save(model.state_dict(), CHECKPOINT_PATH)
+    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+    torch.save(checkpoint_dict, CHECKPOINT_PATH)
+    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
     dist.destroy_process_group()
 
 def run_demo():
