@@ -20,12 +20,13 @@ import torch.distributed as dist
 
 import random
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0, languages):
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0, languages=""):
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
 
     probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909} ## Get this by automatic calculation
     batch_count = 0
-    language_list = list(files.keys()) if languages == "" else languages.strip().split(",")
+    language_list = list(files.keys()) if languages == "" else languages.strip().split("-")
+    print("Training for:", language_list)
     probs = {lang: probs[lang] for lang in language_list} ## Narrow it down
     files = {lang: files[lang] for lang in language_list} ## Narrow it down
     probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
@@ -130,7 +131,10 @@ def model_create_load_run_save(gpu, args):
     #setup(rank, world_size)
 #    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.fp16:
+        print("We will do fp16 training")
         scaler = torch.cuda.amp.GradScaler()
+    else:
+        print("We will do fp32 training")
     model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, label_smoothing=args.label_smoothing, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
     torch.cuda.set_device(gpu)
 
@@ -145,12 +149,25 @@ def model_create_load_run_save(gpu, args):
     #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
     model = DistributedDataParallel(model, device_ids=[gpu])
     #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
+    optimizer = AdamW(model.parameters(), lr=5e-5, eps=1e-06)
+    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, 16384, args.iters*args.world_size, 3)
     if args.initialization_model != "":
         print("Loading from checkpoint")
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         sys.stdout.flush()
-        model.load_state_dict(torch.load(args.initialization_model, map_location=map_location))
+        checkpoint_dict = torch.load(args.initialization_model, map_location=map_location)
+        if type(checkpoint_dict) == dict:
+            model.load_state_dict(checkpoint_dict['model'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+            ctr = checkpoint_dict['ctr']
+        else:
+            model.load_state_dict(checkpoint_dict)
+            ctr = 0
+    else:
+        ctr = 0
+    
 
     #model.cuda()
 
@@ -168,12 +185,9 @@ def model_create_load_run_save(gpu, args):
     
 
 
-    optimizer = AdamW(model.parameters(), lr=5e-5, eps=1e-06)
-    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, 16384, args.iters*args.world_size, 3)
-
     
     
-    ctr = 0
+    
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.1, 0.5), rank, args.temperature, args.languages): #infinite_same_sentence(10000):
         start = time.time()
         
@@ -187,7 +201,8 @@ def model_create_load_run_save(gpu, args):
                 # All processes should see same parameters as they all start from same
                 # random parameters and gradients are synchronized in backward passes.
                 # Therefore, saving it in one process is sufficient.
-                torch.save(model.state_dict(), CHECKPOINT_PATH)
+                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                torch.save(checkpoint_dict, CHECKPOINT_PATH)
 
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
@@ -196,7 +211,10 @@ def model_create_load_run_save(gpu, args):
             print("Loading from checkpoint")
             map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
             sys.stdout.flush()
-            model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=map_location))
+            checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
+            model.load_state_dict(checkpoint_dict['model'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
 
         try:
             if args.fp16:
@@ -254,7 +272,7 @@ def run_demo():
     parser.add_argument('--initialization_model', default='', type=str, 
                         help='Name of the model')
     parser.add_argument('-l', '--languages', default="", type=str, 
-                        help='Comma separated list of the language or languages to pre-train on.')
+                        help='Hyphen separated list of the language or languages to pre-train on.')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing. This has not yet been implemented.")

@@ -188,7 +188,10 @@ def model_create_load_run_save(gpu, args):
     #setup(rank, world_size)
 #    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.fp16:
+        print("We will do fp16 training")
         scaler = torch.cuda.amp.GradScaler()
+    else:
+        print("We will do fp32 training")
     model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, label_smoothing=args.label_smoothing, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])) ## LS is actually not being used
     #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
     model.train()
@@ -210,21 +213,36 @@ def model_create_load_run_save(gpu, args):
 
     #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
     model = DistributedDataParallel(model, device_ids=[gpu])
+    optimizer = AdamW(model.parameters(), lr=3e-5, eps=1e-06)
+    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, 16384, args.num_batches, 1)
 
     if args.pretrained_bilingual_model == "" and args.pretrained_model != "":
         print("Loading a pretrained mbart model")
         dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        model.load_state_dict(torch.load(args.pretrained_model))
+        checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
+        if type(checkpoint_dict) == dict:
+            model.load_state_dict(checkpoint_dict['model'])
+        else:
+            model.load_state_dict(checkpoint_dict)
     elif args.pretrained_bilingual_model != "":
         print("Loading a previous checkpoint")
         dist.barrier()
             # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        model.load_state_dict(torch.load(args.pretrained_bilingual_model))
+        checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
+        if type(checkpoint_dict) == dict:
+            model.load_state_dict(checkpoint_dict['model'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+            ctr = checkpoint_dict['ctr']
+        else:
+            model.load_state_dict(checkpoint_dict)
+            ctr = 0
     else:
         print("Training from scratch")
+        ctr = 0
     
     #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
     #model.cuda()
@@ -243,9 +261,7 @@ def model_create_load_run_save(gpu, args):
     
 
 
-    optimizer = AdamW(model.parameters(), lr=3e-5, eps=1e-06)
-    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, 16384, args.num_batches, 1)
-
+    
     
     
     ctr = 0
@@ -282,7 +298,8 @@ def model_create_load_run_save(gpu, args):
                 # All processes should see same parameters as they all start from same
                 # random parameters and gradients are synchronized in backward passes.
                 # Therefore, saving it in one process is sufficient.
-                torch.save(model.state_dict(), CHECKPOINT_PATH)
+                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                torch.save(checkpoint_dict, CHECKPOINT_PATH)
                 
 
             # Use a barrier() to make sure that process 1 loads the model after process
@@ -290,8 +307,10 @@ def model_create_load_run_save(gpu, args):
             dist.barrier()
             # configure map_location properly
             map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-            model.load_state_dict(
-                torch.load(CHECKPOINT_PATH, map_location=map_location))
+            checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
+            model.load_state_dict(checkpoint_dict['model'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
             
 
         try:
