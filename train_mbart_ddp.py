@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer
 import time
 
-from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_with_hard_restarts_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_schedule_with_warmup
 from transformers import AdamW
 
 import os
@@ -18,7 +18,30 @@ import torch.multiprocessing as mp
 import sys
 import torch.distributed as dist
 
+torch.manual_seed(621311)
+
 import random
+
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
+    """From fairseq"""
+    if target.dim() == lprobs.dim() - 1:
+        target = target.unsqueeze(-1)
+    nll_loss = -lprobs.gather(dim=-1, index=target)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+    if ignore_index is not None:
+        pad_mask = target.eq(ignore_index)
+        nll_loss.masked_fill_(pad_mask, 0.0)
+        smooth_loss.masked_fill_(pad_mask, 0.0)
+    else:
+        nll_loss = nll_loss.squeeze(-1)
+        smooth_loss = smooth_loss.squeeze(-1)
+
+    nll_loss = nll_loss.mean()  # mean()? Scared to break other math.
+    smooth_loss = smooth_loss.mean()
+    eps_i = epsilon / lprobs.size(-1)
+    loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
+    return loss, nll_loss
+
 
 def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0, languages=""):
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
@@ -114,7 +137,7 @@ def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained("ai4bharat/indic-bert")
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path)
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
@@ -135,7 +158,7 @@ def model_create_load_run_save(gpu, args):
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, label_smoothing=args.label_smoothing, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
     torch.cuda.set_device(gpu)
 
 #    model = MBartForConditionalGeneration.from_pretrained("/share03/draj/data/monolingual_corpora/indic/trial_model/")
@@ -147,10 +170,10 @@ def model_create_load_run_save(gpu, args):
     #print(model.parameters)
 
     #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
-    model = DistributedDataParallel(model, device_ids=[gpu])
-    #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
     optimizer = AdamW(model.parameters(), lr=5e-5, eps=1e-06)
-    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, 16384, args.iters*args.world_size, 3)
+    model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
+    #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
+    scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size, 0.5)
     if args.initialization_model != "":
         print("Loading from checkpoint")
         dist.barrier()
@@ -167,7 +190,7 @@ def model_create_load_run_save(gpu, args):
             ctr = 0
     else:
         ctr = 0
-    
+    print("Using label smoothing of", args.label_smoothing)
 
     #model.cuda()
 
@@ -219,9 +242,25 @@ def model_create_load_run_save(gpu, args):
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    loss = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))[0]
+                    mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
+                    logits = mod_compute[1]
+                    if args.label_smoothing == 0.0:
+                        loss = mod_compute[0]
+                    else:
+                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+                        loss, nll_loss = label_smoothed_nll_loss(
+                            lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                        )
             else:
-                loss = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))[0]
+                mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
+                logits = mod_compute[1]
+                if args.label_smoothing == 0.0:
+                    loss = mod_compute[0]
+                else:
+                    lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+                    loss, nll_loss = label_smoothed_nll_loss(
+                        lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                    )
         except:
             print("NAN loss was computed or something messed up")
             sys.stdout.flush()
@@ -230,12 +269,13 @@ def model_create_load_run_save(gpu, args):
             #    print(tok.convert_ids_to_tokens(elem))
             continue
         #loss = torch.mean(loss)
-        #print(loss)
+        #print(len(mod_compute))
+        #loss = loss/(labels.to(gpu) != tok.pad_token_id).sum()
         optimizer.zero_grad()
         if args.fp16:
             scaler.scale(loss).backward()
         else:
-            loss = torch.mean(loss)
+            pass
         lv = loss.detach().cpu().numpy()
         if ctr % 10 == 0 and rank == 0:
             print(ctr, lv)
@@ -243,10 +283,13 @@ def model_create_load_run_save(gpu, args):
         #loss.backward()
         #optimizer.step()
         if args.fp16:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step()
         end = time.time()
@@ -278,9 +321,13 @@ def run_demo():
                         help='Name of the model')
     parser.add_argument('-l', '--languages', default="", type=str, 
                         help='Hyphen separated list of the language or languages to pre-train on.')
+    parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
+                        help='Name of or path to the pre-trained indic language tokenizer')
+    parser.add_argument('--warmup_steps', default=16000, type=int,
+                        help='Scheduler warmup steps')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
-    parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing. This has not yet been implemented.")
+    parser.add_argument('--label_smoothing', default=0.0, type=float, help="The value for label smoothing. This has not yet been implemented.")
     parser.add_argument('--dropout', default=0.3, type=float, help="The value for embedding dropout")
     parser.add_argument('--attention_dropout', default=0.3, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.3, type=float, help="The value for activation dropout")
@@ -290,6 +337,7 @@ def run_demo():
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
     parser.add_argument('--temperature', default=5.0, type=float, help="The value for model hidden size")
+    parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm")
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
     args = parser.parse_args()
