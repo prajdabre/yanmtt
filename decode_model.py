@@ -115,8 +115,7 @@ def model_create_load_run_save(gpu, args):
         start = time.time()
         #print(input_ids)
         print("Processing batch:", ctr)
-        translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty)
-        # length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty,encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size,no_repeat_ngram_size=args.no_repeat_ngram_size
+        translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
         print(len(input_ids), "in and", len(translations), "out")
         for input_id, translation in zip(input_ids, translations):
             translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
@@ -160,11 +159,11 @@ def run_demo():
                         help='Size of beam search')
     parser.add_argument('--repetition_penalty', default=1.0, type=float, 
                         help='To prevent repetition during decoding. 1.0 means no repetition. 1.2 was supposed to be a good value for some settings according to some researchers.')
-    parser.add_argument('--no_repeat_ngram_size', default=2, type=int, 
+    parser.add_argument('--no_repeat_ngram_size', default=0, type=int, 
                         help='N-grams of this size will never be repeated in the decoder. Lets play with 2-grams as default.')
     parser.add_argument('--length_penalty', default=1.0, type=float, 
                         help='Set to more than 1.0 for longer sentences.')
-    parser.add_argument('--encoder_no_repeat_ngram_size', default=2, type=int, 
+    parser.add_argument('--encoder_no_repeat_ngram_size', default=0, type=int, 
                         help='N-gram sizes to be prevented from being copied over from encoder. Lets play with 2-grams as default.')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
