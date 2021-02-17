@@ -157,14 +157,14 @@ def generate_batches(tok, args):
             src_sent_split = src_sent.split(" ")
             tgt_sent_split = tgt_sent.split(" ")
             sent_len = len(tgt_sent_split)
-            if sent_len <1 or sent_len > 100:
+            if sent_len <=1 or sent_len >= 100:
                 continue
             iids = tok(lang + " " + src_sent + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
             iids = tok("<s> " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len < 1 or curr_src_sent_len > 100 or curr_tgt_sent_len < 1 or curr_tgt_sent_len > 100:
+            if curr_src_sent_len <= 1 or curr_src_sent_len >= 100 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 100:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -191,11 +191,12 @@ def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path)
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False)
 
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
+    #special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
+    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
     print(tok)
@@ -214,7 +215,7 @@ def model_create_load_run_save(gpu, args):
     else:
         print("We will do fp32 training")
         # , add_final_layer_norm=True, normalize_before=True,
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])) ## LS is actually not being used
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])) ## LS is actually not being used
     #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
     model.train()
     torch.cuda.set_device(gpu)
@@ -305,7 +306,7 @@ def model_create_load_run_save(gpu, args):
                 for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args): #infinite_same_sentence(10000):
                     start = time.time()
                     #print(input_ids)
-                    translations = model.module.generate(dev_input_ids.to(gpu), num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
                     for translation in translations:
                         translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                         hyp.append(translation)
@@ -386,6 +387,7 @@ def model_create_load_run_save(gpu, args):
         if ctr % 10 == 0 and rank == 0:
             print(ctr, lv)
 #             for elem in input_ids:
+#                 print(elem)
 #                 print(tok.convert_ids_to_tokens(elem))
             sys.stdout.flush()
         #loss.backward()
@@ -430,6 +432,14 @@ def run_demo():
                         help='Should freeze embeddings during fine tuning?')
     parser.add_argument('--freeze_encoder', action='store_true', 
                         help='Should we freeze encoder during fine tuning?')
+    parser.add_argument('--add_final_layer_norm', action='store_true', 
+                        help='Should we add a final layer norm?')
+    parser.add_argument('--normalize_before', action='store_true', 
+                        help='Should we normalize before doing attention?')
+    parser.add_argument('--normalize_embedding', action='store_true', 
+                        help='Should we normalize embeddings?')
+    parser.add_argument('--scale_embedding', action='store_true', 
+                        help='Should we scale embeddings?')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
