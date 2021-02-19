@@ -119,7 +119,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             
             iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len < 5 or curr_src_sent_len > 80 or curr_tgt_sent_len < 5 or curr_tgt_sent_len > 80:
+            if curr_src_sent_len < 5 or curr_src_sent_len > 100 or curr_tgt_sent_len < 5 or curr_tgt_sent_len > 100:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len

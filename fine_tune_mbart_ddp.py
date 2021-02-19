@@ -86,18 +86,18 @@ def generate_batches_eval(tok, args):
     for src_line in src_file:
         start = time.time()
         src_sent = src_line
-        lang = "<2"+args.tlang+">"
+        lang = "<2"+args.slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
         if sent_len <1 or sent_len > 256:
             src_sent = " ".join(src_sent_split[:256])
-        iids = tok(lang + " " + src_sent + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+        iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
 
         if curr_src_sent_len > max_src_sent_len:
             max_src_sent_len = curr_src_sent_len
 
-        encoder_input_batch.append(lang + " " + src_sent + " </s>")
+        encoder_input_batch.append(src_sent + " </s> " + lang)
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -153,18 +153,19 @@ def generate_batches(tok, args):
     
             #curr_batch.append(["<2"+language_list[language_idx]+">", inline])
             #curr_batch_count += 1
-            lang = "<2"+args.tlang+">"
+            slang = "<2"+args.slang+">"
+            tlang = "<2"+args.tlang+">"
             src_sent_split = src_sent.split(" ")
             tgt_sent_split = tgt_sent.split(" ")
             sent_len = len(tgt_sent_split)
             if sent_len <=1 or sent_len >= 100:
                 continue
-            iids = tok(lang + " " + src_sent + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+            iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
-            iids = tok("<s> " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
+            iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len <= 1 or curr_src_sent_len >= 100 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 100:
+            if curr_src_sent_len <= 1 or curr_src_sent_len >= 80 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 80:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -172,8 +173,8 @@ def generate_batches(tok, args):
             if curr_tgt_sent_len > max_tgt_sent_len:
                 max_tgt_sent_len = curr_tgt_sent_len
             
-            encoder_input_batch.append(lang + " " + src_sent + " </s>")
-            decoder_input_batch.append("<s> " + tgt_sent)
+            encoder_input_batch.append(src_sent + " </s> " + slang)
+            decoder_input_batch.append(tlang + " " + tgt_sent)
             decoder_label_batch.append(tgt_sent + " </s>")
             curr_batch_count += curr_tgt_sent_len
         #print("Max source and target lengths are:", max_src_sent_len, "and", max_tgt_sent_len)
@@ -337,7 +338,7 @@ def model_create_load_run_save(gpu, args):
                 for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args): #infinite_same_sentence(10000):
                     start = time.time()
                     #print(input_ids)
-                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok([args.tlang]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
                     for translation in translations:
                         translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                         hyp.append(translation)
