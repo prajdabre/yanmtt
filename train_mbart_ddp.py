@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer
 import time
 
-from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 
 import os
@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import sys
+import numpy as np
 import torch.distributed as dist
 
 torch.manual_seed(621311)
@@ -43,7 +44,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     return loss, nll_loss
 
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, rank=0, temperature=5.0, languages=""):
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, languages=""):
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
 
     probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909} ## Get this by automatic calculation
@@ -99,11 +100,18 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
                 continue
             mask_count = 0.0
             mask_percent_curr = 1.0*mask_count/sent_len
+            spans_to_mask = list(np.random.poisson(lamb, 1000))
+            curr_sent_len = sent_len
             while mask_percent_curr < mask_percent:
-                idx_to_mask = random.randint(0, sent_len-1)
-                if sentence_split[idx_to_mask] != "[MASK]":
-                    sentence_split[idx_to_mask] = "[MASK]"
-                    mask_count += 1
+                span_to_mask = spans_to_mask[0]
+                del spans_to_mask[0]
+                if span_to_mask > curr_sent_len:
+                    continue
+                idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                    sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                    mask_count += span_to_mask
+                    curr_sent_len -= (span_to_mask-1)
                     mask_percent_curr = 1.0*mask_count/sent_len
             masked_sentence = " ".join(sentence_split)
             iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
@@ -118,8 +126,8 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             
             if curr_tgt_sent_len > max_tgt_sent_len:
                 max_tgt_sent_len = curr_tgt_sent_len
-            encoder_input_batch.append(lang + " " + masked_sentence + " </s>")
-            decoder_input_batch.append("<s> " + sentence)
+            encoder_input_batch.append(masked_sentence + " </s> " + lang)
+            decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
             curr_batch_count += curr_tgt_sent_len
         #print("Max source and target lengths are:", max_src_sent_len, "and", max_tgt_sent_len)
@@ -131,7 +139,18 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         end = time.time()
         #print("Batch generation time:", end-start, "seconds")
         yield input_ids, input_masks, decoder_input_ids, labels
-            
+       
+def init_weights(module, in_features, out_features):
+    if isinstance(module, nn.Linear):
+        init_std = (3.0/(in_features+out_features))**(0.5)
+        module.weight.data.normal_(mean=0.0, std=init_std)
+        if module.bias is not None:
+            module.bias.data.zero_()
+    elif isinstance(module, nn.Embedding):
+        init_std = (3.0/(out_features))**(0.5)
+        module.weight.data.normal_(mean=0.0, std=init_std)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
 
 def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
@@ -158,22 +177,40 @@ def model_create_load_run_save(gpu, args):
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
     torch.cuda.set_device(gpu)
 
 #    model = MBartForConditionalGeneration.from_pretrained("/share03/draj/data/monolingual_corpora/indic/trial_model/")
     model.cuda(gpu)
     model.train()
-#    print(device)
+    if args.initialization_model == "":
+        for module in model.modules():
+            print("Manual initialization")
+            if isinstance(module, nn.Linear):
+                init_weights(module, module.in_features, module.out_features)
+            if isinstance(module, torch.nn.Embedding):
+                init_weights(module, len(tok), args.d_model) ## Might need modification
+    #    print(device)
 
     #print(model.config)
     #print(model.parameters)
 
-    #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
-    optimizer = AdamW(model.parameters(), lr=5e-5, eps=1e-06)
+    no_decay = ["bias", "LayerNorm.weight"]
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "weight_decay": args.weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = AdamW(optimizer_grouped_parameters, lr=3e-05, eps=1e-09)
+    
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
     #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
-    scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size, 0.5)
+    scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size)
     if args.initialization_model != "":
         print("Loading from checkpoint")
         dist.barrier()
@@ -211,7 +248,7 @@ def model_create_load_run_save(gpu, args):
     
     
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.1, 0.5), rank, args.temperature, args.languages): #infinite_same_sentence(10000):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 512, (0.30, 0.40), 3.5, rank, args.temperature, args.languages): #infinite_same_sentence(10000):
         start = time.time()
         
         if ctr % 1000 == 0:
@@ -333,12 +370,13 @@ def run_demo():
                         help='Name of or path to the pre-trained indic language tokenizer')
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
-    parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
-    parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
-    parser.add_argument('--label_smoothing', default=0.0, type=float, help="The value for label smoothing. This has not yet been implemented.")
-    parser.add_argument('--dropout', default=0.3, type=float, help="The value for embedding dropout")
-    parser.add_argument('--attention_dropout', default=0.3, type=float, help="The value for attention dropout")
-    parser.add_argument('--activation_dropout', default=0.3, type=float, help="The value for activation dropout")
+    parser.add_argument('--encoder_layers', default=12, type=int, help="The value for number of encoder layers")
+    parser.add_argument('--decoder_layers', default=12, type=int, help="The value for number of decoder layers")
+    parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
+    parser.add_argument('--weight_decay', default=0.0, type=float, help="The value for weight decay")
+    parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
+    parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
+    parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=16, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=16, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")

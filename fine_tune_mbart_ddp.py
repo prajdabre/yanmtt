@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer, AlbertTokenizer
 import time
 
-from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 
 import os
@@ -185,7 +185,18 @@ def generate_batches(tok, args):
         end = time.time()
         #print("Batch generation time:", end-start, "seconds")
         yield input_ids, input_masks, decoder_input_ids, labels
-            
+   
+def init_weights(module, in_features, out_features):
+    if isinstance(module, nn.Linear):
+        init_std = (3.0/(in_features+out_features))**(0.5)
+        module.weight.data.normal_(mean=0.0, std=init_std)
+        if module.bias is not None:
+            module.bias.data.zero_()
+    elif isinstance(module, nn.Embedding):
+        init_std = (3.0/(out_features))**(0.5)
+        module.weight.data.normal_(mean=0.0, std=init_std)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
 
 def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
@@ -215,9 +226,18 @@ def model_create_load_run_save(gpu, args):
     else:
         print("We will do fp32 training")
         # , add_final_layer_norm=True, normalize_before=True,
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])) ## LS is actually not being used
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)) ## LS is actually not being used
     #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
     model.train()
+    
+    if args.pretrained_bilingual_model == "" and args.pretrained_model == "":
+        print("Manual initialization")
+        for module in model.modules():
+            if isinstance(module, nn.Linear):
+                init_weights(module, module.in_features, module.out_features)
+            if isinstance(module, torch.nn.Embedding):
+                init_weights(module, len(tok), args.d_model) ## Might need modification
+            
     torch.cuda.set_device(gpu)
     
     if args.freeze_embeddings:
@@ -235,9 +255,20 @@ def model_create_load_run_save(gpu, args):
     #print(model.parameters)
 
     #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
-    optimizer = AdamW(model.parameters(), lr=3e-5, eps=1e-06)
+    no_decay = ["bias", "LayerNorm.weight"]
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "weight_decay": args.weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = AdamW(optimizer_grouped_parameters, lr=3e-5, eps=1e-09)
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
-    scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches * args.world_size, 0.5)
+    scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches*args.world_size)
 
     if args.pretrained_bilingual_model == "" and args.pretrained_model != "":
         print("Loading a pretrained mbart model")
@@ -411,6 +442,8 @@ def model_create_load_run_save(gpu, args):
     # All processes should see same parameters as they all start from same
     # random parameters and gradients are synchronized in backward passes.
     # Therefore, saving it in one process is sufficient.
+    print("The best bleu was:", max_sbleu)
+    print("The corresponding step was:", max_sbleu_step)
     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
     torch.save(checkpoint_dict, CHECKPOINT_PATH)
     torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
@@ -443,6 +476,7 @@ def run_demo():
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
+    parser.add_argument('--weight_decay', default=0.0, type=float, help="The value for weight decay")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
