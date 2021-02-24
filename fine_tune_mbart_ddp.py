@@ -32,7 +32,7 @@ def lmap(f, x):
     return list(map(f, x))
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
-    """From fairseq"""
+    """From fairseq. This returns the label smoothed loss."""
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
@@ -45,7 +45,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
         nll_loss = nll_loss.squeeze(-1)
         smooth_loss = smooth_loss.squeeze(-1)
 
-    nll_loss = nll_loss.mean()  # mean()? Scared to break other math.
+    nll_loss = nll_loss.mean()
     smooth_loss = smooth_loss.mean()
     eps_i = epsilon / lprobs.size(-1)
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
@@ -53,16 +53,19 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
 
 
 def get_sacrebleu(refs, hyp):
+    """Returns sacrebleu score."""
     bleu = sacrebleu.corpus_bleu(hyp, refs)
     return bleu.score
 
 def assert_all_frozen(model):
+    """Checks if frozen parameters are all linked to each other or not. Ensures no disjoint components of graphs."""
     model_grads: List[bool] = list(grad_status(model))
     n_require_grad = sum(lmap(int, model_grads))
     npars = len(model_grads)
     assert not any(model_grads), f"{n_require_grad/npars:.1%} of {npars} weights require grad"
 
 def grad_status(model):
+    """Checks whether the parameter needs gradient or not. Part of asserting that the correct parts of the model are frozen."""
     return (par.requires_grad for par in model.parameters())
 
 
@@ -84,6 +87,7 @@ def freeze_embeds(model):
             freeze_params(d.embed_tokens)
 
 def generate_batches_eval(tok, args):
+    """Generates the source sentences for the dev set."""
     src_file = open(args.dev_src)
     curr_batch_count = 0
     encoder_input_batch = []
@@ -109,7 +113,6 @@ def generate_batches_eval(tok, args):
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
-            #print("Batch generation time:", end-start, "seconds")
             yield input_ids, input_masks
             curr_batch_count = 0
             encoder_input_batch = []
@@ -122,6 +125,7 @@ def generate_batches_eval(tok, args):
 
 
 def yield_corpus_indefinitely(corpus):
+    """This shuffles the corpus at the beginning of each epoch and returns sentences indefinitely."""
     epoch_counter = 0
     while True:
         print("Shuffling corpus!")
@@ -135,6 +139,7 @@ def yield_corpus_indefinitely(corpus):
 
 
 def generate_batches(tok, args):
+    """Generates the source, target and source attention masks for the training set."""
     batch_count = 0
     src_file = open(args.train_src)
     tgt_file = open(args.train_tgt)
@@ -151,8 +156,6 @@ def generate_batches(tok, args):
         max_tgt_sent_len = 0
         start = time.time()
         for src_sent, tgt_sent in corpus_gen:
-            #curr_batch.append(["<2"+language_list[language_idx]+">", inline])
-            #curr_batch_count += 1
             slang = "<2"+args.slang+">"
             tlang = "<2"+args.tlang+">"
             src_sent_split = src_sent.split(" ")
@@ -180,20 +183,15 @@ def generate_batches(tok, args):
             curr_batch_count += curr_tgt_sent_len
             if curr_batch_count > args.batch_size:
                 break
-        #print("Max source and target lengths are:", max_src_sent_len, "and", max_tgt_sent_len)
-        #print("Number of sentences in batch:", len(encoder_input_batch), len(decoder_input_batch), len(decoder_label_batch))
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         input_masks = input_ids != tok.pad_token_id
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
         end = time.time()
-        #print(input_ids.size(), labels.size(), decoder_input_ids.size())
-#         for xx, yy in zip(decoder_input_ids, labels):
-#             print(tok.decode(xx, skip_special_tokens=True, clean_up_tokenization_spaces=False), tok.decode(yy, skip_special_tokens=True, clean_up_tokenization_spaces=False)) 
-        #print("Batch generation time:", end-start, "seconds")
         yield input_ids, input_masks, decoder_input_ids, labels
    
 def init_weights(module, in_features, out_features):
+    """Method to initialize model weights. Not used for now but might be used in the future. Tries to mimic t2t initialization."""
     if isinstance(module, nn.Linear):
         init_std = (3.0/(in_features+out_features))**(0.5)
         module.weight.data.normal_(mean=0.0, std=init_std)
@@ -206,6 +204,7 @@ def init_weights(module, in_features, out_features):
             module.weight.data[module.padding_idx].zero_()
 
 def model_create_load_run_save(gpu, args):
+    """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
     if not args.single_gpu:
         dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
@@ -214,46 +213,24 @@ def model_create_load_run_save(gpu, args):
 
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
-    #special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
-    print(tok)
-    print(tok.pad_token_id)
-
-    print(tok.vocab_size) ## Should be 20k
-
-    print(len(tok)) ## Should be 20k + number of special tokens we added earlier
+    print("Tokenizer is:", tok)
+    
     if args.single_gpu:
         print(f"Running checkpoint example on rank {rank}.")
     else:
         print(f"Running DDP checkpoint example on rank {rank}.")
-    #setup(rank, world_size)
-#    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.fp16:
         print("We will do fp16 training")
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-        # , add_final_layer_norm=True, normalize_before=True,
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)) ## LS is actually not being used
-    #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
+
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
     model.train()
-    #print(model)
-#     if args.pretrained_bilingual_model == "" and args.pretrained_model == "":
-#         print("Manual initialization")
-#         for module in model.modules():
-#             if isinstance(module, nn.Linear):
-#                 print("Initializing", module)
-#                 init_weights(module, module.in_features, module.out_features)
-#             if isinstance(module, torch.nn.Embedding):
-# #                 print(type(module))
-# #                 if isinstance(module, transformers.models.mbart.modeling_mbart.MBartLearnedPositionalEmbedding):
-# #                     print("Not initializing", module)
-# #                 else:
-#                 print("Initializing", module)
-#                 init_weights(module, len(tok), args.d_model) ## Might need modification
-            
+
     torch.cuda.set_device(gpu)
     
     if args.freeze_embeddings:
@@ -265,12 +242,7 @@ def model_create_load_run_save(gpu, args):
         assert_all_frozen(model.get_encoder())
 
     model.cuda(gpu)
-#    print(device)
 
-    #print(model.config)
-    #print(model.parameters)
-
-    #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
@@ -290,9 +262,11 @@ def model_create_load_run_save(gpu, args):
     else:
         model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches*args.world_size)
+    
     while scheduler.get_lr()[0] < 1e-7:
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
+    
     if args.pretrained_bilingual_model == "" and args.pretrained_model != "":
         print("Loading a pretrained mbart model")
         if args.single_gpu:
@@ -317,8 +291,8 @@ def model_create_load_run_save(gpu, args):
         checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(checkpoint_dict['model'])
-            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
-            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+            optimizer.load_state_dict(checkpoint_dict['optimizer'])
+            scheduler.load_state_dict(checkpoint_dict['scheduler'])
             ctr = checkpoint_dict['ctr']
         else:
             model.load_state_dict(checkpoint_dict)
@@ -329,36 +303,15 @@ def model_create_load_run_save(gpu, args):
         
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
-    #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
-    #model.cuda()
-
-    ## Print model config
-
-    ## Compute dry run loss
-
-#     loss = model(input_ids=input_ids, decoder_input_ids=decoder_input_ids, labels=labels)[0]
-#     print(loss)
-
-    #import pytorch_lightning as pl
-    # model.cpu()
-    # del model
-    # torch.cuda.empty_cache()
-    
-
-
-    
-    
     
     ctr = 0
     bleu_history = []
     max_sbleu = 0
     max_sbleu_step = 0
     curr_eval_step = 0
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args): #infinite_same_sentence(10000):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args):
         start = time.time()
         if ctr % 1000 == 0:
-            #model.save_pretrained("/share03/draj/data/monolingual_corpora/indic/trial_model/")
-            #torch.save(model.state_dict(), "/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel")
             CHECKPOINT_PATH = args.fine_tuned_model
             if rank == 0:
                 print("Running eval on dev set")
@@ -371,7 +324,6 @@ def model_create_load_run_save(gpu, args):
                     
                 for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args): #infinite_same_sentence(10000):
                     start = time.time()
-                    #print(input_ids)
                     if args.single_gpu:
                         translations = model.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
                     else:
@@ -389,7 +341,7 @@ def model_create_load_run_save(gpu, args):
                     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
                     torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+str(ctr))
                     if args.single_gpu:
-                        torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                        torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model with ddp markers and no optimizer info.
                     else:
                         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
                     
@@ -441,7 +393,6 @@ def model_create_load_run_save(gpu, args):
                         )
             else:
                 mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu) ,decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
-                #print(mod_compute)
                 logits = mod_compute[1]
                 if args.label_smoothing == 0.0:
                     loss = mod_compute[0]
@@ -453,14 +404,7 @@ def model_create_load_run_save(gpu, args):
         except Exception as e:
             print("NAN loss was computed or something messed up")
             print(e)
-#             print(input_ids)
-#             for elem in input_ids:
-#                 print(tok.convert_ids_to_tokens(elem))
             sys.stdout.flush()
-            #sys.exit()
-        #loss = torch.mean(loss)
-        #print(loss)
-        #loss = loss/((labels != tok.pad_token_id).to(gpu)).sum()
         optimizer.zero_grad()
         if args.fp16:
             scaler.scale(loss).backward()
@@ -469,12 +413,7 @@ def model_create_load_run_save(gpu, args):
         lv = loss.detach().cpu().numpy()
         if ctr % 10 == 0 and rank == 0:
             print(ctr, lv)
-#             for elem in input_ids:
-#                 print(elem)
-#                 print(tok.convert_ids_to_tokens(elem))
             sys.stdout.flush()
-        #loss.backward()
-        #optimizer.step()
         if args.fp16:
             if args.max_gradient_clip_value != 0.0:
                 scaler.unscale_(optimizer)
@@ -488,7 +427,6 @@ def model_create_load_run_save(gpu, args):
             optimizer.step()
         scheduler.step()
         end = time.time()
-        #print("Batch processing time:", end-start, "seconds")
         ctr += 1
     
     CHECKPOINT_PATH = args.fine_tuned_model
@@ -501,7 +439,7 @@ def model_create_load_run_save(gpu, args):
     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
     torch.save(checkpoint_dict, CHECKPOINT_PATH)
     if args.single_gpu:
-        torch.save(model.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info
+        torch.save(model.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model with ddp markers and no optimizer info
     else:
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
     if args.single_gpu:
@@ -595,10 +533,26 @@ def run_demo():
     else:
         mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
     #########################################################
-#     mp.spawn(demo_fn,
-#              args=(args,),
-#              nprocs=args.gpus,
-#              join=True)
     
 if __name__ == "__main__":
     run_demo()
+    
+    
+    
+## Defunct code
+
+    #print(model)
+#     if args.pretrained_bilingual_model == "" and args.pretrained_model == "":
+#         print("Manual initialization")
+#         for module in model.modules():
+#             if isinstance(module, nn.Linear):
+#                 print("Initializing", module)
+#                 init_weights(module, module.in_features, module.out_features)
+#             if isinstance(module, torch.nn.Embedding):
+# #                 print(type(module))
+# #                 if isinstance(module, transformers.models.mbart.modeling_mbart.MBartLearnedPositionalEmbedding):
+# #                     print("Not initializing", module)
+# #                 else:
+#                 print("Initializing", module)
+#                 init_weights(module, len(tok), args.d_model) ## Might need modification
+            
