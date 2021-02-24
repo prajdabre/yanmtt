@@ -4,6 +4,8 @@ import time
 from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 
+import transformers
+
 import os
 
 import argparse
@@ -43,6 +45,19 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
     return loss, nll_loss
 
+def yield_corpus_indefinitely(corpus, lang):
+    epoch_counter = 0
+    while True:
+        print("Shuffling corpus!")
+        sys.stdout.flush()
+        random.shuffle(corpus)
+        for src_line in corpus:
+            yield src_line
+        
+        epoch_counter += 1
+        print("Finished epoch", epoch_counter, "for language:", lang)
+    return None
+
 
 def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, languages=""):
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
@@ -63,7 +78,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
     language_indices = list(range(num_langs))
     language_file_dict = {}
     for l in language_list:
-        language_file_dict[l] = open(files[l]+"."+"%02d" % rank)
+        language_file_dict[l] = yield_corpus_indefinitely(open(files[l]+"."+"%02d" % rank).readlines(), l)
     while batch_count != num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -73,22 +88,22 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         max_src_sent_len = 0
         max_tgt_sent_len = 0
         start = time.time()
-        while curr_batch_count <= batch_size:
+        while True:
             language_idx = random.choices(language_indices, probs)[0]
-            sentence = language_file_dict[language_list[language_idx]].readline().strip()
-            if sentence == "":
-                should_reset = True
-                for _ in range(100):
-                    sentence = language_file_dict[language_list[language_idx]].readline().strip()
-                    if sentence != "":
-                        should_reset = False
-                        break
-                if should_reset:
-                    language_file_dict[language_list[language_idx]] = open(files[language_list[language_idx]]+"."+"%02d" % rank)
-                    print("Reset", language_list[language_idx], files[language_list[language_idx]]+".""%02d" % rank)
-                    sentence = language_file_dict[language_list[language_idx]].readline().strip()
-            #curr_batch.append(["<2"+language_list[language_idx]+">", inline])
-            #curr_batch_count += 1
+            sentence = next(language_file_dict[language_list[language_idx]]).strip()
+#             if sentence == "":
+#                 should_reset = True
+#                 for _ in range(100):
+#                     sentence = language_file_dict[language_list[language_idx]].readline().strip()
+#                     if sentence != "":
+#                         should_reset = False
+#                         break
+#                 if should_reset:
+#                     language_file_dict[language_list[language_idx]] = open(files[language_list[language_idx]]+"."+"%02d" % rank)
+#                     print("Reset", language_list[language_idx], files[language_list[language_idx]]+".""%02d" % rank)
+#                     sentence = language_file_dict[language_list[language_idx]].readline().strip()
+#             #curr_batch.append(["<2"+language_list[language_idx]+">", inline])
+#             #curr_batch_count += 1
             lang = "<2"+language_list[language_idx]+">"
             if type(mp_val_or_range) is float:
                 mask_percent = mp_val_or_range
@@ -96,7 +111,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
                 mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
             sentence_split = sentence.split(" ")
             sent_len = len(sentence_split)
-            if sent_len < 5 or sent_len > 80:
+            if sent_len < 5 or sent_len > 100:
                 continue
             mask_count = 0.0
             mask_percent_curr = 1.0*mask_count/sent_len
@@ -130,6 +145,8 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
             curr_batch_count += curr_tgt_sent_len
+            if curr_batch_count > batch_size:
+                break
         #print("Max source and target lengths are:", max_src_sent_len, "and", max_tgt_sent_len)
         #print("Number of sentences in batch:", len(encoder_input_batch))
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -156,7 +173,7 @@ def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False)
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
@@ -183,13 +200,18 @@ def model_create_load_run_save(gpu, args):
 #    model = MBartForConditionalGeneration.from_pretrained("/share03/draj/data/monolingual_corpora/indic/trial_model/")
     model.cuda(gpu)
     model.train()
-    if args.initialization_model == "":
-        for module in model.modules():
-            print("Manual initialization")
-            if isinstance(module, nn.Linear):
-                init_weights(module, module.in_features, module.out_features)
-            if isinstance(module, torch.nn.Embedding):
-                init_weights(module, len(tok), args.d_model) ## Might need modification
+#     if args.initialization_model == "":
+#         for module in model.modules():
+#             print("Manual initialization")
+#             if isinstance(module, nn.Linear):
+#                 init_weights(module, module.in_features, module.out_features)
+#             if isinstance(module, torch.nn.Embedding):
+#                 if isinstance(module, transformers.models.mbart.modeling_mbart.MBartLearnedPositionalEmbedding):
+#                     print("Not initializing", module)
+#                 else:
+#                     print("Initializing", module)
+#                     init_weights(module, len(tok), args.d_model) ## Might need modification
+            
     #    print(device)
 
     #print(model.config)
@@ -206,11 +228,14 @@ def model_create_load_run_save(gpu, args):
             "weight_decay": 0.0,
         },
     ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=3e-05, eps=1e-09)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09)
     
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
     #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size)
+    while scheduler.get_lr()[0] < 1e-7:
+        scheduler.step()
+    print("Initial LR is:", scheduler.get_lr()[0])
     if args.initialization_model != "":
         print("Loading from checkpoint")
         dist.barrier()
@@ -228,7 +253,7 @@ def model_create_load_run_save(gpu, args):
     else:
         ctr = 0
     print("Using label smoothing of", args.label_smoothing)
-
+    print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #model.cuda()
 
     ## Print model config
@@ -263,6 +288,8 @@ def model_create_load_run_save(gpu, args):
                 # Therefore, saving it in one process is sufficient.
                 checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
                 torch.save(checkpoint_dict, CHECKPOINT_PATH)
+                if ctr % 10000 == 0:
+                    torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr))
 
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
@@ -275,7 +302,6 @@ def model_create_load_run_save(gpu, args):
             model.load_state_dict(checkpoint_dict['model'])
             optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
             scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
-
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
@@ -314,19 +340,21 @@ def model_create_load_run_save(gpu, args):
         else:
             pass
         lv = loss.detach().cpu().numpy()
-        if ctr % 10 == 0 and rank == 0:
+        if ctr % 10 == 0 and rank % 8 == 0:
             print(ctr, lv)
             sys.stdout.flush()
         #loss.backward()
         #optimizer.step()
         if args.fp16:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+            if args.max_gradient_clip_value != 0.0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+            if args.max_gradient_clip_value != 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step()
         end = time.time()
@@ -373,10 +401,11 @@ def run_demo():
     parser.add_argument('--encoder_layers', default=12, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=12, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
-    parser.add_argument('--weight_decay', default=0.0, type=float, help="The value for weight decay")
-    parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
-    parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
-    parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
+    parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
+    parser.add_argument('--weight_decay', default=0.0001, type=float, help="The value for weight decay")
+    parser.add_argument('--dropout', default=0.3, type=float, help="The value for embedding dropout")
+    parser.add_argument('--attention_dropout', default=0.3, type=float, help="The value for attention dropout")
+    parser.add_argument('--activation_dropout', default=0.3, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=16, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=16, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")

@@ -69,7 +69,7 @@ def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path) #, do_lower_case=False
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>","<2as>", "<2bn>", "<2hi>", "<2en>", "<2gu>", "<2kn>", "<2ml>", "<2mr>", "<2or>", "<2pa>", "<2ta>", "<2te>"] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
@@ -115,7 +115,7 @@ def model_create_load_run_save(gpu, args):
         start = time.time()
         #print(input_ids)
         print("Processing batch:", ctr)
-        translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok([args.tlang]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
+        translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
         print(len(input_ids), "in and", len(translations), "out")
         for input_id, translation in zip(input_ids, translations):
             translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 

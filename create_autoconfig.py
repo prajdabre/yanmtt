@@ -3,7 +3,7 @@ import sys
 import os
 
 
-tokenizer = AlbertTokenizer.from_pretrained(sys.argv[1])
+tokenizer = AlbertTokenizer.from_pretrained(sys.argv[1], do_lower_case=False, use_fast=False)
 tokenizer.save_pretrained(sys.argv[1])
 
 os.rename(sys.argv[1]+"/tokenizer_config.json",sys.argv[1]+"/config.json")
@@ -13,7 +13,7 @@ config.save_pretrained(sys.argv[1])
 
 print("Testing tokenizer")
 
-tokenizer = AutoTokenizer.from_pretrained(sys.argv[1])
+tokenizer = AutoTokenizer.from_pretrained(sys.argv[1], do_lower_case=False, use_fast=False)
 
 print(tokenizer("I am Gone"))
 

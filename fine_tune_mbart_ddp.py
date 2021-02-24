@@ -1,8 +1,11 @@
 from transformers import AutoTokenizer, AlbertTokenizer
 import time
 
+import transformers
+
 from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
+
 
 import os
 
@@ -17,6 +20,9 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import sys
 import torch.distributed as dist
+from torch.optim import Adam
+
+torch.manual_seed(621311)
 
 import random
 import sacrebleu
@@ -115,12 +121,26 @@ def generate_batches_eval(tok, args):
         yield input_ids, input_masks
 
 
+def yield_corpus_indefinitely(corpus):
+    epoch_counter = 0
+    while True:
+        print("Shuffling corpus!")
+        random.shuffle(corpus)
+        for src_line, tgt_line in corpus:
+            yield src_line, tgt_line
+        
+        epoch_counter += 1
+        print("Finished epoch", epoch_counter)
+    return None, None
+
 
 def generate_batches(tok, args):
     batch_count = 0
     src_file = open(args.train_src)
     tgt_file = open(args.train_tgt)
+    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
     epoch_counter = 0
+    corpus_gen = yield_corpus_indefinitely(corpus)
     while batch_count != args.num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -130,42 +150,23 @@ def generate_batches(tok, args):
         max_src_sent_len = 0
         max_tgt_sent_len = 0
         start = time.time()
-        while curr_batch_count <= args.batch_size:
-            src_sent, tgt_sent = src_file.readline().strip(), tgt_file.readline().strip()
-            if src_sent == "" and tgt_sent == "":
-                should_reset = True
-                print("Checking for EOF!")
-                for _ in range(100):
-                    src_sent, tgt_sent = src_file.readline().strip(), tgt_file.readline().strip()
-                    if src_sent != "" or tgt_sent != "":
-                        should_reset = False
-                        break
-                if should_reset:
-                    epoch_counter += 1
-                    print("Finished epoch:", epoch_counter)
-                    print("Going to beginning of training files.")
-                    src_file.close()
-                    tgt_file.close()
-                    src_file = open(args.train_src)
-                    tgt_file = open(args.train_tgt)
-                    src_sent, tgt_sent = src_file.readline().strip(), tgt_file.readline().strip()
-                    
-    
+        for src_sent, tgt_sent in corpus_gen:
             #curr_batch.append(["<2"+language_list[language_idx]+">", inline])
             #curr_batch_count += 1
             slang = "<2"+args.slang+">"
             tlang = "<2"+args.tlang+">"
             src_sent_split = src_sent.split(" ")
             tgt_sent_split = tgt_sent.split(" ")
-            sent_len = len(tgt_sent_split)
-            if sent_len <=1 or sent_len >= 100:
+            tgt_sent_len = len(tgt_sent_split)
+            src_sent_len = len(src_sent_split)
+            if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
                 continue
             iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
             iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len <= 1 or curr_src_sent_len >= 80 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 80:
+            if curr_src_sent_len <= 1 or curr_src_sent_len >= 100 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 100:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -177,13 +178,18 @@ def generate_batches(tok, args):
             decoder_input_batch.append(tlang + " " + tgt_sent)
             decoder_label_batch.append(tgt_sent + " </s>")
             curr_batch_count += curr_tgt_sent_len
+            if curr_batch_count > args.batch_size:
+                break
         #print("Max source and target lengths are:", max_src_sent_len, "and", max_tgt_sent_len)
-        #print("Number of sentences in batch:", len(encoder_input_batch))
+        #print("Number of sentences in batch:", len(encoder_input_batch), len(decoder_input_batch), len(decoder_label_batch))
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         input_masks = input_ids != tok.pad_token_id
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
         end = time.time()
+        #print(input_ids.size(), labels.size(), decoder_input_ids.size())
+#         for xx, yy in zip(decoder_input_ids, labels):
+#             print(tok.decode(xx, skip_special_tokens=True, clean_up_tokenization_spaces=False), tok.decode(yy, skip_special_tokens=True, clean_up_tokenization_spaces=False)) 
         #print("Batch generation time:", end-start, "seconds")
         yield input_ids, input_masks, decoder_input_ids, labels
    
@@ -201,9 +207,10 @@ def init_weights(module, in_features, out_features):
 
 def model_create_load_run_save(gpu, args):
     rank = args.nr * args.gpus + gpu
-    dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
+    if not args.single_gpu:
+        dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False)
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
@@ -217,8 +224,10 @@ def model_create_load_run_save(gpu, args):
     print(tok.vocab_size) ## Should be 20k
 
     print(len(tok)) ## Should be 20k + number of special tokens we added earlier
-
-    print(f"Running DDP checkpoint example on rank {rank}.")
+    if args.single_gpu:
+        print(f"Running checkpoint example on rank {rank}.")
+    else:
+        print(f"Running DDP checkpoint example on rank {rank}.")
     #setup(rank, world_size)
 #    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.fp16:
@@ -230,14 +239,20 @@ def model_create_load_run_save(gpu, args):
     model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)) ## LS is actually not being used
     #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
     model.train()
-    
-    if args.pretrained_bilingual_model == "" and args.pretrained_model == "":
-        print("Manual initialization")
-        for module in model.modules():
-            if isinstance(module, nn.Linear):
-                init_weights(module, module.in_features, module.out_features)
-            if isinstance(module, torch.nn.Embedding):
-                init_weights(module, len(tok), args.d_model) ## Might need modification
+    #print(model)
+#     if args.pretrained_bilingual_model == "" and args.pretrained_model == "":
+#         print("Manual initialization")
+#         for module in model.modules():
+#             if isinstance(module, nn.Linear):
+#                 print("Initializing", module)
+#                 init_weights(module, module.in_features, module.out_features)
+#             if isinstance(module, torch.nn.Embedding):
+# #                 print(type(module))
+# #                 if isinstance(module, transformers.models.mbart.modeling_mbart.MBartLearnedPositionalEmbedding):
+# #                     print("Not initializing", module)
+# #                 else:
+#                 print("Initializing", module)
+#                 init_weights(module, len(tok), args.d_model) ## Might need modification
             
     torch.cuda.set_device(gpu)
     
@@ -267,13 +282,23 @@ def model_create_load_run_save(gpu, args):
             "weight_decay": 0.0,
         },
     ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=3e-5, eps=1e-09)
-    model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
+    
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09)
+    
+    if args.single_gpu:
+        pass
+    else:
+        model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches*args.world_size)
-
+    while scheduler.get_lr()[0] < 1e-7:
+        scheduler.step()
+    print("Initial LR is:", scheduler.get_lr()[0])
     if args.pretrained_bilingual_model == "" and args.pretrained_model != "":
         print("Loading a pretrained mbart model")
-        dist.barrier()
+        if args.single_gpu:
+            pass
+        else:
+            dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
@@ -283,7 +308,10 @@ def model_create_load_run_save(gpu, args):
             model.load_state_dict(checkpoint_dict)
     elif args.pretrained_bilingual_model != "":
         print("Loading a previous checkpoint")
-        dist.barrier()
+        if args.single_gpu:
+            pass
+        else:
+            dist.barrier()
             # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
@@ -298,7 +326,9 @@ def model_create_load_run_save(gpu, args):
     else:
         print("Training from scratch")
         ctr = 0
+        
     print("Using label smoothing of", args.label_smoothing)
+    print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #model.load_state_dict(torch.load("/share03/draj/data/monolingual_corpora/indic/trial_model/dpmodel"))
     #model.cuda()
 
@@ -334,11 +364,19 @@ def model_create_load_run_save(gpu, args):
                 print("Running eval on dev set")
                 refs = [[refline.strip() for refline in open(args.dev_tgt)]]
                 hyp = []
-                model.module.eval()
+                if args.single_gpu:
+                    model.eval()
+                else:
+                    model.module.eval()
+                    
                 for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args): #infinite_same_sentence(10000):
                     start = time.time()
                     #print(input_ids)
-                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok([args.tlang]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                    if args.single_gpu:
+                        translations = model.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                    else:
+                        translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                    
                     for translation in translations:
                         translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                         hyp.append(translation)
@@ -350,7 +388,10 @@ def model_create_load_run_save(gpu, args):
                     print("New peak reached. Saving.")
                     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
                     torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+str(ctr))
-                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                    if args.single_gpu:
+                        torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                    else:
+                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
                     
                 if curr_eval_step - max_sbleu_step > args.early_stop_checkpoints:
                     print("We have seemingly converged as BLEU failed to increase for the following number of checkpoints:", args.early_stop_checkpoints, ". You may want to consider increasing the number of tolerance steps.")
@@ -358,7 +399,12 @@ def model_create_load_run_save(gpu, args):
                     break
                 bleu_history.append(sbleu)
                 curr_eval_step += 1
-                model.module.train()
+                
+                if args.single_gpu:
+                    model.train()
+                else:
+                    model.module.train()
+                
                 print("Saving the model")
                 # All processes should see same parameters as they all start from same
                 # random parameters and gradients are synchronized in backward passes.
@@ -369,7 +415,10 @@ def model_create_load_run_save(gpu, args):
 
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
-            dist.barrier()
+            if args.single_gpu:
+                pass
+            else:
+                dist.barrier()
             # configure map_location properly
             map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
             checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
@@ -392,6 +441,7 @@ def model_create_load_run_save(gpu, args):
                         )
             else:
                 mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu) ,decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
+                #print(mod_compute)
                 logits = mod_compute[1]
                 if args.label_smoothing == 0.0:
                     loss = mod_compute[0]
@@ -400,8 +450,9 @@ def model_create_load_run_save(gpu, args):
                     loss, nll_loss = label_smoothed_nll_loss(
                         lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
                     )
-        except:
+        except Exception as e:
             print("NAN loss was computed or something messed up")
+            print(e)
 #             print(input_ids)
 #             for elem in input_ids:
 #                 print(tok.convert_ids_to_tokens(elem))
@@ -425,13 +476,15 @@ def model_create_load_run_save(gpu, args):
         #loss.backward()
         #optimizer.step()
         if args.fp16:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+            if args.max_gradient_clip_value != 0.0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+            if args.max_gradient_clip_value != 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step()
         end = time.time()
@@ -444,11 +497,18 @@ def model_create_load_run_save(gpu, args):
     # random parameters and gradients are synchronized in backward passes.
     # Therefore, saving it in one process is sufficient.
     print("The best bleu was:", max_sbleu)
-    print("The corresponding step was:", max_sbleu_step)
+    print("The corresponding step was:", max_sbleu_step*1000)
     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
     torch.save(checkpoint_dict, CHECKPOINT_PATH)
-    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
-    dist.destroy_process_group()
+    if args.single_gpu:
+        torch.save(model.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info
+    else:
+        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
+    if args.single_gpu:
+        pass
+    else:
+        dist.destroy_process_group()
+    
 
 def run_demo():
     parser = argparse.ArgumentParser()
@@ -477,7 +537,8 @@ def run_demo():
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
-    parser.add_argument('--weight_decay', default=0.0, type=float, help="The value for weight decay")
+    parser.add_argument('--weight_decay', default=0.0001, type=float, help="The value for weight decay")
+    parser.add_argument('--lr', default=7e-4, type=float, help="The value for the learning rate")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
@@ -486,7 +547,7 @@ def run_demo():
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
-    parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm value")
+    parser.add_argument('--max_gradient_clip_value', default=0.0, type=float, help="The max value for gradient norm value")
 
     parser.add_argument('--pretrained_model', default='', type=str, 
                         help='Path to the pretrained model')
@@ -520,13 +581,19 @@ def run_demo():
                         help='Target language development sentences')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
+    parser.add_argument('--single_gpu', action='store_true', 
+                        help='Should we use single gpu training?')
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
     #########################################################
     args.world_size = args.gpus * args.nodes                #
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
+    if args.single_gpu:
+        print("Non ddp model being trained")
+        model_create_load_run_save(0, args)#
+    else:
+        mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
     #########################################################
 #     mp.spawn(demo_fn,
 #              args=(args,),
