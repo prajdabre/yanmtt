@@ -23,11 +23,13 @@ import random
 import sacrebleu
 
 def get_sacrebleu(refs, hyp):
+    """Returns the sacrebleu score."""
     bleu = sacrebleu.corpus_bleu(hyp, refs)
     return bleu.score
 
 
 def generate_batches(tok, args):
+    """Generates the source sentences for the test set."""
     src_file = open(args.test_src)
     curr_batch_count = 0
     encoder_input_batch = []
@@ -53,7 +55,6 @@ def generate_batches(tok, args):
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
-            #print("Batch generation time:", end-start, "seconds")
             yield input_ids, input_masks
             curr_batch_count = 0
             encoder_input_batch = []
@@ -66,39 +67,29 @@ def generate_batches(tok, args):
 
 
 def model_create_load_run_save(gpu, args):
+    """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>","<2as>", "<2bn>", "<2hi>", "<2en>", "<2gu>", "<2kn>", "<2ml>", "<2mr>", "<2or>", "<2pa>", "<2ta>", "<2te>"] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
+    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
+    
+    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
-    #print(tok)
-    
-
-    #print(tok.vocab_size) ## Should be 20k
-
-    #print(len(tok)) ## Should be 20k + number of special tokens we added earlier
+    print("Tokenizer is:", tok)
 
     print(f"Running DDP checkpoint example on rank {rank}.")
-    #setup(rank, world_size)
-#    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1]))
+
+    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
+
     model.eval()
-    #model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model)
     torch.cuda.set_device(gpu)
 
 
     model.cuda(gpu)
-#    print(device)
-
-    #print(model.config)
-    #print(model.parameters)
-
-    #model = nn.DataParallel(model, device_ids=[0,1,2,3,4,5,6,7], dim=0)
     model = DistributedDataParallel(model, device_ids=[gpu])
-    #print(dir(model.module))
     
     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
     checkpoint_dict = torch.load(args.model_to_decode, map_location=map_location)
@@ -113,7 +104,6 @@ def model_create_load_run_save(gpu, args):
     refs = [[refline.strip() for refline in open(args.test_ref)]]
     for input_ids, input_masks in generate_batches(tok, args): #infinite_same_sentence(10000):
         start = time.time()
-        #print(input_ids)
         print("Processing batch:", ctr)
         translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
         print(len(input_ids), "in and", len(translations), "out")
@@ -121,20 +111,12 @@ def model_create_load_run_save(gpu, args):
             translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
             input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
             print(input_id, translation)
-            #outf.write(input_id + "\t" + translation+"\n")
             outf.write(translation+"\n")
             outf.flush()
             hyp.append(translation)
         ctr += 1
     sbleu = get_sacrebleu(refs, hyp)
     print("BLEU score is:", sbleu)
-    
-        
-#         except:
-#             print("We messed up!")
-#             sys.stdout.flush()
-
-        
     outf.close()
     
     dist.destroy_process_group()
@@ -204,10 +186,6 @@ def run_demo():
     os.environ['MASTER_PORT'] = args.port                      #
     mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
     #########################################################
-#     mp.spawn(demo_fn,
-#              args=(args,),
-#              nprocs=args.gpus,
-#              join=True)
     
 if __name__ == "__main__":
     run_demo()
