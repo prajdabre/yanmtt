@@ -1,4 +1,4 @@
-from transformers import AutoTokenizer, AlbertTokenizer
+from transformers import AutoTokenizer
 import time
 
 import transformers
