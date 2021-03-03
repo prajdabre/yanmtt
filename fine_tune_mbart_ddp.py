@@ -22,10 +22,11 @@ import sys
 import torch.distributed as dist
 from torch.optim import Adam
 
-torch.manual_seed(621311)
-
 import random
+import numpy as np
 import sacrebleu
+
+torch.manual_seed(621311)
 
 def lmap(f, x):
     """list(map(f, x))"""
@@ -111,7 +112,7 @@ def generate_batches_eval(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            input_masks = input_ids != tok.pad_token_id
+            input_masks = (input_ids != tok.pad_token_id).int()
             end = time.time()
             yield input_ids, input_masks
             curr_batch_count = 0
@@ -120,7 +121,7 @@ def generate_batches_eval(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        input_masks = input_ids != tok.pad_token_id
+        input_masks = (input_ids != tok.pad_token_id).int()
         yield input_ids, input_masks
 
 
@@ -184,9 +185,9 @@ def generate_batches(tok, args):
             if curr_batch_count > args.batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        input_masks = input_ids != tok.pad_token_id
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
-        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         end = time.time()
         yield input_ids, input_masks, decoder_input_ids, labels
    
@@ -227,8 +228,9 @@ def model_create_load_run_save(gpu, args):
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
+    
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
+    model = MBartForConditionalGeneration(config)
     model.train()
 
     torch.cuda.set_device(gpu)
@@ -303,12 +305,13 @@ def model_create_load_run_save(gpu, args):
         
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
-    
+    #config.save_pretrained(args.fine_tuned_model+"/config")
     ctr = 0
     bleu_history = []
     max_sbleu = 0
     max_sbleu_step = 0
     curr_eval_step = 0
+    annealing_attempt = 0
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args):
         start = time.time()
         if ctr % 1000 == 0:
@@ -344,11 +347,19 @@ def model_create_load_run_save(gpu, args):
                         torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model with ddp markers and no optimizer info.
                     else:
                         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                if curr_eval_step - max_sbleu_step > (args.early_stop_checkpoints + annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step):
+                    if annealing_attempt < args.max_annealing_attempts:
+                        annealing_attempt += 1
+                        curr_lr = scheduler.get_lr()[0]
+                        print("LR before annealing is:", curr_lr)
+                        while scheduler.get_lr()[0] > (curr_lr/args.learning_rate_scaling):
+                            scheduler.step()
+                        print("LR after annealing is:", scheduler.get_lr()[0])
                     
-                if curr_eval_step - max_sbleu_step > args.early_stop_checkpoints:
-                    print("We have seemingly converged as BLEU failed to increase for the following number of checkpoints:", args.early_stop_checkpoints, ". You may want to consider increasing the number of tolerance steps.")
-                    print("Terminating training")
-                    break
+                    else:
+                        print("We have seemingly converged as BLEU failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
+                        print("Terminating training")
+                        break
                 bleu_history.append(sbleu)
                 curr_eval_step += 1
                 
@@ -472,6 +483,8 @@ def run_demo():
                         help='Should we normalize embeddings?')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
+    parser.add_argument('--mnmt', action='store_true', 
+                        help='Are we training MNMT models? If so then the datagen will be slightly tweaked. We will also expect that training and development files will be comma separated when passed as arguments. The slang and tlang markers will also be comma separated and will follow the order of these files.')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
@@ -501,7 +514,13 @@ def run_demo():
                         help='Dev batch sizes in lines')
     parser.add_argument('--early_stop_checkpoints', default=10, type=int, 
                         help='Number of checkpoints to wait to see if BLEU increases.')
-    parser.add_argument('--num_batches', default=100000, type=int, 
+    parser.add_argument('--learning_rate_scaling', default=2, type=int, 
+                        help='How much should the LR be divided by during annealing?. Set num_batches to a larger value or else you will see lr go to zero too soon.')
+    parser.add_argument('--max_annealing_attempts', default=2, type=int, 
+                        help='Number of times LR should be annealed.')
+    parser.add_argument('--additional_early_stop_checkpoints_per_anneal_step', default=5, type=int, 
+                        help='How many additional checkpoints should we wait till declaring convergence? This will be multiplied with the annealing step number.')
+    parser.add_argument('--num_batches', default=1000000, type=int, 
                         help='Number of batches to train on')
     parser.add_argument('--slang', default='en', type=str, 
                         help='Source language')

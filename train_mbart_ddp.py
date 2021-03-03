@@ -21,9 +21,12 @@ import sys
 import numpy as np
 import torch.distributed as dist
 
-torch.manual_seed(621311)
-
 import random
+import numpy as np
+import sacrebleu
+
+
+torch.manual_seed(621313)
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     """From fairseq. This returns the label smoothed loss."""
@@ -48,15 +51,19 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
 def yield_corpus_indefinitely(corpus, lang):
     """This shuffles the corpus at the beginning of each epoch and returns sentences indefinitely."""
     epoch_counter = 0
-    while True:
-        print("Shuffling corpus!")
-        sys.stdout.flush()
-        random.shuffle(corpus)
-        for src_line in corpus:
-            yield src_line
-        
-        epoch_counter += 1
-        print("Finished epoch", epoch_counter, "for language:", lang)
+    try:
+        while True:
+            print("Shuffling corpus!")
+            sys.stdout.flush()
+            random.shuffle(corpus)
+            for src_line in corpus:
+                yield src_line
+
+            epoch_counter += 1
+            print("Finished epoch", epoch_counter, "for language:", lang)
+    except Exception as e:
+        print(e)
+        print("Catastrophic data gen failure")
     return None
 
 
@@ -101,30 +108,33 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
                 mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
             sentence_split = sentence.split(" ")
             sent_len = len(sentence_split)
-            if sent_len < 5 or sent_len > 100:
+            if sent_len < 10 or sent_len > 100:
                 continue
-            mask_count = 0.0
-            mask_percent_curr = 1.0*mask_count/sent_len
+            mask_count = 0
+            max_mask_count = int(mask_percent*sent_len)
             spans_to_mask = list(np.random.poisson(lamb, 1000))
             curr_sent_len = sent_len
-            while mask_percent_curr < mask_percent:
-                span_to_mask = spans_to_mask[0]
-                del spans_to_mask[0]
-                if span_to_mask > curr_sent_len:
-                    continue
-                idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
-                if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
-                    sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                    mask_count += span_to_mask
-                    curr_sent_len -= (span_to_mask-1)
-                    mask_percent_curr = 1.0*mask_count/sent_len
+            while mask_count < max_mask_count:
+                try:
+                    span_to_mask = spans_to_mask[0]
+                    del spans_to_mask[0]
+                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                        continue
+                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                        sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                        mask_count += span_to_mask
+                        curr_sent_len -= (span_to_mask-1)
+                except:
+                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+            
             masked_sentence = " ".join(sentence_split)
             iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
             iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len < 5 or curr_src_sent_len > 100 or curr_tgt_sent_len < 5 or curr_tgt_sent_len > 100:
+            if curr_src_sent_len < 10 or curr_src_sent_len > 100 or curr_tgt_sent_len < 10 or curr_tgt_sent_len > 100:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -138,10 +148,12 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             if curr_batch_count > batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        input_masks = input_ids != tok.pad_token_id
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
-        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=curr_tgt_sent_len).input_ids
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         end = time.time()
+#         print(input_ids.size(), input_masks.size(), decoder_input_ids.size(), labels.size())
+#         sys.stdout.flush()
         yield input_ids, input_masks, decoder_input_ids, labels
        
 def init_weights(module, in_features, out_features):
@@ -158,6 +170,7 @@ def init_weights(module, in_features, out_features):
             module.weight.data[module.padding_idx].zero_()
 
 def model_create_load_run_save(gpu, args):
+    torch.autograd.set_detect_anomaly(True)
     """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
@@ -177,8 +190,8 @@ def model_create_load_run_save(gpu, args):
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-        
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
+    model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
 
     model.cuda(gpu)
@@ -220,9 +233,9 @@ def model_create_load_run_save(gpu, args):
         ctr = 0
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
+    #config.save_pretrained(args.model_path)
     
-    
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 512, (0.30, 0.40), 3.5, rank, args.temperature, args.languages):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.temperature, args.languages):
         start = time.time()
         
         if ctr % 1000 == 0:
@@ -235,8 +248,10 @@ def model_create_load_run_save(gpu, args):
                 # Therefore, saving it in one process is sufficient.
                 checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
                 torch.save(checkpoint_dict, CHECKPOINT_PATH)
+                torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
                 if ctr % 10000 == 0:
                     torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr))
+                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
 
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
@@ -337,14 +352,14 @@ def run_demo():
                         help='Name of or path to the pre-trained indic language tokenizer')
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
-    parser.add_argument('--encoder_layers', default=12, type=int, help="The value for number of encoder layers")
-    parser.add_argument('--decoder_layers', default=12, type=int, help="The value for number of decoder layers")
+    parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
+    parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
-    parser.add_argument('--weight_decay', default=0.0001, type=float, help="The value for weight decay")
-    parser.add_argument('--dropout', default=0.3, type=float, help="The value for embedding dropout")
-    parser.add_argument('--attention_dropout', default=0.3, type=float, help="The value for attention dropout")
-    parser.add_argument('--activation_dropout', default=0.3, type=float, help="The value for activation dropout")
+    parser.add_argument('--weight_decay', default=0.00001, type=float, help="The value for weight decay")
+    parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
+    parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
+    parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=16, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=16, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")
