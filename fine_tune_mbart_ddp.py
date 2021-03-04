@@ -87,17 +87,17 @@ def freeze_embeds(model):
         for d in [model.encoder, model.decoder]:
             freeze_params(d.embed_tokens)
 
-def generate_batches_eval(tok, args):
+def generate_batches_eval(tok, args, file, slang):
     """Generates the source sentences for the dev set."""
-    src_file = open(args.dev_src)
+    src_file = file #open(file)
     curr_batch_count = 0
     encoder_input_batch = []
     max_src_sent_len = 0
 
     for src_line in src_file:
         start = time.time()
-        src_sent = src_line
-        lang = "<2"+args.slang+">"
+        src_sent = src_line.strip()
+        lang = "<2"+slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
         if sent_len <1 or sent_len > 256:
@@ -125,28 +125,42 @@ def generate_batches_eval(tok, args):
         yield input_ids, input_masks
 
 
-def yield_corpus_indefinitely(corpus):
+def yield_corpus_indefinitely(corpus, language):
     """This shuffles the corpus at the beginning of each epoch and returns sentences indefinitely."""
     epoch_counter = 0
     while True:
-        print("Shuffling corpus!")
+        print("Shuffling corpus:", language)
         random.shuffle(corpus)
         for src_line, tgt_line in corpus:
             yield src_line, tgt_line
         
         epoch_counter += 1
-        print("Finished epoch", epoch_counter)
+        print("Finished epoch", epoch_counter, "for language:", language)
     return None, None
 
 
-def generate_batches(tok, args):
+def generate_batches(tok, args, files):
     """Generates the source, target and source attention masks for the training set."""
     batch_count = 0
-    src_file = open(args.train_src)
-    tgt_file = open(args.train_tgt)
-    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
-    epoch_counter = 0
-    corpus_gen = yield_corpus_indefinitely(corpus)
+    language_list = list(files.keys())
+    print("Training for:", language_list)
+    language_file_dict = {}
+    probs = {}
+    for l in language_list:
+        src_file_content = open(files[l][0]).readlines() ## +"."+"%02d" % rank for when we do distributed training
+        tgt_file_content = open(files[l][1]).readlines() ## +"."+"%02d" % rank for when we do distributed training
+        probs[l] = len(src_file_content)
+        file_content = list(zip(src_file_content, tgt_file_content))
+        language_file_dict[l] = yield_corpus_indefinitely(file_content, l)
+    print("Corpora stats:", probs)
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]**(1.0/args.temperature) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = [probs_temp[lang] for lang in language_list] ## NARROW IT DOWN
+    num_langs = len(language_list)
+    language_indices = list(range(num_langs))
     while batch_count != args.num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -156,9 +170,15 @@ def generate_batches(tok, args):
         max_src_sent_len = 0
         max_tgt_sent_len = 0
         start = time.time()
-        for src_sent, tgt_sent in corpus_gen:
-            slang = "<2"+args.slang+">"
-            tlang = "<2"+args.tlang+">"
+        #for src_sent, tgt_sent in corpus_gen:
+        while True:
+            language_idx = random.choices(language_indices, probs)[0]
+            src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
+            src_sent = src_sent.strip()
+            tgt_sent = tgt_sent.strip()
+            slangtlang = language_list[language_idx].strip().split("-")
+            slang = "<2"+slangtlang[0]+">"
+            tlang = "<2"+slangtlang[1]+">"
             src_sent_split = src_sent.split(" ")
             tgt_sent_split = tgt_sent.split(" ")
             tgt_sent_len = len(tgt_sent_split)
@@ -212,10 +232,36 @@ def model_create_load_run_save(gpu, args):
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
-    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
+    #files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
-    num_added_toks = tok.add_special_tokens(special_tokens_dict)
+#     if args.mnmt:
+#         special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
+#     else:
+#         special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+sl+">" for sl in (args.slang).strip().split(",")] + ["<2"+tl+">" for tl in (args.tlang).strip().split(" ")]}
+    
+    train_files = {}
+    if args.mnmt:
+        slangs = args.train_slang.strip().split(",")
+        tlangs = args.train_tlang.strip().split(",")
+        train_srcs = args.train_src.strip().split(",")
+        train_tgts = args.train_tgt.strip().split(",")
+        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+    else:
+        train_files = {args.train_slang+"-"+args.train_tlang : (args.train_srcs, args.train_tgts)}
+    print("Training files are:", train_files)
+        
+    dev_files = {}
+    if args.mnmt:
+        slangs = args.dev_slang.strip().split(",")
+        tlangs = args.dev_tlang.strip().split(",")
+        dev_srcs = args.dev_src.strip().split(",")
+        dev_tgts = args.dev_tgt.strip().split(",")
+        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
+    else:
+        dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_srcs, args.dev_tgts)}
+    print("Development files are:", dev_files)
+
+#     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
     print("Tokenizer is:", tok)
     
@@ -307,47 +353,71 @@ def model_create_load_run_save(gpu, args):
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #config.save_pretrained(args.fine_tuned_model+"/config")
     ctr = 0
-    bleu_history = []
-    max_sbleu = 0
-    max_sbleu_step = 0
+    global_sbleu_history = []
+    max_global_sbleu = 0
+    max_global_sbleu_step = 0
+    individual_sbleu_history = {dev_pair: [] for dev_pair in dev_files}
+    max_individual_sbleu = {dev_pair: 0 for dev_pair in dev_files}
+    max_individual_sbleu_step = {dev_pair: 0 for dev_pair in dev_files}
     curr_eval_step = 0
     annealing_attempt = 0
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args):
+    inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files}
+    refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files):
         start = time.time()
         if ctr % 1000 == 0:
             CHECKPOINT_PATH = args.fine_tuned_model
             if rank == 0:
-                print("Running eval on dev set")
-                refs = [[refline.strip() for refline in open(args.dev_tgt)]]
-                hyp = []
+                print("Running eval on dev set(s)")
+                hyp = {dev_pair: [] for dev_pair in dev_files}
+                sbleus = {}
                 if args.single_gpu:
                     model.eval()
                 else:
                     model.module.eval()
-                    
-                for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args): #infinite_same_sentence(10000):
-                    start = time.time()
-                    if args.single_gpu:
-                        translations = model.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
-                    else:
-                        translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
-                    
-                    for translation in translations:
-                        translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                        hyp.append(translation)
-                sbleu = get_sacrebleu(refs, hyp)
-                print("BLEU score using sacrebleu after", ctr, "iterations is:", sbleu)
-                if sbleu > max_sbleu:
-                    max_sbleu = sbleu
-                    max_sbleu_step = curr_eval_step
+                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                for dev_pair in dev_files:
+                    slangtlang =dev_pair.strip().split("-")
+                    slang=slangtlang[0]
+                    tlang=slangtlang[1]
+                    for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args, inps[dev_pair], slang): #infinite_same_sentence(10000):
+                        start = time.time()
+                        if args.single_gpu:
+                            translations = model.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                        else:
+                            translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+
+                        for translation in translations:
+                            translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
+                            hyp[dev_pair].append(translation)
+                    sbleu = get_sacrebleu(refs[dev_pair], hyp[dev_pair])
+                    individual_sbleu_history[dev_pair].append([sbleu, ctr])
+                    sbleus[dev_pair] = sbleu
+                    print("BLEU score using sacrebleu after", ctr, "iterations is", sbleu, "for language pair", dev_pair)
+                    if sbleu > max_individual_sbleu[dev_pair]:
+                        max_individual_sbleu[dev_pair] = sbleu
+                        max_individual_sbleu_step[dev_pair] = curr_eval_step
+                        print("New peak reached for", dev_pair,". Saving.")
+                        torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr))
+                        if args.single_gpu:
+                            torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr)+".pure_model") ## Pure model with ddp markers and no optimizer info.
+                        else:
+                            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                
+                ## Global stats
+                slbeu = sum(sbleus.values())/len(sbleus)
+                global_sbleu_history.append([sbleu, ctr])
+                print("Global BLEU score using sacrebleu after", ctr, "iterations is:", sbleu)
+                if sbleu > max_global_sbleu:
+                    max_global_sbleu = sbleu
+                    max_global_sbleu_step = curr_eval_step
                     print("New peak reached. Saving.")
-                    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-                    torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+str(ctr))
+                    torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr))
                     if args.single_gpu:
-                        torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model with ddp markers and no optimizer info.
+                        torch.save(model.state_dict(), CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr)+".pure_model") ## Pure model with ddp markers and no optimizer info.
                     else:
-                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
-                if curr_eval_step - max_sbleu_step > (args.early_stop_checkpoints + annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step):
+                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                if curr_eval_step - max_global_sbleu_step > (args.early_stop_checkpoints + annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step):
                     if annealing_attempt < args.max_annealing_attempts:
                         annealing_attempt += 1
                         curr_lr = scheduler.get_lr()[0]
@@ -359,8 +429,9 @@ def model_create_load_run_save(gpu, args):
                     else:
                         print("We have seemingly converged as BLEU failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
                         print("Terminating training")
+                        print("Global dev bleu history:", global_sbleu_history)
+                        print("Individual sbleu history:", individual_sbleu_history )
                         break
-                bleu_history.append(sbleu)
                 curr_eval_step += 1
                 
                 if args.single_gpu:
@@ -445,8 +516,8 @@ def model_create_load_run_save(gpu, args):
     # All processes should see same parameters as they all start from same
     # random parameters and gradients are synchronized in backward passes.
     # Therefore, saving it in one process is sufficient.
-    print("The best bleu was:", max_sbleu)
-    print("The corresponding step was:", max_sbleu_step*1000)
+    print("The best bleu was:", max_global_sbleu)
+    print("The corresponding step was:", max_global_sbleu_step*1000)
     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
     torch.save(checkpoint_dict, CHECKPOINT_PATH)
     if args.single_gpu:
@@ -493,6 +564,7 @@ def run_demo():
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
+    parser.add_argument('--temperature', default=5.0, type=float, help="The value for sampling temperature")
     parser.add_argument('--encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=8, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
@@ -522,20 +594,24 @@ def run_demo():
                         help='How many additional checkpoints should we wait till declaring convergence? This will be multiplied with the annealing step number.')
     parser.add_argument('--num_batches', default=1000000, type=int, 
                         help='Number of batches to train on')
-    parser.add_argument('--slang', default='en', type=str, 
-                        help='Source language')
+    parser.add_argument('--train_slang', default='en', type=str, 
+                        help='Source language(s) for training')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the pre-trained indic language tokenizer')
-    parser.add_argument('--tlang', default='hi', type=str, 
-                        help='Target language')
+    parser.add_argument('--train_tlang', default='hi', type=str, 
+                        help='Target language(s) for training')
     parser.add_argument('--train_src', default='', type=str, 
                         help='Source language training sentences')
     parser.add_argument('--train_tgt', default='', type=str, 
                         help='Target language training sentences')
+    parser.add_argument('--dev_slang', default='en', type=str, 
+                        help='Source language(s) for training')
+    parser.add_argument('--dev_tlang', default='hi', type=str, 
+                        help='Target language(s) for training')
     parser.add_argument('--dev_src', default='', type=str, 
-                        help='Source language development sentences')
+                        help='Source language(s) development sentences')
     parser.add_argument('--dev_tgt', default='', type=str, 
-                        help='Target language development sentences')
+                        help='Target language(s) development sentences')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
     parser.add_argument('--single_gpu', action='store_true', 

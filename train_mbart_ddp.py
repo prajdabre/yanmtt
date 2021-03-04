@@ -67,17 +67,23 @@ def yield_corpus_indefinitely(corpus, lang):
     return None
 
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, languages=""):
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None):
     """Generates the source, target and source attention masks for denoising."""
     
-    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
+    #files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
 
-    probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909} ## Get this by automatic calculation
+    #probs = {"as": 1388109, "or": 6942483, "en": 54250995, "mr": 33976000, "pa": 29194279, "gu": 41129078, "ta": 31542481, "te": 47877462, "bn": 39877942, "kn": 53266064, "ml": 56061611, "hi": 63057909} ## Get this by automatic calculation
     batch_count = 0
-    language_list = list(files.keys()) if languages == "" else languages.strip().split("-")
+    language_list = list(files.keys())
     print("Training for:", language_list)
-    probs = {lang: probs[lang] for lang in language_list} ## Narrow it down
-    files = {lang: files[lang] for lang in language_list} ## Narrow it down
+    language_file_dict = {}
+    probs = {}
+    for l in language_list:
+        file_content = open(files[l]+"."+"%02d" % rank).readlines()
+        probs[l] = len(file_content)
+        language_file_dict[l] = yield_corpus_indefinitely(file_content, l)
+#     probs = {lang: probs[lang] for lang in language_list} ## Narrow it down
+#     files = {lang: files[lang] for lang in language_list} ## Narrow it down
     probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
     probs = probs_temp
     probs_temp = {lang: probs[lang]**(1.0/temperature) for lang in probs}
@@ -86,9 +92,6 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
     probs = [probs_temp[lang] for lang in language_list] ## NARROW IT DOWN
     num_langs = len(language_list)
     language_indices = list(range(num_langs))
-    language_file_dict = {}
-    for l in language_list:
-        language_file_dict[l] = yield_corpus_indefinitely(open(files[l]+"."+"%02d" % rank).readlines(), l)
     while batch_count != num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -176,11 +179,13 @@ def model_create_load_run_save(gpu, args):
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
-    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
+    #files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
-    num_added_toks = tok.add_special_tokens(special_tokens_dict)
-
+    #special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
+    #num_added_toks = tok.add_special_tokens(special_tokens_dict)
+    
+    files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
+    print("All files:", files)
     print("Tokenizer is:", tok)
     
     print(f"Running DDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
@@ -235,7 +240,7 @@ def model_create_load_run_save(gpu, args):
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #config.save_pretrained(args.model_path)
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.temperature, args.languages):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.temperature, files):
         start = time.time()
         
         if ctr % 1000 == 0:
@@ -338,6 +343,10 @@ def run_demo():
                         help='Name of the model')
     parser.add_argument('--initialization_model', default='', type=str, 
                         help='Name of the model')
+    parser.add_argument('--langs', default='', type=str, 
+                        help='Comma separated string of source languages')
+    parser.add_argument('--file_prefixes', default='', type=str, 
+                        help='Comma separated string of source language file prefixes. Make sure that these are split into N groups where N is the number of GPUs you plan to use.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
     parser.add_argument('--normalize_before', action='store_true', 
@@ -346,8 +355,6 @@ def run_demo():
                         help='Should we normalize embeddings?')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
-    parser.add_argument('-l', '--languages', default="", type=str, 
-                        help='Hyphen separated list of the language or languages to pre-train on.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the pre-trained indic language tokenizer')
     parser.add_argument('--warmup_steps', default=16000, type=int,
@@ -365,7 +372,7 @@ def run_demo():
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
-    parser.add_argument('--temperature', default=5.0, type=float, help="The value for model hidden size")
+    parser.add_argument('--temperature', default=5.0, type=float, help="The value for sampling temperature")
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm")
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')

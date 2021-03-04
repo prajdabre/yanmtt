@@ -29,19 +29,19 @@ def get_sacrebleu(refs, hyp):
 
 def generate_batches_pair(tok, args):
     """Generates the source, target and source attention masks for the training set."""
-    batch_count = 0
     src_file = open(args.test_src)
     tgt_file = open(args.test_ref)
     corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
     epoch_counter = 0
+    curr_batch_count = 0
+    encoder_input_batch = []
+    decoder_input_batch = []
+    decoder_label_batch = []
+    max_src_sent_len = 0
+    max_tgt_sent_len = 0
     for src_sent, tgt_sent in corpus:
-        curr_batch_count = 0
-        encoder_input_batch = []
-        decoder_input_batch = []
-        decoder_label_batch = []
-        batch_count += 1
-        max_src_sent_len = 0
-        max_tgt_sent_len = 0
+        src_sent = src_sent.strip()
+        tgt_sent = tgt_sent.strip()
         start = time.time()
         slang = "<2"+args.slang+">"
         tlang = "<2"+args.tlang+">"
@@ -49,14 +49,14 @@ def generate_batches_pair(tok, args):
         tgt_sent_split = tgt_sent.split(" ")
         tgt_sent_len = len(tgt_sent_split)
         src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
+        if src_sent_len <=1 or src_sent_len >= 256 or tgt_sent_len <=1 or tgt_sent_len >= 256:
             continue
         iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
 
         iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
         curr_tgt_sent_len = len(iids[0])
-        if curr_src_sent_len <= 1 or curr_src_sent_len >= 100 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 100:
+        if curr_src_sent_len <= 1 or curr_src_sent_len >= 256 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 256:
             continue
         if curr_src_sent_len > max_src_sent_len:
             max_src_sent_len = curr_src_sent_len
@@ -67,8 +67,8 @@ def generate_batches_pair(tok, args):
         encoder_input_batch.append(src_sent + " </s> " + slang)
         decoder_input_batch.append(tlang + " " + tgt_sent)
         decoder_label_batch.append(tgt_sent + " </s>")
-        curr_batch_count += curr_tgt_sent_len
-        if curr_batch_count > args.batch_size:
+        curr_batch_count += 1
+        if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
@@ -79,18 +79,72 @@ def generate_batches_pair(tok, args):
             encoder_input_batch = []
             decoder_input_batch = []
             decoder_label_batch = []
-            batch_count += 1
             max_src_sent_len = 0
             max_tgt_sent_len = 0
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        yield input_ids, input_masks, decoder_input_ids, labels
+
+def generate_batches_pair_masked(tok, args):
+    """Generates the source, target and source attention masks for the training set."""
+    src_file = open(args.test_src)
+    tgt_file = open(args.test_ref)
+    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
+    epoch_counter = 0
+    curr_batch_count = 0
+    for src_sent, tgt_sent in corpus:
+        src_sent = src_sent.strip()
+        tgt_sent = tgt_sent.strip()
+        start = time.time()
+        slang = "<2"+args.slang+">"
+        tlang = "<2"+args.tlang+">"
+        src_sent_split = src_sent.split(" ")
+        tgt_sent_split = tgt_sent.split(" ")
+        tgt_sent_len = len(tgt_sent_split)
+        src_sent_len = len(src_sent_split)
+        if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
+            continue
+        
+        for pos_src in range(src_sent_len):
+            encoder_input_batch = []
+            decoder_input_batch = []
+            decoder_label_batch = []
+            dec_pos = []
+            enc_pos = pos_src
+            max_src_sent_len = 0
+            max_tgt_sent_len = 0
+            new_src_sent_split = list(src_sent_split)
+            new_src_sent_split[pos_src] = "[MASK]"  #[] #"[MASK]" #"<pad>"
+            new_src_sent = " ".join(new_src_sent_split)
+            iids = tok(new_src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len = len(iids[0])
+            if curr_src_sent_len > max_src_sent_len:
+                max_src_sent_len = curr_src_sent_len
+            for pos_tgt in range(tgt_sent_len):
+                dec_pos.append(pos_tgt)
+                new_tgt_sent_split = list(tgt_sent_split)
+                new_tgt_sent_split[pos_tgt] = "[MASK]" #[] #"[MASK]" #"<pad>"
+                new_tgt_sent = " ".join(new_tgt_sent_split)
+                iids = tok(tlang + " " + new_tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > max_tgt_sent_len:
+                    max_tgt_sent_len = curr_tgt_sent_len
+                encoder_input_batch.append(new_src_sent + " </s> " + slang)
+                decoder_input_batch.append(tlang + " " + new_tgt_sent)
+                decoder_label_batch.append(new_tgt_sent + " </s>")
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            tgt_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        yield input_ids, input_masks, decoder_input_ids, labels
-   
+            end = time.time()
 
+            yield input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos
+        
 def generate_batches(tok, args):
     """Generates the source sentences for the test set."""
     src_file = open(args.test_src)
@@ -100,7 +154,7 @@ def generate_batches(tok, args):
 
     for src_line in src_file:
         start = time.time()
-        src_sent = src_line
+        src_sent = src_line.strip()
         lang = "<2"+args.slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
@@ -139,7 +193,7 @@ def nll_loss(lprobs, target, ignore_index=0):
     else:
         nll_loss = nll_loss.squeeze(-1)
 
-    nll_loss = nll_loss.sum(-1).sum(-1)
+    nll_loss = nll_loss.sum(-1).mean(-1)
     return nll_loss
 
 
@@ -150,16 +204,17 @@ def model_create_load_run_save(gpu, args):
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
-    files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
+#     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
-    num_added_toks = tok.add_special_tokens(special_tokens_dict)
+#     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
+#     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
     print("Tokenizer is:", tok)
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    model = MBartForConditionalGeneration(MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True))
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
+    model = MBartForConditionalGeneration(config)
 
     model.eval()
     torch.cuda.set_device(gpu)
@@ -177,7 +232,7 @@ def model_create_load_run_save(gpu, args):
             
     ctr = 0
     outf = open(args.test_tgt, 'w')
-    if args.decode_type = "decode":
+    if args.decode_type == "decode":
         print("Decoding file")
         hyp = []
         refs = [[refline.strip() for refline in open(args.test_ref)]]
@@ -196,19 +251,49 @@ def model_create_load_run_save(gpu, args):
             ctr += 1
         sbleu = get_sacrebleu(refs, hyp)
         print("BLEU score is:", sbleu)
-    elif args.decode_type = "score":
+    elif args.decode_type == "score":
         print("Scoring translations. Will print the log probability")
         for input_ids, input_masks, decoder_input_ids, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
-            logits = mod_compute[0]
-            logprobs = nll_loss(logits, input_masks, labels, ignore_index=tok.pad_token_id)
-            for logprob in log_probs:
+            logits = mod_compute.logits
+            print(logits.size())
+            softmax = torch.nn.functional.log_softmax(logits, dim=-1)
+            logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
+            for logprob in logprobs:
+                print(logprob)
                 outf.write(str(logprob)+"\n")
                 outf.flush()
             
-    elif args.decode_type = "force_align":
+    elif args.decode_type == "force_align":
         print("Getting alignments. Will print alignments for each source subword to target subword.")
-        
+        final_alignment_pos = ""
+        final_alignment_str = ""
+        final_src_str = ""
+        final_tgt_str = ""
+        for input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos in generate_batches_pair_masked(tok, args): #infinite_same_sentence(10000):
+            if enc_pos == 0:
+                if final_alignment_pos != "":
+                    print(final_alignment_pos)
+                    print(final_alignment_str)
+                    outf.write(final_src_str + "\t" + final_tgt_str + "\t" + final_alignment_pos.strip() + "\t" + final_alignment_str + "\n")
+                    outf.flush()
+                final_alignment_pos = ""
+                final_alignment_str = ""
+            mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu)) #, decoder_attention_mask=tgt_masks.to(gpu)
+            logits = mod_compute.logits
+            softmax = torch.nn.functional.log_softmax(logits, dim=-1)
+            logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
+            minprob = 1000
+            minpos = 0
+            for log_prob, dec_p in zip(logprobs, dec_pos):
+                #print(log_prob, src_sent_split[enc_pos], tgt_sent_split[dec_p], log_prob < minprob)
+                if log_prob < minprob:
+                    minpos = dec_p
+                    minprob = log_prob
+            final_alignment_pos += str(enc_pos) + "-" + str(minpos) + " "
+            final_alignment_str += src_sent_split[enc_pos] + "-" + tgt_sent_split[minpos] + " "
+            final_src_str = " ".join(src_sent_split)
+            final_tgt_str = " ".join(tgt_sent_split)
     outf.close()
     
     dist.destroy_process_group()

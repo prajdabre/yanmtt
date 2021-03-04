@@ -19,4 +19,4 @@ echo "Unknown tokenizer."
 exit
 fi
 
-python create_autoconfig.py $tgt_folder $type
+python create_autoconfig.py $tgt_folder $type $src_files
