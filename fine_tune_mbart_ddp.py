@@ -22,6 +22,7 @@ import sys
 import torch.distributed as dist
 from torch.optim import Adam
 
+import math
 import random
 import numpy as np
 import sacrebleu
@@ -53,6 +54,27 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
     return loss, nll_loss
 
 
+def shard_files(files, world_size):
+    print("Sharding files into", world_size, "parts")
+    for pair in files:
+        infile = list(zip(open(files[pair][0]).readlines(), open(files[pair][0]).readlines()))
+        num_lines = len(infile)
+        lines_per_shard = math.ceil(num_lines/world_size)
+        print("For language pair:",pair," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
+        for shard_id in range(world_size):
+            srcoutfile = open(files[pair][0]+"."+"%02d" % shard_id, "w")
+            tgtoutfile = open(files[pair][1]+"."+"%02d" % shard_id, "w")
+            for src_line, tgt_line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
+                srcoutfile.write(src_line)
+                tgtoutfile.write(tgt_line)
+            srcoutfile.flush()
+            srcoutfile.close()
+            tgtoutfile.flush()
+            tgtoutfile.close()
+        print("File for language pair", pair, "has been sharded.")
+        sys.stdout.flush()
+
+        
 def get_sacrebleu(refs, hyp):
     """Returns sacrebleu score."""
     bleu = sacrebleu.corpus_bleu(hyp, refs)
@@ -139,7 +161,7 @@ def yield_corpus_indefinitely(corpus, language):
     return None, None
 
 
-def generate_batches(tok, args, files):
+def generate_batches(tok, args, files, rank):
     """Generates the source, target and source attention masks for the training set."""
     batch_count = 0
     language_list = list(files.keys())
@@ -147,8 +169,8 @@ def generate_batches(tok, args, files):
     language_file_dict = {}
     probs = {}
     for l in language_list:
-        src_file_content = open(files[l][0]).readlines() ## +"."+"%02d" % rank for when we do distributed training
-        tgt_file_content = open(files[l][1]).readlines() ## +"."+"%02d" % rank for when we do distributed training
+        src_file_content = open(files[l][0]+"."+"%02d" % rank).readlines() ## +"."+"%02d" % rank for when we do distributed training
+        tgt_file_content = open(files[l][1]+"."+"%02d" % rank).readlines() ## +"."+"%02d" % rank for when we do distributed training
         probs[l] = len(src_file_content)
         file_content = list(zip(src_file_content, tgt_file_content))
         language_file_dict[l] = yield_corpus_indefinitely(file_content, l)
@@ -224,7 +246,7 @@ def init_weights(module, in_features, out_features):
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
 
-def model_create_load_run_save(gpu, args):
+def model_create_load_run_save(gpu, args, train_files, dev_files):
     """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
     if not args.single_gpu:
@@ -239,27 +261,6 @@ def model_create_load_run_save(gpu, args):
 #     else:
 #         special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+sl+">" for sl in (args.slang).strip().split(",")] + ["<2"+tl+">" for tl in (args.tlang).strip().split(" ")]}
     
-    train_files = {}
-    if args.mnmt:
-        slangs = args.train_slang.strip().split(",")
-        tlangs = args.train_tlang.strip().split(",")
-        train_srcs = args.train_src.strip().split(",")
-        train_tgts = args.train_tgt.strip().split(",")
-        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
-    else:
-        train_files = {args.train_slang+"-"+args.train_tlang : (args.train_srcs, args.train_tgts)}
-    print("Training files are:", train_files)
-        
-    dev_files = {}
-    if args.mnmt:
-        slangs = args.dev_slang.strip().split(",")
-        tlangs = args.dev_tlang.strip().split(",")
-        dev_srcs = args.dev_src.strip().split(",")
-        dev_tgts = args.dev_tgt.strip().split(",")
-        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
-    else:
-        dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_srcs, args.dev_tgts)}
-    print("Development files are:", dev_files)
 
 #     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
@@ -363,9 +364,9 @@ def model_create_load_run_save(gpu, args):
     annealing_attempt = 0
     inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files}
     refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank):
         start = time.time()
-        if ctr % 1000 == 0:
+        if ctr % args.eval_every == 0:
             CHECKPOINT_PATH = args.fine_tuned_model
             if rank == 0:
                 print("Running eval on dev set(s)")
@@ -405,7 +406,7 @@ def model_create_load_run_save(gpu, args):
                             torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
                 
                 ## Global stats
-                slbeu = sum(sbleus.values())/len(sbleus)
+                sbleu = sum(sbleus.values())/len(sbleus)
                 global_sbleu_history.append([sbleu, ctr])
                 print("Global BLEU score using sacrebleu after", ctr, "iterations is:", sbleu)
                 if sbleu > max_global_sbleu:
@@ -440,6 +441,7 @@ def model_create_load_run_save(gpu, args):
                     model.module.train()
                 
                 print("Saving the model")
+                sys.stdout.flush()
                 # All processes should see same parameters as they all start from same
                 # random parameters and gradients are synchronized in backward passes.
                 # Therefore, saving it in one process is sufficient.
@@ -517,7 +519,7 @@ def model_create_load_run_save(gpu, args):
     # random parameters and gradients are synchronized in backward passes.
     # Therefore, saving it in one process is sufficient.
     print("The best bleu was:", max_global_sbleu)
-    print("The corresponding step was:", max_global_sbleu_step*1000)
+    print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
     torch.save(checkpoint_dict, CHECKPOINT_PATH)
     if args.single_gpu:
@@ -570,6 +572,7 @@ def run_demo():
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
+    parser.add_argument('--eval_every', default=1000, type=int, help="The number of iterations after which an evaluation must be done. Aslo saves a checkpoint every these number of steps.")
     parser.add_argument('--max_gradient_clip_value', default=0.0, type=float, help="The max value for gradient norm value")
 
     parser.add_argument('--pretrained_model', default='', type=str, 
@@ -616,18 +619,45 @@ def run_demo():
                         help='Should we use fp16 training?')
     parser.add_argument('--single_gpu', action='store_true', 
                         help='Should we use single gpu training?')
+    parser.add_argument('--shard_files', action='store_true', 
+                        help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
-    #########################################################
+    
     args.world_size = args.gpus * args.nodes                #
+    
+    train_files = {}
+    if args.mnmt:
+        slangs = args.train_slang.strip().split(",")
+        tlangs = args.train_tlang.strip().split(",")
+        train_srcs = args.train_src.strip().split(",")
+        train_tgts = args.train_tgt.strip().split(",")
+        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+    else:
+        train_files = {args.train_slang+"-"+args.train_tlang : (args.train_src, args.train_tgt)}
+    print("Training files are:", train_files)
+    
+    if args.shard_files:
+        shard_files(train_files, args.world_size)
+    
+    dev_files = {}
+    if args.mnmt:
+        slangs = args.dev_slang.strip().split(",")
+        tlangs = args.dev_tlang.strip().split(",")
+        dev_srcs = args.dev_src.strip().split(",")
+        dev_tgts = args.dev_tgt.strip().split(",")
+        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
+    else:
+        dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_src, args.dev_tgt)}
+    print("Development files are:", dev_files)
+    
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
     if args.single_gpu:
         print("Non ddp model being trained")
         model_create_load_run_save(0, args)#
     else:
-        mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
-    #########################################################
+        mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files))         #
     
 if __name__ == "__main__":
     run_demo()

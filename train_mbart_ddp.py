@@ -23,6 +23,7 @@ import torch.distributed as dist
 
 import random
 import numpy as np
+import math
 import sacrebleu
 
 
@@ -66,6 +67,22 @@ def yield_corpus_indefinitely(corpus, lang):
         print("Catastrophic data gen failure")
     return None
 
+def shard_files(files, world_size):
+    print("Sharding files into", world_size, "parts")
+    for lang in files:
+        infile = open(files[lang]).readlines()
+        num_lines = len(infile)
+        lines_per_shard = math.ceil(num_lines/world_size)
+        print("For language:",lang," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
+        for shard_id in range(world_size):
+            outfile = open(files[lang]+"."+"%02d" % shard_id, "w")
+            for line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
+                outfile.write(line)
+            outfile.flush()
+            outfile.close()
+        print("File for language", lang, "has been sharded.")
+        sys.stdout.flush()
+        
 
 def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None):
     """Generates the source, target and source attention masks for denoising."""
@@ -172,7 +189,7 @@ def init_weights(module, in_features, out_features):
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
 
-def model_create_load_run_save(gpu, args):
+def model_create_load_run_save(gpu, args, files):
     torch.autograd.set_detect_anomaly(True)
     """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
@@ -184,8 +201,6 @@ def model_create_load_run_save(gpu, args):
     #special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()]}
     #num_added_toks = tok.add_special_tokens(special_tokens_dict)
     
-    files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
-    print("All files:", files)
     print("Tokenizer is:", tok)
     
     print(f"Running DDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
@@ -376,14 +391,22 @@ def run_demo():
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm")
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
+    parser.add_argument('--shard_files', action='store_true', 
+                        help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
-    #########################################################
+
     args.world_size = args.gpus * args.nodes                #
+
+    files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
+    print("All files:", files)
+
+    if args.shard_files:
+        shard_files(files, args.world_size)
+    
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = '26023'                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
-    #########################################################
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,))         #
     
 if __name__ == "__main__":
     run_demo()
