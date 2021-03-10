@@ -479,8 +479,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     if args.max_ent_weight != -1:
                         assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
                         lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
-                        entropy = -(torch.exp(lprobs)*lprobs)
-                        loss = loss*(1-args.max_ent_weight) + entropy + args.max_ent_weight
+                        entropy = -(torch.exp(lprobs)*lprobs).mean()
+                        loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
                         
             else:
                 mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu) ,decoder_input_ids=decoder_input_ids.to(gpu))
@@ -493,8 +493,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                 if args.max_ent_weight != -1:
                     assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
-                    entropy = -(torch.exp(lprobs)*lprobs)
-                    loss = loss*(1-args.max_ent_weight) + entropy + args.max_ent_weight
+                    entropy = -(torch.exp(lprobs)*lprobs).mean()
+                    loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
                     
         except Exception as e:
             print("NAN loss was computed or something messed up")
