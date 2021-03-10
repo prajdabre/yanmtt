@@ -1,10 +1,16 @@
+# -*- coding: utf-8 -*-
+
 from transformers import AutoTokenizer
 import time
 
 from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_with_hard_restarts_schedule_with_warmup
 from transformers import AdamW
-
+# import tensorflow as tf
+# import tensorboard as tb
+# tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
 import os
+
+from torch.utils.tensorboard import SummaryWriter
 
 import argparse
 
@@ -17,6 +23,37 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import sys
 import torch.distributed as dist
+import numpy as np
+
+
+import matplotlib
+import numpy as np
+
+
+matplotlib.use('Agg')  # Must be before importing matplotlib.pyplot or pylab!
+import matplotlib.pyplot as plt  # drawing heat map of attention weights
+
+#plt.rcParams['font.sans-serif'] = ['SimSun']  # set font family
+# matplotlib.rcParams['font.sans-serif'] = ['Source Han Sans TW',
+#                                    'sans-serif',
+#                                    "Lohit Devanagari"  # fc-list :lang=hi family
+#                                    ]
+
+from matplotlib import rcParams
+# rcParams['font.family'] = 'sans-serif'
+# rcParams['font.sans-serif'] = ['Tahoma']
+
+rcParams['font.sans-serif'] = ['Source Han Sans TW',
+                                   'sans-serif',
+                                   "FreeSerif"  # fc-list :lang=hi family
+                                   ]
+
+# from matplotlib.font_manager import FontProperties
+
+
+# font_prop = FontProperties(fname='Mangal.ttf', size=18)
+
+
 
 import random
 
@@ -72,9 +109,10 @@ def generate_batches_pair(tok, args):
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
             end = time.time()
-            yield input_ids, input_masks, decoder_input_ids, labels
+            yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
             curr_batch_count = 0
             encoder_input_batch = []
             decoder_input_batch = []
@@ -86,8 +124,9 @@ def generate_batches_pair(tok, args):
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        yield input_ids, input_masks, decoder_input_ids, labels
+        yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
 
 def generate_batches_pair_masked(tok, args):
     """Generates the source, target and source attention masks for the training set."""
@@ -196,6 +235,45 @@ def nll_loss(lprobs, target, ignore_index=0):
     nll_loss = nll_loss.sum(-1).mean(-1)
     return nll_loss
 
+def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
+    '''
+      Plot the attention model heatmap
+      Args:
+        data: attn_matrix with shape [ty, tx], cut before 'PAD'
+        X_label: list of size tx, encoder tags
+        Y_label: list of size ty, decoder tags
+    '''
+    print(len(X_label))
+    print(len(Y_label))
+    print(data.shape)
+    fig, ax = plt.subplots(figsize=(20, 20*num_heads))  # set figure size
+    im = ax.imshow(data)
+
+
+    
+    # We want to show all ticks...
+    ax.set_xticks(np.arange(len(X_label)))
+    ax.set_yticks(np.arange(len(Y_label)))
+    # ... and label them with the respective list entries
+    ax.set_xticklabels(X_label)
+    ax.set_yticklabels(Y_label)
+    ax.xaxis.tick_top()
+
+
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="left",
+         rotation_mode="anchor")
+    
+    for i in range(len(Y_label)):
+        for j in range(len(X_label)):
+            text = ax.text(j, i, "%.1f" % data[i, j],
+                           ha="center", va="center", color="b",size=10.0)
+    # Save Figure
+    ax.set_title(plot_title)
+    fig.tight_layout()
+
+    print("Saving figures %s" % file_name)
+    fig.savefig(file_name)  # save the figure to file
+    plt.close(fig)  # close the figure
 
 def model_create_load_run_save(gpu, args):
     """The main function which does the magic. Should be split into multiple parts in the future."""
@@ -215,11 +293,9 @@ def model_create_load_run_save(gpu, args):
 
     config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
     model = MBartForConditionalGeneration(config)
-
     model.eval()
     torch.cuda.set_device(gpu)
-
-
+    
     model.cuda(gpu)
     model = DistributedDataParallel(model, device_ids=[gpu])
     
@@ -253,7 +329,7 @@ def model_create_load_run_save(gpu, args):
         print("BLEU score is:", sbleu)
     elif args.decode_type == "score":
         print("Scoring translations. Will print the log probability")
-        for input_ids, input_masks, decoder_input_ids, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
+        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
             logits = mod_compute.logits
             print(logits.size())
@@ -294,7 +370,73 @@ def model_create_load_run_save(gpu, args):
             final_alignment_str += src_sent_split[enc_pos] + "-" + tgt_sent_split[minpos] + " "
             final_src_str = " ".join(src_sent_split)
             final_tgt_str = " ".join(tgt_sent_split)
+    elif args.decode_type == "get_enc_representations" or args.decode_type == "get_dec_representations":
+        print("Getting encoder or decoder representations for layer "+args.layer_id+". Will save representations for each input line.")
+        # default `log_dir` is "runs" - we'll be more specific here
+        #writer = SummaryWriter('runs/sent_emb_run')
+        #all_meta = []
+        #all_hids = []
+        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
+            mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), output_hidden_states=True)
+            print(input_masks)
+            if args.decode_type == "get_enc_representations":
+                pad_mask = input_ids.to(gpu).eq(tok.pad_token_id).unsqueeze(2)
+                hidden_state = mod_compute.encoder_hidden_states[args.layer_id]
+            else:
+                pad_mask = decoder_input_ids.to(gpu).eq(tok.pad_token_id).unsqueeze(2)
+                hidden_state = mod_compute.decoder_hidden_states[args.layer_id]
+            hidden_state.masked_fill_(pad_mask, 0.0)
+            print(hidden_state.size())
+            hidden_state = hidden_state.mean(dim=1)
+            #all_hids.append(hidden_state)    
+            for idx, hidden_state_individual in enumerate(hidden_state):
+                metadata=tok.decode(input_ids[idx] if args.decode_type == "get_enc_representations" else decoder_input_ids[idx], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                #all_meta.append(metadata)
+#                 print(hidden_state_individual.size())
+#                 print(metadata)
+#                 writer.add_embedding(hidden_state_individual.view(1,-1),
+#                             metadata=[metadata], global_step=0)
+                outf.write("\t".join([str(elem) for elem in hidden_state_individual.tolist()])+"\n")
+                outf.flush()
+#            break
+#        print(all_hids, all_meta)
+#        writer.add_embedding(torch.cat(all_hids, 0), metadata=None, global_step=0)
+#        writer.close()
+    elif args.decode_type == "get_attention":
+        print("Getting attention for layer ", args.layer_id)  
+        sentence_id = 0
+        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): 
+            mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), output_attentions=True)
+            encoder_attentions = mod_compute.encoder_attentions[args.layer_id]
+            decoder_attentions = mod_compute.decoder_attentions[args.layer_id]
+            cross_attentions = mod_compute.cross_attentions[args.layer_id]
+            for idx, (input_sent, tgt_sent) in enumerate(zip(input_ids, decoder_input_ids)):
+                input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=True)
+                input_len = len(input_sent)
+                tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=True)
+                tgt_len = len(tgt_sent)
+                print("Processing for ", input_sent, tgt_sent)
+                num_heads = 1 #encoder_attentions.size()[0] #1
+                encoder_sizes = encoder_attentions[idx].size()
+                decoder_sizes = decoder_attentions[idx].size()
+                cross_sizes = cross_attentions[idx].size()
+                print(encoder_sizes, decoder_sizes, cross_sizes)
+                encoder_attention = encoder_attentions[args.att_head_id].view(-1, encoder_sizes[-1]).cpu().detach().numpy()
+                encoder_attention = encoder_attention[0:input_len*num_heads,0:input_len]
+                decoder_attention = decoder_attentions[args.att_head_id].view(-1, decoder_sizes[-1]).cpu().detach().numpy()
+                decoder_attention = decoder_attention[0:tgt_len*num_heads,0:tgt_len]
+                cross_attention = cross_attentions[args.att_head_id].view(-1, cross_sizes[-1]).cpu().detach().numpy()
+                cross_attention = cross_attention[0:tgt_len*num_heads,0:input_len]
+                ## Enc Enc plot
+                plot_attention(encoder_attention, input_sent, input_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_enc.png", "Encoder Encoder Attention")
+                ## Dec Dec plot
+                plot_attention(decoder_attention, tgt_sent, tgt_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".dec_dec.png", "Decoder Decoder Attention")
+                ## Enc Dec plot
+                plot_attention(cross_attention, input_sent, tgt_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_dec.png", "Encoder Decoder Attention")
+                sentence_id += 1
+                
     outf.close()
+    
     
     dist.destroy_process_group()
 
@@ -328,6 +470,8 @@ def run_demo():
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
+    parser.add_argument('--layer_id', default=0, type=int, help="The id of the layer from 0 to num_layers-1")
+    parser.add_argument('--att_head_id', default=0, type=int, help="The id of the attention head from 0 to encoder_attention_heads-1 or decoder_attention_heads-1")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
@@ -346,7 +490,7 @@ def run_demo():
     parser.add_argument('--slang', default='en', type=str, 
                         help='Source language')
     parser.add_argument('--decode_type', default='decode', type=str, 
-                        help='One of decode, score for force_align')
+                        help='One of decode, score, force_align, get_enc_representation, get_dec_representation or get_attention. When getting representations or attentions you must specify the index of the layer which you are interested in. By default the last layer is considered.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the pre-trained indic language tokenizer')
     parser.add_argument('--tlang', default='hi', type=str, 
