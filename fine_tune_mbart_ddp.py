@@ -679,7 +679,7 @@ def run_demo():
         train_files = {args.train_slang+"-"+args.train_tlang : (args.train_src, args.train_tgt)}
     print("Training files are:", train_files)
     
-    if args.shard_files:
+    if args.shard_files and args.nr == 0:
         shard_files(train_files, args.world_size)
     
     dev_files = {}

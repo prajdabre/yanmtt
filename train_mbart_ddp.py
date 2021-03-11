@@ -409,7 +409,7 @@ def run_demo():
     files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
     print("All files:", files)
 
-    if args.shard_files:
+    if args.shard_files and args.nr == 0:
         shard_files(files, args.world_size)
     
     os.environ['MASTER_ADDR'] = args.ipaddr              #
