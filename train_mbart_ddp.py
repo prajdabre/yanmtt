@@ -172,8 +172,6 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         end = time.time()
-#         print(input_ids.size(), input_masks.size(), decoder_input_ids.size(), labels.size())
-#         sys.stdout.flush()
         yield input_ids, input_masks, decoder_input_ids, labels
        
 def init_weights(module, in_features, out_features):
