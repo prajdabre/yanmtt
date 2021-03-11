@@ -255,7 +255,7 @@ def model_create_load_run_save(gpu, args, files):
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #config.save_pretrained(args.model_path)
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.temperature, files):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files):
         start = time.time()
         
         if ctr % 1000 == 0:
@@ -287,25 +287,31 @@ def model_create_load_run_save(gpu, args, files):
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
-                    logits = mod_compute[1]
-                    if args.label_smoothing == 0.0:
-                        loss = mod_compute[0]
-                    else:
-                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                        loss, nll_loss = label_smoothed_nll_loss(
-                            lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
-                        )
-            else:
-                mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), labels=labels.to(gpu))
-                logits = mod_compute[1]
-                if args.label_smoothing == 0.0:
-                    loss = mod_compute[0]
-                else:
+                    mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
+                    logits = mod_compute.logits
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
                     loss, nll_loss = label_smoothed_nll_loss(
                         lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
                     )
+                    loss = loss*args.softmax_temperature
+                    if args.max_ent_weight != -1:
+                        assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
+                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
+                        entropy = -(torch.exp(lprobs)*lprobs).mean()
+                        loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
+        else:
+                mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
+                logits = mod_compute.logits
+                lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+                loss, nll_loss = label_smoothed_nll_loss(
+                    lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                )
+                loss = loss*args.softmax_temperature
+                if args.max_ent_weight != -1:
+                    assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
+                    lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
+                    entropy = -(torch.exp(lprobs)*lprobs).mean()
+                    loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
         except:
             print("NAN loss was computed or something messed up")
             sys.stdout.flush()
@@ -384,11 +390,15 @@ def run_demo():
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=16, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=16, type=int, help="The value for number of decoder attention heads")
+    
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
-    parser.add_argument('--temperature', default=5.0, type=float, help="The value for sampling temperature")
+    parser.add_argument('--data_sampling_temperature', default=5.0, type=float, help="The value for data sampling temperature")
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm")
+    parser.add_argument('--softmax_temperature', default=1.0, type=float, help="The value for the softmax temperature")
+    parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
+                        help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
     parser.add_argument('--shard_files', action='store_true', 
