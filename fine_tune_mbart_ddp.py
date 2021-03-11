@@ -161,7 +161,7 @@ def yield_corpus_indefinitely(corpus, language):
     return None, None
 
 
-def generate_batches(tok, args, files, rank):
+def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
     """Generates the source, target and source attention masks for the training set."""
     batch_count = 0
     language_list = list(files.keys())
@@ -207,6 +207,32 @@ def generate_batches(tok, args, files, rank):
             src_sent_len = len(src_sent_split)
             if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
                 continue
+            if slang == tlang or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking
+                if args.source_masking_for_bilingual:
+                    mask_percent = random.uniform(0.0, mp_val_or_range[0]) ## Do less masking
+                else:
+                    if type(mp_val_or_range) is float:
+                        mask_percent = mp_val_or_range
+                    else:
+                        mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
+                mask_count = 0
+                max_mask_count = int(mask_percent*src_sent_len)
+                spans_to_mask = list(np.random.poisson(lamb, 1000))
+                curr_sent_len = src_sent_len
+                while mask_count < max_mask_count:
+                    try:
+                        span_to_mask = spans_to_mask[0]
+                        del spans_to_mask[0]
+                        if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                            continue
+                        idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                        if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                            src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                            mask_count += span_to_mask
+                            curr_sent_len -= (span_to_mask-1)
+                    except:
+                        break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+                src_sent = " ".join(src_sent_split)
             iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
@@ -367,7 +393,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     annealing_attempt = 0
     inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files}
     refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank, (0.30, 0.40), 3.5):
         start = time.time()
         if ctr % args.eval_every == 0:
             CHECKPOINT_PATH = args.fine_tuned_model
@@ -629,6 +655,8 @@ def run_demo():
                         help='Target language(s) development sentences')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
+    parser.add_argument('--source_masking_for_bilingual', action='store_true', 
+                        help='Should we use masking on source sentences when training on parallel corpora?')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
     parser.add_argument('--single_gpu', action='store_true', 
