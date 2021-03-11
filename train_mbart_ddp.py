@@ -47,7 +47,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     smooth_loss = smooth_loss.mean()
     eps_i = epsilon / lprobs.size(-1)
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
-    return loss, nll_loss
+    return loss
 
 def yield_corpus_indefinitely(corpus, lang):
     """This shuffles the corpus at the beginning of each epoch and returns sentences indefinitely."""
@@ -118,6 +118,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         max_src_sent_len = 0
         max_tgt_sent_len = 0
         start = time.time()
+        sents_in_batch = 0
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             sentence = next(language_file_dict[language_list[language_idx]]).strip()
@@ -128,7 +129,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
                 mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
             sentence_split = sentence.split(" ")
             sent_len = len(sentence_split)
-            if sent_len < 10 or sent_len > 100:
+            if sent_len < 10 or sent_len > args.max_length:
                 continue
             mask_count = 0
             max_mask_count = int(mask_percent*sent_len)
@@ -154,7 +155,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             
             iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len < 10 or curr_src_sent_len > 100 or curr_tgt_sent_len < 10 or curr_tgt_sent_len > 100:
+            if curr_src_sent_len < 10 or curr_src_sent_len > args.max_length or curr_tgt_sent_len < 10 or curr_tgt_sent_len > args.max_length:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -164,7 +165,8 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             encoder_input_batch.append(masked_sentence + " </s> " + lang)
             decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
-            curr_batch_count += curr_tgt_sent_len
+            sents_in_batch += 1
+            curr_batch_count = max_src_sent_len*sents_in_batch
             if curr_batch_count > batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -255,6 +257,7 @@ def model_create_load_run_save(gpu, args, files):
     
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files):
         start = time.time()
+        optimizer.zero_grad()
         
         if ctr % 1000 == 0:
             CHECKPOINT_PATH = args.model_path
@@ -282,14 +285,19 @@ def model_create_load_run_save(gpu, args, files):
             model.load_state_dict(checkpoint_dict['model'])
             optimizer.load_state_dict(checkpoint_dict['optimizer'])
             scheduler.load_state_dict(checkpoint_dict['scheduler'])
+            
+        input_ids=input_ids.to(gpu)
+        input_masks=input_masks.to(gpu)
+        decoder_input_ids=decoder_input_ids.to(gpu)
+        labels=labels.to(gpu)
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
+                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids)
                     logits = mod_compute.logits
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                    loss, nll_loss = label_smoothed_nll_loss(
-                        lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                    loss = label_smoothed_nll_loss(
+                        lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                     )
                     loss = loss*args.softmax_temperature
                     if args.max_ent_weight != -1:
@@ -298,11 +306,11 @@ def model_create_load_run_save(gpu, args, files):
                         entropy = -(torch.exp(lprobs)*lprobs).mean()
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
         else:
-                mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
+                mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids)
                 logits = mod_compute.logits
                 lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                loss, nll_loss = label_smoothed_nll_loss(
-                    lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                loss = label_smoothed_nll_loss(
+                    lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                 )
                 loss = loss*args.softmax_temperature
                 if args.max_ent_weight != -1:
@@ -314,16 +322,15 @@ def model_create_load_run_save(gpu, args, files):
             print("NAN loss was computed or something messed up")
             sys.stdout.flush()
             continue
-        
-        optimizer.zero_grad()
+            
+        input_ids=input_ids.to('cpu')
+        input_masks=input_masks.to('cpu')
+        decoder_input_ids=decoder_input_ids.to('cpu')
+        labels=labels.to('cpu')
         if args.fp16:
             scaler.scale(loss).backward()
         else:
             pass
-        lv = loss.detach().cpu().numpy()
-        if ctr % 10 == 0 and rank % 8 == 0:
-            print(ctr, lv)
-            sys.stdout.flush()
         if args.fp16:
             if args.max_gradient_clip_value != 0.0:
                 scaler.unscale_(optimizer)
@@ -336,6 +343,10 @@ def model_create_load_run_save(gpu, args, files):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step()
+        lv = loss.detach().cpu().numpy()
+        if ctr % 10 == 0 and rank % 8 == 0:
+            print(ctr, lv)
+            sys.stdout.flush()
         end = time.time()
         ctr += 1
     
@@ -380,6 +391,8 @@ def run_demo():
                         help='Scheduler warmup steps')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
+    parser.add_argument('--max_length', default=100, type=int, 
+                        help='Maximum sequence length for training')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
     parser.add_argument('--weight_decay', default=0.00001, type=float, help="The value for weight decay")

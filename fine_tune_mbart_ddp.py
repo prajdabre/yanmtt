@@ -27,6 +27,9 @@ import random
 import numpy as np
 import sacrebleu
 
+import gc
+
+
 torch.manual_seed(621311)
 
 def lmap(f, x):
@@ -51,7 +54,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
     smooth_loss = smooth_loss.mean()
     eps_i = epsilon / lprobs.size(-1)
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
-    return loss, nll_loss
+    return loss
 
 
 def shard_files(files, world_size):
@@ -122,8 +125,8 @@ def generate_batches_eval(tok, args, file, slang):
         lang = "<2"+slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
-        if sent_len <1 or sent_len > 256:
-            src_sent = " ".join(src_sent_split[:256])
+        if sent_len <1 or sent_len > args.max_src_length:
+            src_sent = " ".join(src_sent_split[:args.max_src_length])
         iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
 
@@ -193,6 +196,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
         max_tgt_sent_len = 0
         start = time.time()
         #for src_sent, tgt_sent in corpus_gen:
+        sents_in_batch = 0
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
@@ -205,7 +209,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             tgt_sent_split = tgt_sent.split(" ")
             tgt_sent_len = len(tgt_sent_split)
             src_sent_len = len(src_sent_split)
-            if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
+            if src_sent_len <=1 or src_sent_len >= args.max_src_length or tgt_sent_len <=1 or tgt_sent_len >= args.max_tgt_length:
                 continue
             if slang == tlang or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking
                 if args.source_masking_for_bilingual:
@@ -238,7 +242,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             
             iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len <= 1 or curr_src_sent_len >= 100 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 100:
+            if curr_src_sent_len <= 1 or curr_src_sent_len >= args.max_src_length or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= args.max_tgt_length:
                 continue
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -249,13 +253,15 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             encoder_input_batch.append(src_sent + " </s> " + slang)
             decoder_input_batch.append(tlang + " " + tgt_sent)
             decoder_label_batch.append(tgt_sent + " </s>")
-            curr_batch_count += curr_tgt_sent_len
+            sents_in_batch += 1
+            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch
             if curr_batch_count > args.batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        #print(input_ids.size(), input_masks.size(), decoder_input_ids.size(), labels.size())
         end = time.time()
         yield input_ids, input_masks, decoder_input_ids, labels
    
@@ -394,6 +400,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files}
     refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank, (0.30, 0.40), 3.5):
+        optimizer.zero_grad()
         start = time.time()
         if ctr % args.eval_every == 0:
             CHECKPOINT_PATH = args.fine_tuned_model
@@ -413,10 +420,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args, inps[dev_pair], slang): #infinite_same_sentence(10000):
                         start = time.time()
                         if args.single_gpu:
-                            translations = model.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
+                            dev_input_ids=dev_input_ids.to(gpu)
+                            translations = model.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
                         else:
                             translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1])
-
+                        dev_input_ids=dev_input_ids.to('cpu')
+                        translations=translations.to('cpu')
                         for translation in translations:
                             translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                             hyp[dev_pair].append(translation)
@@ -491,15 +500,18 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
             scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
             
-
+        input_ids=input_ids.to(gpu)
+        input_masks=input_masks.to(gpu)
+        decoder_input_ids=decoder_input_ids.to(gpu)
+        labels=labels.to(gpu)
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu) ,decoder_input_ids=decoder_input_ids.to(gpu))
+                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids)
                     logits = mod_compute.logits
                     lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1)
-                    loss, nll_loss = label_smoothed_nll_loss(
-                        lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                    loss = label_smoothed_nll_loss(
+                        lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                     )
                     loss = loss*args.softmax_temperature
                     if args.max_ent_weight != -1:
@@ -509,11 +521,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
                         
             else:
-                mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu) ,decoder_input_ids=decoder_input_ids.to(gpu))
+                mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids)
                 logits = mod_compute.logits
                 lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1)
-                loss, nll_loss = label_smoothed_nll_loss(
-                    lprobs, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id
+                loss = label_smoothed_nll_loss(
+                    lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                 )
                 loss = loss*args.softmax_temperature
                 if args.max_ent_weight != -1:
@@ -521,20 +533,20 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                     entropy = -(torch.exp(lprobs)*lprobs).mean()
                     loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
+        
                     
         except Exception as e:
             print("NAN loss was computed or something messed up")
             print(e)
             sys.stdout.flush()
-        optimizer.zero_grad()
+        input_ids=input_ids.to('cpu')
+        input_masks=input_masks.to('cpu')
+        decoder_input_ids=decoder_input_ids.to('cpu')
+        labels=labels.to('cpu')
         if args.fp16:
             scaler.scale(loss).backward()
         else:
             pass
-        lv = loss.detach().cpu().numpy()
-        if ctr % 10 == 0 and rank == 0:
-            print(ctr, lv)
-            sys.stdout.flush()
         if args.fp16:
             if args.max_gradient_clip_value != 0.0:
                 scaler.unscale_(optimizer)
@@ -547,8 +559,21 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step()
+        lv = loss.detach().cpu().numpy()
+        if ctr % 10 == 0 and rank == 0:
+            print(ctr, lv)
+            sys.stdout.flush()
         end = time.time()
         ctr += 1
+#         print("After iter:", ctr)
+#         objs = []
+#         for obj in gc.get_objects():
+#             try:
+#                 if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+#                     objs.append((type(obj), obj.size()))
+#             except:
+#                 pass
+#         print(len(objs))
     
     CHECKPOINT_PATH = args.fine_tuned_model
     print("Saving the model after the final step")
@@ -625,6 +650,10 @@ def run_demo():
                         help='Train batch sizes in tokens')
     parser.add_argument('--dev_batch_size', default=1024, type=int, 
                         help='Dev batch sizes in lines')
+    parser.add_argument('--max_src_length', default=256, type=int, 
+                        help='Maximum token length for source language')
+    parser.add_argument('--max_tgt_length', default=256, type=int, 
+                        help='Maximum token length for target language')
     parser.add_argument('--early_stop_checkpoints', default=10, type=int, 
                         help='Number of checkpoints to wait to see if BLEU increases.')
     parser.add_argument('--learning_rate_scaling', default=2, type=int, 
