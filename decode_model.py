@@ -291,7 +291,7 @@ def model_create_load_run_save(gpu, args):
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config)
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -315,12 +315,13 @@ def model_create_load_run_save(gpu, args):
         for input_ids, input_masks in generate_batches(tok, args): #infinite_same_sentence(10000):
             start = time.time()
             print("Processing batch:", ctr)
-            translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*1.5), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
+            with torch.no_grad():
+                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
             print(len(input_ids), "in and", len(translations), "out")
             for input_id, translation in zip(input_ids, translations):
                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                 input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                print(input_id, translation)
+                #print(input_id, translation)
                 outf.write(translation+"\n")
                 outf.flush()
                 hyp.append(translation)
@@ -479,6 +480,8 @@ def run_demo():
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
+    parser.add_argument('--max_decode_length_multiplier', default=1.5, type=float, 
+                        help='This multiplied by the source sentence length will be the maximum decoding length.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
     parser.add_argument('--normalize_before', action='store_true', 
@@ -487,6 +490,10 @@ def run_demo():
                         help='Should we normalize embeddings?')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
+    parser.add_argument('--encoder_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
+    parser.add_argument('--decoder_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--slang', default='en', type=str, 
                         help='Source language')
     parser.add_argument('--decode_type', default='decode', type=str, 

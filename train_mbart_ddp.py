@@ -84,7 +84,7 @@ def shard_files(files, world_size):
         sys.stdout.flush()
         
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None):
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100):
     """Generates the source, target and source attention masks for denoising."""
     
     #files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"} ## Get this from command line
@@ -129,8 +129,12 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
                 mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
             sentence_split = sentence.split(" ")
             sent_len = len(sentence_split)
-            if sent_len < 10 or sent_len > args.max_length:
+            if sent_len < 10: 
                 continue
+            if sent_len > max_length: ## Truncate long sentences
+                sentence_split = sentence_split[:max_length]
+                sentence = " ".join(sentence_split)
+                sent_len = max_length
             mask_count = 0
             max_mask_count = int(mask_percent*sent_len)
             spans_to_mask = list(np.random.poisson(lamb, 1000))
@@ -155,8 +159,10 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             
             iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len < 10 or curr_src_sent_len > args.max_length or curr_tgt_sent_len < 10 or curr_tgt_sent_len > args.max_length:
+            
+            if curr_src_sent_len > 256 or curr_tgt_sent_len > 256: ## Hard limit. These are too long after tokenization and we dont want them for now.
                 continue
+            
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
             
@@ -166,7 +172,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
             sents_in_batch += 1
-            curr_batch_count = max_src_sent_len*sents_in_batch
+            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch ## curr_batch_count += curr_tgt_sent_len -- Old logic which created batches with 10x more tokens mostly padding
             if curr_batch_count > batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -210,7 +216,13 @@ def model_create_load_run_save(gpu, args, files):
         scaler = torch.cuda.amp.GradScaler()
     else:
         print("We will do fp32 training")
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True)
+    
+    if args.encoder_tying_config is not None:
+        print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
+    if args.decoder_tying_config is not None:
+        print("We will use recurrently stacked layers for the decoder with configuration:", args.decoder_tying_config)
+        
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config)
     model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
 
@@ -255,7 +267,7 @@ def model_create_load_run_save(gpu, args, files):
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     #config.save_pretrained(args.model_path)
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, 1024, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files):
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, args.batch_size, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files, args.max_length):
         start = time.time()
         optimizer.zero_grad()
         
@@ -305,7 +317,7 @@ def model_create_load_run_save(gpu, args, files):
                         lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                         entropy = -(torch.exp(lprobs)*lprobs).mean()
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
-        else:
+            else:
                 mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids)
                 logits = mod_compute.logits
                 lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
@@ -393,6 +405,8 @@ def run_demo():
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--max_length', default=100, type=int, 
                         help='Maximum sequence length for training')
+    parser.add_argument('--batch_size', default=2048, type=int, 
+                        help='Maximum number of tokens in batch')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
     parser.add_argument('--weight_decay', default=0.00001, type=float, help="The value for weight decay")
@@ -412,6 +426,10 @@ def run_demo():
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
+    parser.add_argument('--encoder_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
+    parser.add_argument('--decoder_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
     args = parser.parse_args()
