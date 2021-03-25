@@ -2,7 +2,7 @@ src_files=$1 # Has to be a comma separated list
 vocab_size=$2
 tgt_folder=$3
 type=$4
-mkdir $tgt_folder
+mkdir -p $tgt_folder
 
 SPM_TRAIN=/share03/draj/softwares_and_scripts/sentencepiece/build/src/spm_train ## Change this to your spm_train path
 

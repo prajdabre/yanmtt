@@ -14,7 +14,8 @@ special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"]}
 
 for lang_file in sys.argv[3].strip().split(","):
     lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language
-    special_tokens_dict["additional_special_tokens"].append("<2"+lang_tok+">")
+    if "<2"+lang_tok+">" not in special_tokens_dict["additional_special_tokens"]:
+        special_tokens_dict["additional_special_tokens"].append("<2"+lang_tok+">")
 
 num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 

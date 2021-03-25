@@ -24,7 +24,7 @@ import torch.multiprocessing as mp
 import sys
 import torch.distributed as dist
 import numpy as np
-
+import random
 
 import matplotlib
 import numpy as np
@@ -86,15 +86,25 @@ def generate_batches_pair(tok, args):
         tgt_sent_split = tgt_sent.split(" ")
         tgt_sent_len = len(tgt_sent_split)
         src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or src_sent_len >= 256 or tgt_sent_len <=1 or tgt_sent_len >= 256:
-            continue
+        if src_sent_len <=1 or tgt_sent_len <=1:
+            print("Big problem")
+            #continue
+        else:   # Initial truncation
+            if src_sent_len >= args.max_src_length:
+                src_sent_split = src_sent_split[:args.max_src_length]
+                src_sent = " ".join(src_sent_split)
+                src_sent_len = args.max_src_length
+            if tgt_sent_len >= args.max_tgt_length:
+                tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
+                tgt_sent = " ".join(tgt_sent_split)
+                tgt_sent_len = args.max_tgt_length
         iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
 
         iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
         curr_tgt_sent_len = len(iids[0])
-        if curr_src_sent_len <= 1 or curr_src_sent_len >= 256 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 256:
-            continue
+#         if curr_src_sent_len <= 1 or curr_src_sent_len >= 512 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 512:
+#             continue
         if curr_src_sent_len > max_src_sent_len:
             max_src_sent_len = curr_src_sent_len
 
@@ -107,8 +117,12 @@ def generate_batches_pair(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if len(input_ids[0]) > args.max_src_length:
+                input_ids = input_ids[:,:args.max_src_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if len(decoder_input_ids[0]) > args.max_tgt_length:
+                decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
             decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
             end = time.time()
@@ -122,8 +136,12 @@ def generate_batches_pair(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if len(input_ids[0]) > args.max_src_length:
+            input_ids = input_ids[:,:args.max_src_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if len(decoder_input_ids[0]) > args.max_tgt_length:
+            decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
         decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
@@ -197,8 +215,32 @@ def generate_batches(tok, args):
         lang = "<2"+args.slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
-        if sent_len <1 or sent_len > 256:
-            src_sent = " ".join(src_sent_split[:256])
+        if sent_len > args.max_src_length:
+            src_sent_split = src_sent_split[:args.max_src_length]
+            src_sent = " ".join(src_sent_split)
+            sent_len = args.max_src_length
+        
+        if args.mask_input:
+            mask_percent = random.uniform(0.30, 0.35)
+            mask_count = 0
+            max_mask_count = int(mask_percent*sent_len)
+            spans_to_mask = list(np.random.poisson(3.5, 1000))
+            curr_sent_len = sent_len
+            while mask_count < max_mask_count:
+                try:
+                    span_to_mask = spans_to_mask[0]
+                    del spans_to_mask[0]
+                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                        continue
+                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                        src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                        mask_count += span_to_mask
+                        curr_sent_len -= (span_to_mask-1)
+                except:
+                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+            src_sent = " ".join(src_sent_split)
+            
         iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
 
@@ -209,6 +251,8 @@ def generate_batches(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if len(input_ids[0]) > args.max_src_length:
+                input_ids = input_ids[:,:args.max_src_length]
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
             yield input_ids, input_masks
@@ -218,6 +262,8 @@ def generate_batches(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if len(input_ids[0]) > args.max_src_length:
+            input_ids = input_ids[:,:args.max_src_length]
         input_masks = input_ids != tok.pad_token_id
         yield input_ids, input_masks
 
@@ -311,12 +357,13 @@ def model_create_load_run_save(gpu, args):
     if args.decode_type == "decode":
         print("Decoding file")
         hyp = []
-        refs = [[refline.strip() for refline in open(args.test_ref)]]
+        if args.test_ref is not None:
+            refs = [[refline.strip() for refline in open(args.test_ref)]]
         for input_ids, input_masks in generate_batches(tok, args): #infinite_same_sentence(10000):
             start = time.time()
             print("Processing batch:", ctr)
             with torch.no_grad():
-                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
+                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1)
             print(len(input_ids), "in and", len(translations), "out")
             for input_id, translation in zip(input_ids, translations):
                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
@@ -326,21 +373,43 @@ def model_create_load_run_save(gpu, args):
                 outf.flush()
                 hyp.append(translation)
             ctr += 1
-        sbleu = get_sacrebleu(refs, hyp)
-        print("BLEU score is:", sbleu)
-    elif args.decode_type == "score":
-        print("Scoring translations. Will print the log probability")
+        if args.test_ref is not None:
+            sbleu = get_sacrebleu(refs, hyp)
+            print("BLEU score is:", sbleu)
+    elif args.decode_type == "score" or args.decode_type == "teacher_forced_decoding":
+        print("Scoring translations or teacher forced decoding. Will print the log probability or (oracle) translations.")
+        hyp = []
+        if args.test_ref is not None:
+            refs = [[refline.strip() for refline in open(args.test_ref)]]
         for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
             logits = mod_compute.logits
-            print(logits.size())
             softmax = torch.nn.functional.log_softmax(logits, dim=-1)
-            logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
-            for logprob in logprobs:
-                print(logprob)
-                outf.write(str(logprob)+"\n")
-                outf.flush()
-            
+            print(softmax.size())
+            if args.decode_type == "teacher_forced_decoding":
+                translations = torch.argmax(softmax, dim=-1)
+                tgt_masks = (labels != tok.pad_token_id).int().to(gpu)
+                translations = translations * tgt_masks
+                print(translations.size())
+                for input_id, translation in zip(input_ids, translations):
+                    translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
+                    input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
+                    #print(input_id, translation)
+                    outf.write(translation+"\n")
+                    outf.flush()
+                    hyp.append(translation)
+            else:
+                logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
+                for logprob in logprobs:
+                    print(logprob)
+                    outf.write(str(logprob)+"\n")
+                    outf.flush()
+        
+        if args.decode_type == "teacher_forced_decoding" and args.test_ref is not None:
+            print(len(refs[0]), len(hyp))
+            sbleu = get_sacrebleu(refs, hyp)
+            print("BLEU score is:", sbleu)
+
     elif args.decode_type == "force_align":
         print("Getting alignments. Will print alignments for each source subword to target subword.")
         final_alignment_pos = ""
@@ -482,6 +551,8 @@ def run_demo():
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
     parser.add_argument('--max_decode_length_multiplier', default=1.5, type=float, 
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
+    parser.add_argument('--min_decode_length_multiplier', default=0.25, type=float, 
+                        help='This multiplied by the source sentence length will be the minimum decoding length.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
     parser.add_argument('--normalize_before', action='store_true', 
@@ -490,6 +561,10 @@ def run_demo():
                         help='Should we normalize embeddings?')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
+    parser.add_argument('--max_src_length', default=256, type=int, 
+                        help='Maximum token length for source language')
+    parser.add_argument('--max_tgt_length', default=256, type=int, 
+                        help='Maximum token length for target language')
     parser.add_argument('--encoder_tying_config', default=None, type=str,
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--decoder_tying_config', default=None, type=str,
@@ -497,7 +572,7 @@ def run_demo():
     parser.add_argument('--slang', default='en', type=str, 
                         help='Source language')
     parser.add_argument('--decode_type', default='decode', type=str, 
-                        help='One of decode, score, force_align, get_enc_representation, get_dec_representation or get_attention. When getting representations or attentions you must specify the index of the layer which you are interested in. By default the last layer is considered.')
+                        help='One of decode, score, force_align, get_enc_representation, get_dec_representation, teacher_forced_decoding or get_attention. When getting representations or attentions you must specify the index of the layer which you are interested in. By default the last layer is considered.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the pre-trained indic language tokenizer')
     parser.add_argument('--tlang', default='hi', type=str, 
@@ -506,8 +581,13 @@ def run_demo():
                         help='Source language test sentences')
     parser.add_argument('--test_tgt', default='', type=str, 
                         help='Target language translated sentences')
-    parser.add_argument('--test_ref', default='', type=str, 
+    parser.add_argument('--test_ref', default=None, type=str, 
                         help='Target language reference sentences')
+    parser.add_argument('--mask_input', action='store_true', 
+                        help='Should we mask words in the input sentence? We should use this for hallucinating variations of the input sentences.')
+    parser.add_argument('--return_all_sequences', action='store_true', 
+                        help='Should we return all beam sequences?')
+    
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
     #########################################################

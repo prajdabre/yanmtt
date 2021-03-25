@@ -26,6 +26,8 @@ import math
 import random
 import numpy as np
 import sacrebleu
+from rouge_score import rouge_scorer
+
 
 import gc
 
@@ -125,11 +127,13 @@ def generate_batches_eval(tok, args, file, slang):
         lang = "<2"+slang+">"
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
-        if sent_len < 1 or sent_len > args.max_src_length:
-            src_sent = " ".join(src_sent_split[:args.max_src_length])
+        if sent_len > args.max_src_length:
+            src_sent_split=src_sent_split[:args.max_src_length]
+            src_sent = " ".join(src_sent_split)
+            sent_len = args.max_src_length
         iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
         curr_src_sent_len = len(iids[0])
-
+        #print("Sentence lengths before and after segmentation: ", sent_len, curr_src_sent_len)
         if curr_src_sent_len > max_src_sent_len:
             max_src_sent_len = curr_src_sent_len
 
@@ -137,6 +141,8 @@ def generate_batches_eval(tok, args, file, slang):
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if len(input_ids[0]) > args.max_src_length:
+                input_ids = input_ids[:,:args.max_src_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             end = time.time()
             #print(input_ids.size(), input_masks.size())
@@ -147,6 +153,8 @@ def generate_batches_eval(tok, args, file, slang):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if len(input_ids[0]) > args.max_src_length:
+            input_ids = input_ids[:,:args.max_src_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         yield input_ids, input_masks
 
@@ -210,9 +218,19 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             tgt_sent_split = tgt_sent.split(" ")
             tgt_sent_len = len(tgt_sent_split)
             src_sent_len = len(src_sent_split)
-            if src_sent_len <=1 or src_sent_len >= args.max_src_length or tgt_sent_len <=1 or tgt_sent_len >= args.max_tgt_length:
+            if src_sent_len <=1 or tgt_sent_len <=1:
                 continue
-            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization
+            else:   # Initial truncation
+                if src_sent_len >= args.max_src_length:
+                    src_sent_split = src_sent_split[:args.max_src_length]
+                    src_sent = " ".join(src_sent_split)
+                    src_sent_len = args.max_src_length
+                if tgt_sent_len >= args.max_tgt_length:
+                    tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
+                    tgt_sent = " ".join(tgt_sent_split)
+                    tgt_sent_len = args.max_tgt_length
+                
+            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization. In fact a single condition based on a flag should be sufficient but I am too lazy to make a change. Come fight me if you disagree.
                 if args.source_masking_for_bilingual:
                     mask_percent = random.uniform(0.0, mp_val_or_range[0]) ## Do less masking
                 else:
@@ -243,8 +261,9 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             
             iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            if curr_src_sent_len <= 1 or curr_src_sent_len >= args.max_src_length or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= args.max_tgt_length:
-                continue
+#             if curr_src_sent_len <= 1 or curr_tgt_sent_len <= 1:
+#                 continue ## Definitely needs to be eliminated
+
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
             
@@ -259,9 +278,15 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             if curr_batch_count > args.batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if len(input_ids[0]) > args.max_src_length:
+            input_ids = input_ids[:,:args.max_src_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if len(decoder_input_ids[0]) > args.max_tgt_length:
+            decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if len(labels[0]) > args.max_tgt_length:
+            labels = labels[:,:args.max_tgt_length]
         #print(input_ids.size(), input_masks.size(), decoder_input_ids.size(), labels.size())
         end = time.time()
         yield input_ids, input_masks, decoder_input_ids, labels
@@ -286,6 +311,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+#     rouge = PerlRouge(rouge_n_max=3, rouge_l=True, rouge_w=True,
+#     rouge_w_weight=1.2, rouge_s=True, rouge_su=True, skip_gap=4)
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=False)
 
     #files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
     
@@ -404,7 +432,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     curr_eval_step = 0
     annealing_attempt = 0
     inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files}
-    refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
+    if args.is_summarization:
+        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
+        scores = {dev_pair: 0 for dev_pair in dev_files}
+    else:
+        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank, (0.30, 0.40), 3.5):
         optimizer.zero_grad()
         start = time.time()
@@ -429,19 +461,27 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             if args.single_gpu:
                                 dev_input_ids=dev_input_ids.to(gpu)
                                 with torch.no_grad():
-                                    translations = model.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
+                                    translations = model.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
                             else:
                                 with torch.no_grad():
-                                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
+                                    translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size)
                             dev_input_ids=dev_input_ids.to('cpu')
                             translations=translations.to('cpu')
                             for translation in translations:
                                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                                 hyp[dev_pair].append(translation)
-                        sbleu = get_sacrebleu(refs[dev_pair], hyp[dev_pair])
+                        if args.is_summarization:
+                            for curr_ref, curr_pred in zip(refs[dev_pair][0], hyp[dev_pair]):
+                                score = scorer.score(curr_ref, curr_pred)
+                                scores[dev_pair] += score['rougeL'].fmeasure
+                            sbleu = scores[dev_pair]/len(hyp[dev_pair])
+                            metric = 'Rouge'
+                        else:
+                            sbleu = get_sacrebleu(refs[dev_pair], hyp[dev_pair])
+                            metric = 'BLEU'
                         individual_sbleu_history[dev_pair].append([sbleu, ctr])
                         sbleus[dev_pair] = sbleu
-                        print("BLEU score using sacrebleu after", ctr, "iterations is", sbleu, "for language pair", dev_pair)
+                        print(metric, "score using sacrebleu after", ctr, "iterations is", sbleu, "for language pair", dev_pair)
                         if sbleu > max_individual_sbleu[dev_pair]:
                             max_individual_sbleu[dev_pair] = sbleu
                             max_individual_sbleu_step[dev_pair] = curr_eval_step
@@ -455,7 +495,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     ## Global stats
                     sbleu = sum(sbleus.values())/len(sbleus)
                     global_sbleu_history.append([sbleu, ctr])
-                    print("Global BLEU score using sacrebleu after", ctr, "iterations is:", sbleu)
+                    print("Global", metric, "score using sacrebleu after", ctr, "iterations is:", sbleu)
                     if sbleu > max_global_sbleu:
                         max_global_sbleu = sbleu
                         max_global_sbleu_step = curr_eval_step
@@ -475,10 +515,10 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             print("LR after annealing is:", scheduler.get_lr()[0])
 
                         else:
-                            print("We have seemingly converged as BLEU failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
+                            print("We have seemingly converged as", metric, "failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
                             print("Terminating training")
-                            print("Global dev bleu history:", global_sbleu_history)
-                            print("Individual sbleu history:", individual_sbleu_history )
+                            print("Global dev", metric, "history:", global_sbleu_history)
+                            print("Individual", metric, "history:", individual_sbleu_history )
                             break
                     curr_eval_step += 1
 
@@ -696,6 +736,8 @@ def run_demo():
                         help='Number of batches to train on')
     parser.add_argument('--max_decode_length_multiplier', default=1.5, type=float, 
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
+    parser.add_argument('--min_decode_length_multiplier', default=0.25, type=float, 
+                        help='This multiplied by the source sentence length will be the minimum decoding length.')
     parser.add_argument('--train_slang', default='en', type=str, 
                         help='Source language(s) for training')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
