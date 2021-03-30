@@ -304,11 +304,45 @@ def init_weights(module, in_features, out_features):
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
 
+def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, ignore_index, args):
+    distillation_losses_to_compute = args.distillation_styles.split(",")
+    #print(distillation_losses_to_compute)
+    all_distillation_losses = []
+    for distillation_loss_to_compute in distillation_losses_to_compute:
+        if distillation_loss_to_compute == "cross_entropy":
+            parent_logits = parent_mod_compute.logits
+            parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.softmax_temperature, dim=-1)
+            child_logits = child_mod_compute.logits
+            child_lprobs = torch.nn.functional.log_softmax(child_logits/args.softmax_temperature, dim=-1)
+            if target.dim() == child_lprobs.dim() - 1:
+                target = target.unsqueeze(-1)
+    
+            parent_softmax = torch.exp(parent_lprobs)
+            #parent_softmax = parent_softmax.detach()
+            pad_mask = target.eq(ignore_index)
+            #print(parent_softmax.size(), child_lprobs.size())
+            distillation_cross_entropy = parent_softmax*child_lprobs
+            distillation_cross_entropy.masked_fill_(pad_mask, 0.0)
+            #print(distillation_cross_entropy.size())
+            distillation_cross_entropy = distillation_cross_entropy.sum(dim=-1)
+            #print(distillation_cross_entropy.size())
+            distillation_cross_entropy = distillation_cross_entropy.mean() * args.softmax_temperature**2
+            #print(distillation_cross_entropy.size())
+            all_distillation_losses.append(distillation_cross_entropy)
+            #print(all_distillation_losses)
+    return -torch.mean(torch.stack(all_distillation_losses), dim=0)
+
 def model_create_load_run_save(gpu, args, train_files, dev_files):
     """The main function which does the magic. Should be split into multiple parts in the future."""
     rank = args.nr * args.gpus + gpu
+    print("Launching process:", rank)
     if not args.single_gpu:
         dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
+    
+    if args.shard_files and rank == 0:
+        shard_files(train_files, args.world_size)
+    
+    dist.barrier()
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 #     rouge = PerlRouge(rouge_n_max=3, rouge_l=True, rouge_w=True,
@@ -345,6 +379,31 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config)
     model = MBartForConditionalGeneration(config)
     model.train()
+    
+    if args.distillation:
+        print("We will do distillation from a parent model.")
+        parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config)
+        parent_model = MBartForConditionalGeneration(config)
+        parent_model.cuda(gpu)
+        parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
+        if args.single_gpu:
+            pass
+        else:
+            parent_model = DistributedDataParallel(parent_model, device_ids=[gpu], output_device=gpu)
+#         for param in parent_model.parameters():
+#             param.requires_grad = False
+        print("Loading a parent model from which distillation will be done.")
+        if args.single_gpu:
+            pass
+        else:
+            dist.barrier()
+        # configure map_location properly
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
+        if type(parent_checkpoint_dict) == dict:
+            parent_model.load_state_dict(parent_checkpoint_dict['model'])
+        else:
+            parent_model.load_state_dict(parent_checkpoint_dict)
 
     torch.cuda.set_device(gpu)
     
@@ -552,6 +611,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             else:
                 dist.barrier()
             # configure map_location properly
+            print("Loading from checkpoint")
+            sys.stdout.flush()
             map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
             checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
             model.load_state_dict(checkpoint_dict['model'])
@@ -565,7 +626,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         try:
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids)
+                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
                     logits = mod_compute.logits
                     lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1)
                     loss = label_smoothed_nll_loss(
@@ -577,9 +638,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                         entropy = -(torch.exp(lprobs)*lprobs).mean()
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
-                        
+                    if args.distillation:
+                        with torch.no_grad():
+                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
+                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args)
+                        loss = args.distillation_loss_weight*distillation_loss + (1.0 - distillation_loss_weight)*loss
             else:
-                mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids)
+                mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
                 logits = mod_compute.logits
                 lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1)
                 loss = label_smoothed_nll_loss(
@@ -591,7 +656,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                     entropy = -(torch.exp(lprobs)*lprobs).mean()
                     loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed.
-        
+                if args.distillation:
+                    with torch.no_grad():
+                        parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
+                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args)
+                        loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss
+
                     
         except Exception as e:
             print("NAN loss was computed or something messed up")
@@ -770,6 +840,28 @@ def run_demo():
                         help='Should we use single gpu training?')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
+    ### Distillation flags
+    parser.add_argument('--distillation', action='store_true', 
+                        help='Should we perform distillation from a parent model? If so then you must specify the model using "parent_pretrained_model". There are several distillation options check the flag called "distillation_styles".')
+    parser.add_argument('--parent_pretrained_model', default='', type=str, 
+                        help='Path to the parent pretrained model for distillation. The pretrained_model flag will be used to initialize the child model.')
+    parser.add_argument('--distillation_loss_weight', type=float, default=0.7, 
+                        help='All the distillation losses will be averaged and then multiplied by this weight before adding it to the regular xentropy loss which will be weighted by (1- distillation_loss_weight).')
+    parser.add_argument('--distillation_styles', default='cross_entropy', type=str, 
+                        help='One or more of softmax_distillation, attention_distillation, hidden_layer_regression. For attention distillation you must make sure that the number of attention heads between the parent and child are the same and for hidden layer regression you must make sure that the hidden size (d_model) is the same for the parent and child. In both these cases, you should also specify the layer mapping. See the "distillation_layer_mapping" flag.')
+    parser.add_argument('--distillation_layer_mapping', default='1-1,2-2,3-3,4-4,5-5,6-6', type=str, 
+                        help='This indicates the mappings between the parent and child model. The same flag is used for the encoder and the decoder. If you want to map the 2nd parent layer to the first child layer then use 2-1. Note that the layers are not zero indexed as per the description. Ensure that your indices are correct because checking is not done at the moment. If you get weird results then first make sure that your flags are correctly set. If the parent has 6 layers and the child has 3 layers then something like 6-4 will definitely throw an error. User beware! Dokuro mark.')
+    parser.add_argument('--parent_encoder_layers', default=6, type=int, help="The value for number of encoder layers")
+    parser.add_argument('--parent_decoder_layers', default=6, type=int, help="The value for number of decoder layers")
+    parser.add_argument('--parent_dropout', default=0.1, type=float, help="The value for embedding dropout")
+    parser.add_argument('--parent_attention_dropout', default=0.1, type=float, help="The value for attention dropout")
+    parser.add_argument('--parent_activation_dropout', default=0.1, type=float, help="The value for activation dropout")
+    parser.add_argument('--parent_encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
+    parser.add_argument('--parent_decoder_attention_heads', default=8, type=int, help="The value for number of decoder attention heads")
+    parser.add_argument('--parent_decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
+    parser.add_argument('--parent_encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
+    parser.add_argument('--parent_d_model', default=512, type=int, help="The value for model hidden size")
+    ###
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
     
@@ -785,9 +877,6 @@ def run_demo():
     else:
         train_files = {args.train_slang+"-"+args.train_tlang : (args.train_src, args.train_tgt)}
     print("Training files are:", train_files)
-    
-    if args.shard_files and args.nr == 0:
-        shard_files(train_files, args.world_size)
     
     dev_files = {}
     if args.mnmt:
