@@ -58,6 +58,77 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
     return loss
 
+def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, ignore_index, args):
+    distillation_losses_to_compute = args.distillation_styles.split(",")
+    #print(distillation_losses_to_compute)
+    all_distillation_losses = []
+    pad_mask = target.eq(ignore_index)
+    for distillation_loss_to_compute in distillation_losses_to_compute:
+        if distillation_loss_to_compute == "cross_entropy":
+            parent_logits = parent_mod_compute.logits
+            parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.softmax_temperature, dim=-1)
+            child_logits = child_mod_compute.logits
+            child_lprobs = torch.nn.functional.log_softmax(child_logits/args.softmax_temperature, dim=-1)
+            if target.dim() == child_lprobs.dim() - 1:
+                target = target.unsqueeze(-1)
+    
+            parent_softmax = torch.exp(parent_lprobs)
+            #parent_softmax = parent_softmax.detach()
+            #print(parent_softmax.size(), child_lprobs.size())
+            distillation_cross_entropy = parent_softmax*child_lprobs
+            distillation_cross_entropy.masked_fill_(pad_mask, 0.0)
+            #print(distillation_cross_entropy.size())
+            distillation_cross_entropy = distillation_cross_entropy.sum(dim=-1)
+            #print(distillation_cross_entropy.size())
+            distillation_cross_entropy = distillation_cross_entropy.mean() * args.softmax_temperature**2
+            #print(distillation_cross_entropy.size())
+            all_distillation_losses.append(distillation_cross_entropy)
+            #print(all_distillation_losses)
+        if distillation_loss_to_compute == "hidden_layer_regression":
+            all_regression_losses = []
+            for layer_mapping in args.distillation_layer_mapping.strip().split(","):
+                parent_layer_idx, child_layer_idx = layer_mapping.split("-")
+                parent_layer_idx, child_layer_idx = int(parent_layer_idx)-1, int(child_layer_idx)-1
+                parent_encoder_layer_state = parent_mod_compute.encoder_hidden_states[parent_layer_idx]
+                child_encoder_layer_state = child_mod_compute.encoder_hidden_states[child_layer_idx]
+                encoder_l2_loss = (parent_encoder_layer_state-child_encoder_layer_state)**2
+                encoder_l2_loss.masked_fill_(pad_mask, 0.0)
+                encoder_l2_loss = encoder_l2_loss.sum(dim=-1).mean()
+                parent_decoder_layer_state = parent_mod_compute.decoder_hidden_states[parent_layer_idx]
+                child_decoder_layer_state = child_mod_compute.decoder_hidden_states[child_layer_idx]
+                decoder_l2_loss = (parent_decoder_layer_state-child_decoder_layer_state)**2
+                decoder_l2_loss.masked_fill_(pad_mask, 0.0)
+                decoder_l2_loss = decoder_l2_loss.sum(dim=-1).mean()
+                all_regression_losses.append(encoder_l2_loss)
+                all_regression_losses.append(decoder_l2_loss)
+            regression_loss = torch.mean(torch.stack(all_regression_losses), dim=0)
+            all_distillation_losses.append(regression_loss)
+        if distillation_loss_to_compute == "attention_distillation":
+            all_attention_distillation_losses = []
+            for layer_mapping in args.distillation_layer_mapping.strip().split(","):
+                parent_layer_idx, child_layer_idx = layer_mapping.split("-")
+                parent_layer_idx, child_layer_idx = int(parent_layer_idx)-1, int(child_layer_idx)-1
+                parent_encoder_self_attention = parent_mod_compute.encoder_attentions[parent_layer_idx]
+                child_encoder_self_attention = child_mod_compute.encoder_attentions[child_layer_idx]
+                # deal with padding here. We will need to access the source token padding information.
+                encoder_sa_loss = parent_encoder_attention*torch.log(child_encoder_attention.masked_fill_(child_encoder_attention.eq(0.0), 1e-10))
+                encoder_l2_loss = encoder_l2_loss.sum(dim=-1).mean()
+                parent_decoder_self_attention = parent_mod_compute.decoder_attentions[parent_layer_idx]
+                child_decoder_self_attention = child_mod_compute.decoder_attentions[child_layer_idx]
+                decoder_sa_loss = parent_decoder_self_attention*torch.log(child_decoder_self_attention.masked_fill_(child_decoder_self_attention.eq(0.0), 1e-10))
+                decoder_sa_loss = decoder_sa_loss.sum(dim=-1).mean()
+                parent_decoder_cross_attention = parent_mod_compute.cross_attentions[parent_layer_idx]
+                child_decoder_cross_attention = child_mod_compute.cross_attentions[child_layer_idx]
+                decoder_ca_loss = parent_decoder_cross_attention*torch.log(child_decoder_cross_attention.masked_fill_(child_decoder_cross_attention.eq(0.0), 1e-10))
+                decoder_ca_loss = decoder_ca_loss.sum(dim=-1).mean()
+                all_attention_distillation_losses.append(encoder_sa_loss)
+                all_attention_distillation_losses.append(decoder_sa_loss)
+                all_attention_distillation_losses.append(decoder_ca_loss)
+            all_attention_distillation_losses = torch.mean(torch.stack(all_attention_distillation_losses), dim=0)
+            all_distillation_losses.append(all_attention_distillation_losses)
+        
+    return -torch.mean(torch.stack(all_distillation_losses), dim=0)
+
 
 def shard_files(files, world_size):
     print("Sharding files into", world_size, "parts")
@@ -303,34 +374,6 @@ def init_weights(module, in_features, out_features):
         module.weight.data.normal_(mean=0.0, std=init_std)
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
-
-def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, ignore_index, args):
-    distillation_losses_to_compute = args.distillation_styles.split(",")
-    #print(distillation_losses_to_compute)
-    all_distillation_losses = []
-    for distillation_loss_to_compute in distillation_losses_to_compute:
-        if distillation_loss_to_compute == "cross_entropy":
-            parent_logits = parent_mod_compute.logits
-            parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.softmax_temperature, dim=-1)
-            child_logits = child_mod_compute.logits
-            child_lprobs = torch.nn.functional.log_softmax(child_logits/args.softmax_temperature, dim=-1)
-            if target.dim() == child_lprobs.dim() - 1:
-                target = target.unsqueeze(-1)
-    
-            parent_softmax = torch.exp(parent_lprobs)
-            #parent_softmax = parent_softmax.detach()
-            pad_mask = target.eq(ignore_index)
-            #print(parent_softmax.size(), child_lprobs.size())
-            distillation_cross_entropy = parent_softmax*child_lprobs
-            distillation_cross_entropy.masked_fill_(pad_mask, 0.0)
-            #print(distillation_cross_entropy.size())
-            distillation_cross_entropy = distillation_cross_entropy.sum(dim=-1)
-            #print(distillation_cross_entropy.size())
-            distillation_cross_entropy = distillation_cross_entropy.mean() * args.softmax_temperature**2
-            #print(distillation_cross_entropy.size())
-            all_distillation_losses.append(distillation_cross_entropy)
-            #print(all_distillation_losses)
-    return -torch.mean(torch.stack(all_distillation_losses), dim=0)
 
 def model_create_load_run_save(gpu, args, train_files, dev_files):
     """The main function which does the magic. Should be split into multiple parts in the future."""

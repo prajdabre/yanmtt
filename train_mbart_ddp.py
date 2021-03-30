@@ -53,6 +53,7 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
     distillation_losses_to_compute = args.distillation_styles.split(",")
     #print(distillation_losses_to_compute)
     all_distillation_losses = []
+    pad_mask = target.eq(ignore_index)
     for distillation_loss_to_compute in distillation_losses_to_compute:
         if distillation_loss_to_compute == "cross_entropy":
             parent_logits = parent_mod_compute.logits
@@ -63,7 +64,6 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
                 target = target.unsqueeze(-1)
     
             parent_softmax = torch.exp(parent_lprobs)
-            pad_mask = target.eq(ignore_index)
             #parent_softmax = parent_softmax.detach()
             #print(parent_softmax.size(), child_lprobs.size())
             distillation_cross_entropy = parent_softmax*child_lprobs
@@ -75,8 +75,50 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
             #print(distillation_cross_entropy.size())
             all_distillation_losses.append(distillation_cross_entropy)
             #print(all_distillation_losses)
+        if distillation_loss_to_compute == "hidden_layer_regression":
+            all_regression_losses = []
+            for layer_mapping in args.distillation_layer_mapping.strip().split(","):
+                parent_layer_idx, child_layer_idx = layer_mapping.split("-")
+                parent_layer_idx, child_layer_idx = int(parent_layer_idx)-1, int(child_layer_idx)-1
+                parent_encoder_layer_state = parent_mod_compute.encoder_hidden_states[parent_layer_idx]
+                child_encoder_layer_state = child_mod_compute.encoder_hidden_states[child_layer_idx]
+                encoder_l2_loss = (parent_encoder_layer_state-child_encoder_layer_state)**2
+                encoder_l2_loss.masked_fill_(pad_mask, 0.0)
+                encoder_l2_loss = encoder_l2_loss.sum(dim=-1).mean()
+                parent_decoder_layer_state = parent_mod_compute.decoder_hidden_states[parent_layer_idx]
+                child_decoder_layer_state = child_mod_compute.decoder_hidden_states[child_layer_idx]
+                decoder_l2_loss = (parent_decoder_layer_state-child_decoder_layer_state)**2
+                decoder_l2_loss.masked_fill_(pad_mask, 0.0)
+                decoder_l2_loss = decoder_l2_loss.sum(dim=-1).mean()
+                all_regression_losses.append(encoder_l2_loss)
+                all_regression_losses.append(decoder_l2_loss)
+            regression_loss = torch.mean(torch.stack(all_regression_losses), dim=0)
+            all_distillation_losses.append(regression_loss)
+        if distillation_loss_to_compute == "attention_distillation":
+            all_attention_distillation_losses = []
+            for layer_mapping in args.distillation_layer_mapping.strip().split(","):
+                parent_layer_idx, child_layer_idx = layer_mapping.split("-")
+                parent_layer_idx, child_layer_idx = int(parent_layer_idx)-1, int(child_layer_idx)-1
+                parent_encoder_self_attention = parent_mod_compute.encoder_attentions[parent_layer_idx]
+                child_encoder_self_attention = child_mod_compute.encoder_attentions[child_layer_idx]
+                # deal with padding here. We will need to access the source token padding information.
+                encoder_sa_loss = parent_encoder_attention*torch.log(child_encoder_attention.masked_fill_(child_encoder_attention.eq(0.0), 1e-10))
+                encoder_l2_loss = encoder_l2_loss.sum(dim=-1).mean()
+                parent_decoder_self_attention = parent_mod_compute.decoder_attentions[parent_layer_idx]
+                child_decoder_self_attention = child_mod_compute.decoder_attentions[child_layer_idx]
+                decoder_sa_loss = parent_decoder_self_attention*torch.log(child_decoder_self_attention.masked_fill_(child_decoder_self_attention.eq(0.0), 1e-10))
+                decoder_sa_loss = decoder_sa_loss.sum(dim=-1).mean()
+                parent_decoder_cross_attention = parent_mod_compute.cross_attentions[parent_layer_idx]
+                child_decoder_cross_attention = child_mod_compute.cross_attentions[child_layer_idx]
+                decoder_ca_loss = parent_decoder_cross_attention*torch.log(child_decoder_cross_attention.masked_fill_(child_decoder_cross_attention.eq(0.0), 1e-10))
+                decoder_ca_loss = decoder_ca_loss.sum(dim=-1).mean()
+                all_attention_distillation_losses.append(encoder_sa_loss)
+                all_attention_distillation_losses.append(decoder_sa_loss)
+                all_attention_distillation_losses.append(decoder_ca_loss)
+            all_attention_distillation_losses = torch.mean(torch.stack(all_attention_distillation_losses), dim=0)
+            all_distillation_losses.append(all_attention_distillation_losses)
+        
     return -torch.mean(torch.stack(all_distillation_losses), dim=0)
-
 
 
 def yield_corpus_indefinitely(corpus, lang):
@@ -327,7 +369,7 @@ def model_create_load_run_save(gpu, args, files):
         start = time.time()
         optimizer.zero_grad()
         
-        if ctr % 1000 == 0:
+        if ctr % args.eval_every == 0:
             CHECKPOINT_PATH = args.model_path
             if rank == 0:
                 print("Saving the model")
@@ -511,6 +553,7 @@ def run_demo():
                         help='One or more of softmax_distillation, attention_distillation, hidden_layer_regression. For attention distillation you must make sure that the number of attention heads between the parent and child are the same and for hidden layer regression you must make sure that the hidden size (d_model) is the same for the parent and child. In both these cases, you should also specify the layer mapping. See the "distillation_layer_mapping" flag.')
     parser.add_argument('--distillation_layer_mapping', default='1-1,2-2,3-3,4-4,5-5,6-6', type=str, 
                         help='This indicates the mappings between the parent and child model. The same flag is used for the encoder and the decoder. If you want to map the 2nd parent layer to the first child layer then use 2-1. Note that the layers are not zero indexed as per the description. Ensure that your indices are correct because checking is not done at the moment. If you get weird results then first make sure that your flags are correctly set. If the parent has 6 layers and the child has 3 layers then something like 6-4 will definitely throw an error. User beware! Dokuro mark.')
+    parser.add_argument('--eval_every', default=1000, type=int, help="The number of iterations after which an evaluation must be done. Also saves a checkpoint every these number of steps.")
     parser.add_argument('--parent_encoder_layers', default=3, type=int, help="The value for number of encoder layers")
     parser.add_argument('--parent_decoder_layers', default=3, type=int, help="The value for number of decoder layers")
     parser.add_argument('--parent_dropout', default=0.1, type=float, help="The value for embedding dropout")
