@@ -1,63 +1,52 @@
 # -*- coding: utf-8 -*-
 
-from transformers import AutoTokenizer
-import time
-
-from transformers import MBartForConditionalGeneration, MBartConfig, get_cosine_with_hard_restarts_schedule_with_warmup
-from transformers import AdamW
-# import tensorflow as tf
-# import tensorboard as tb
-# tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
+## Basic imports
 import os
-
-from torch.utils.tensorboard import SummaryWriter
-
+import sys
 import argparse
-
+import time
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-#os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3,4,5,6,7"
+##
 
+## Huggingface imports
+import transformers
+from transformers import AutoTokenizer
+from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
+from transformers import AdamW
+##
+
+## Pytorch imports
 import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
-import sys
 import torch.distributed as dist
-import numpy as np
+##
+
+
+
+
+## Other imports
+import math
 import random
-
-import matplotlib
 import numpy as np
-
-
+import sacrebleu
+from rouge_score import rouge_scorer
+import gc
+import matplotlib
 matplotlib.use('Agg')  # Must be before importing matplotlib.pyplot or pylab!
 import matplotlib.pyplot as plt  # drawing heat map of attention weights
-
-#plt.rcParams['font.sans-serif'] = ['SimSun']  # set font family
-# matplotlib.rcParams['font.sans-serif'] = ['Source Han Sans TW',
-#                                    'sans-serif',
-#                                    "Lohit Devanagari"  # fc-list :lang=hi family
-#                                    ]
-
 from matplotlib import rcParams
-# rcParams['font.family'] = 'sans-serif'
-# rcParams['font.sans-serif'] = ['Tahoma']
-
 rcParams['font.sans-serif'] = ['Source Han Sans TW',
                                    'sans-serif',
                                    "FreeSerif"  # fc-list :lang=hi family
                                    ]
+##
 
-# from matplotlib.font_manager import FontProperties
+## Unused imports
+#from torch.utils.tensorboard import SummaryWriter
+##
 
-
-# font_prop = FontProperties(fname='Mangal.ttf', size=18)
-
-
-
-import random
-
-import sacrebleu
 
 def get_sacrebleu(refs, hyp):
     """Returns the sacrebleu score."""
@@ -103,8 +92,6 @@ def generate_batches_pair(tok, args):
 
         iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
         curr_tgt_sent_len = len(iids[0])
-#         if curr_src_sent_len <= 1 or curr_src_sent_len >= 512 or curr_tgt_sent_len <= 1 or curr_tgt_sent_len >= 512:
-#             continue
         if curr_src_sent_len > max_src_sent_len:
             max_src_sent_len = curr_src_sent_len
 
@@ -175,7 +162,7 @@ def generate_batches_pair_masked(tok, args):
             max_src_sent_len = 0
             max_tgt_sent_len = 0
             new_src_sent_split = list(src_sent_split)
-            new_src_sent_split[pos_src] = "[MASK]"  #[] #"[MASK]" #"<pad>"
+            new_src_sent_split[pos_src] = "[MASK]"
             new_src_sent = " ".join(new_src_sent_split)
             iids = tok(new_src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
@@ -184,7 +171,7 @@ def generate_batches_pair_masked(tok, args):
             for pos_tgt in range(tgt_sent_len):
                 dec_pos.append(pos_tgt)
                 new_tgt_sent_split = list(tgt_sent_split)
-                new_tgt_sent_split[pos_tgt] = "[MASK]" #[] #"[MASK]" #"<pad>"
+                new_tgt_sent_split[pos_tgt] = "[MASK]"
                 new_tgt_sent = " ".join(new_tgt_sent_split)
                 iids = tok(tlang + " " + new_tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
                 curr_tgt_sent_len = len(iids[0])
@@ -268,7 +255,7 @@ def generate_batches(tok, args):
         yield input_ids, input_masks
 
 def nll_loss(lprobs, target, ignore_index=0):
-    """From fairseq. This returns the label smoothed loss."""
+    """From fairseq. This returns the non-label smoothed cross entropy loss."""
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
@@ -321,23 +308,18 @@ def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=N
     fig.savefig(file_name)  # save the figure to file
     plt.close(fig)  # close the figure
 
-def model_create_load_run_save(gpu, args):
-    """The main function which does the magic. Should be split into multiple parts in the future."""
-    rank = args.nr * args.gpus + gpu
+def model_create_load_decode(gpu, args):
+    """The main function which does the overall decoding, visualization etc. Should be split into multiple parts in the future. Currently monolithc intentionally."""
+    rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size. This need not be done using DDP but I am leaving it as is for consistency with my other code. In the future, I plan to support sharding the decoding data into multiple shards which will then be decoded in a distributed fashion.
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
-
-#     files = {"as": "data/as/as.txt", "bn": "data/bn/bn.txt", "en": "data/en/en.txt", "gu": "data/gu/gu.txt", "hi": "data/hi/hi.txt", "kn": "data/kn/kn.txt", "ml": "data/ml/ml.txt", "mr": "data/mr/mr.txt", "or": "data/or/or.txt", "pa": "data/pa/pa.txt", "ta": "data/ta/ta.txt", "te": "data/te/te.txt"}  ## Get this from command line
-    
-#     special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + ["<2"+lang+">" for lang in files.keys()] + ["<2"+args.slang+">", "<2"+args.tlang+">"]}
-#     num_added_toks = tok.add_special_tokens(special_tokens_dict)
 
     print("Tokenizer is:", tok)
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config)
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -354,7 +336,7 @@ def model_create_load_run_save(gpu, args):
             
     ctr = 0
     outf = open(args.test_tgt, 'w')
-    if args.decode_type == "decode":
+    if args.decode_type == "decode": ## Standard NMT decoding.
         print("Decoding file")
         hyp = []
         if args.test_ref is not None:
@@ -363,12 +345,11 @@ def model_create_load_run_save(gpu, args):
             start = time.time()
             print("Processing batch:", ctr)
             with torch.no_grad():
-                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1)
+                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1) ## We translate the batch.
             print(len(input_ids), "in and", len(translations), "out")
             for input_id, translation in zip(input_ids, translations):
                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                #print(input_id, translation)
+                input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
                 outf.write(translation+"\n")
                 outf.flush()
                 hyp.append(translation)
@@ -376,17 +357,17 @@ def model_create_load_run_save(gpu, args):
         if args.test_ref is not None:
             sbleu = get_sacrebleu(refs, hyp)
             print("BLEU score is:", sbleu)
-    elif args.decode_type == "score" or args.decode_type == "teacher_forced_decoding":
+    elif args.decode_type == "score" or args.decode_type == "teacher_forced_decoding": ## Here we will either score a sentence and its translation. The score will be the NLL loss. If not scoring then we will use the softmax to generate translations.
         print("Scoring translations or teacher forced decoding. Will print the log probability or (oracle) translations.")
         hyp = []
         if args.test_ref is not None:
             refs = [[refline.strip() for refline in open(args.test_ref)]]
-        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
+        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
             logits = mod_compute.logits
             softmax = torch.nn.functional.log_softmax(logits, dim=-1)
             print(softmax.size())
-            if args.decode_type == "teacher_forced_decoding":
+            if args.decode_type == "teacher_forced_decoding": ## Use the softmax for prediction instead of computing NLL loss.
                 translations = torch.argmax(softmax, dim=-1)
                 tgt_masks = (labels != tok.pad_token_id).int().to(gpu)
                 translations = translations * tgt_masks
@@ -394,11 +375,10 @@ def model_create_load_run_save(gpu, args):
                 for input_id, translation in zip(input_ids, translations):
                     translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
                     input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                    #print(input_id, translation)
                     outf.write(translation+"\n")
                     outf.flush()
                     hyp.append(translation)
-            else:
+            else: ## Return the NLL loss.
                 logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
                 for logprob in logprobs:
                     print(logprob)
@@ -410,13 +390,13 @@ def model_create_load_run_save(gpu, args):
             sbleu = get_sacrebleu(refs, hyp)
             print("BLEU score is:", sbleu)
 
-    elif args.decode_type == "force_align":
+    elif args.decode_type == "force_align": ## This is experimental. Source is A B C and target is X Y Z. If B and Z are aligned then the highest score should be for the source A MASK C and target X Y MASK. Works sometimes but not always. No detailed documentation yet.
         print("Getting alignments. Will print alignments for each source subword to target subword.")
         final_alignment_pos = ""
         final_alignment_str = ""
         final_src_str = ""
         final_tgt_str = ""
-        for input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos in generate_batches_pair_masked(tok, args): #infinite_same_sentence(10000):
+        for input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos in generate_batches_pair_masked(tok, args):
             if enc_pos == 0:
                 if final_alignment_pos != "":
                     print(final_alignment_pos)
@@ -425,14 +405,13 @@ def model_create_load_run_save(gpu, args):
                     outf.flush()
                 final_alignment_pos = ""
                 final_alignment_str = ""
-            mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu)) #, decoder_attention_mask=tgt_masks.to(gpu)
+            mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
             logits = mod_compute.logits
             softmax = torch.nn.functional.log_softmax(logits, dim=-1)
             logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
             minprob = 1000
             minpos = 0
             for log_prob, dec_p in zip(logprobs, dec_pos):
-                #print(log_prob, src_sent_split[enc_pos], tgt_sent_split[dec_p], log_prob < minprob)
                 if log_prob < minprob:
                     minpos = dec_p
                     minprob = log_prob
@@ -440,13 +419,9 @@ def model_create_load_run_save(gpu, args):
             final_alignment_str += src_sent_split[enc_pos] + "-" + tgt_sent_split[minpos] + " "
             final_src_str = " ".join(src_sent_split)
             final_tgt_str = " ".join(tgt_sent_split)
-    elif args.decode_type == "get_enc_representations" or args.decode_type == "get_dec_representations":
+    elif args.decode_type == "get_enc_representations" or args.decode_type == "get_dec_representations": ## We want to extract the encoder or decoder representations for a given layer.
         print("Getting encoder or decoder representations for layer "+args.layer_id+". Will save representations for each input line.")
-        # default `log_dir` is "runs" - we'll be more specific here
-        #writer = SummaryWriter('runs/sent_emb_run')
-        #all_meta = []
-        #all_hids = []
-        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): #infinite_same_sentence(10000):
+        for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), output_hidden_states=True)
             print(input_masks)
             if args.decode_type == "get_enc_representations":
@@ -458,21 +433,11 @@ def model_create_load_run_save(gpu, args):
             hidden_state.masked_fill_(pad_mask, 0.0)
             print(hidden_state.size())
             hidden_state = hidden_state.mean(dim=1)
-            #all_hids.append(hidden_state)    
             for idx, hidden_state_individual in enumerate(hidden_state):
                 metadata=tok.decode(input_ids[idx] if args.decode_type == "get_enc_representations" else decoder_input_ids[idx], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-                #all_meta.append(metadata)
-#                 print(hidden_state_individual.size())
-#                 print(metadata)
-#                 writer.add_embedding(hidden_state_individual.view(1,-1),
-#                             metadata=[metadata], global_step=0)
                 outf.write("\t".join([str(elem) for elem in hidden_state_individual.tolist()])+"\n")
                 outf.flush()
-#            break
-#        print(all_hids, all_meta)
-#        writer.add_embedding(torch.cat(all_hids, 0), metadata=None, global_step=0)
-#        writer.close()
-    elif args.decode_type == "get_attention":
+    elif args.decode_type == "get_attention": ## We want to extract and visualize the self attention and cross attentions for a particular layer and particular head. TODO make this work with all layers and all heads in a single plot. Currently my IQ is low so I am unable to achieve it.
         print("Getting attention for layer ", args.layer_id)  
         sentence_id = 0
         for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): 
@@ -486,7 +451,7 @@ def model_create_load_run_save(gpu, args):
                 tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=True)
                 tgt_len = len(tgt_sent)
                 print("Processing for ", input_sent, tgt_sent)
-                num_heads = 1 #encoder_attentions.size()[0] #1
+                num_heads = 1
                 encoder_sizes = encoder_attentions[idx].size()
                 decoder_sizes = decoder_attentions[idx].size()
                 cross_sizes = cross_attentions[idx].size()
@@ -594,7 +559,7 @@ def run_demo():
     args.world_size = args.gpus * args.nodes                #
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,))         #
+    mp.spawn(model_create_load_decode, nprocs=args.gpus, args=(args,))         #
     #########################################################
     
 if __name__ == "__main__":
