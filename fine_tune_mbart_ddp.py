@@ -421,6 +421,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             parent_model.load_state_dict(parent_checkpoint_dict['model'])
         else:
             parent_model.load_state_dict(parent_checkpoint_dict)
+            
+        parent_model.train()
 
     torch.cuda.set_device(gpu) ## Set the device to the current GPU. This is different from the rank so keep this in mind.
     
@@ -449,6 +451,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09) ## Our glorious optimizer.
     
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
+    model.train()
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches*args.world_size) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
     
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
@@ -482,6 +485,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     else:
         print("Training from scratch")
         ctr = 0
+    model.train()
         
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
@@ -513,7 +517,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     print("Running eval on dev set(s)")
                     hyp = {dev_pair: [] for dev_pair in dev_files}
                     sbleus = {}
-                    model.module.eval() ## We go to eval mode so that there will be no dropout.
+                    model.eval() ## We go to eval mode so that there will be no dropout.
                     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr} ## This training state will be saved.
                     for dev_pair in dev_files: ## For each evaluation pair we will decode and compute scores.
                         slangtlang =dev_pair.strip().split("-")
@@ -523,7 +527,6 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             start = time.time()
                             with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
                                 translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size) ## We translate the batch.
-                            dev_input_ids=dev_input_ids.to('cpu') ## Move to cpu. Not needed but its a safe step.
                             translations=translations.to('cpu') ## Move to cpu. Not needed but its a safe step.
                             for translation in translations:
                                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
@@ -574,7 +577,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             break
                     curr_eval_step += 1
 
-                    model.module.train() ## Put the model back in training mode where dropout will be done.
+                    model.train() ## Put the model back in training mode where dropout will be done.
 
                 else: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
                     if ctr % args.no_eval_save_every == 0:
@@ -680,17 +683,18 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         end = time.time()
         ctr += 1
     
-    CHECKPOINT_PATH = args.fine_tuned_model
-    print("Saving the model after the final step")
-    # All processes should see same parameters as they all start from same
-    # random parameters and gradients are synchronized in backward passes.
-    # Therefore, saving it in one process is sufficient.
-    print("The best bleu was:", max_global_sbleu)
-    print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
-    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-    torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
-    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
-    
+    if rank == 0:
+        CHECKPOINT_PATH = args.fine_tuned_model
+        print("Saving the model after the final step")
+        # All processes should see same parameters as they all start from same
+        # random parameters and gradients are synchronized in backward passes.
+        # Therefore, saving it in one process is sufficient.
+        print("The best bleu was:", max_global_sbleu)
+        print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
+        checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+        torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
+        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
+
     dist.destroy_process_group()
     
 

@@ -339,6 +339,7 @@ def model_create_load_run_save(gpu, args, files):
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09) ## Our glorious optimizer.
     
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
+    model.train()
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
         scheduler.step()
@@ -359,6 +360,7 @@ def model_create_load_run_save(gpu, args, files):
             ctr = 0
     else:
         ctr = 0
+    model.train()
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     
@@ -469,9 +471,10 @@ def model_create_load_run_save(gpu, args, files):
         end = time.time()
         ctr += 1
     
-    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-    torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
-    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
+    if rank == 0:
+        checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+        torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
+        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
 
     dist.destroy_process_group()
 

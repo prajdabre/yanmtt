@@ -333,7 +333,7 @@ def model_create_load_decode(gpu, args):
         model.load_state_dict(checkpoint_dict['model'])
     else:
         model.load_state_dict(checkpoint_dict)
-            
+    model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
     if args.decode_type == "decode": ## Standard NMT decoding.
