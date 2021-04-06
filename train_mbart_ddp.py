@@ -275,6 +275,8 @@ def init_weights(module, in_features, out_features):
             module.weight.data[module.padding_idx].zero_()
 
 def remap_layers(model, idx, args): ### Cut this code into half.
+    """This method is used to remap the layers from a pretrained model to the current model. The remapping info comes in the form of 2-1,... which means, map the second layer of the pretrained model to the first layer of the current model."""
+    print("Remapping layers from parent to child.")
     if args.remap_encoder != "":
         keys_to_consider = [key for key in model.keys() if "encoder" in key]
         for mapping in args.remap_encoder.split(","):
@@ -302,6 +304,15 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                     model[key] = model[key_copy]
                     del model[key_copy]
     return model
+
+def eliminate_mismatches(our_model_dict, model_to_load_dict):
+    """This method eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+    print("Eliminating matched params with mismatched sizes from the initial model.")
+    for our_model_key in our_model_dict:
+        if our_model_key in model_to_load_dict:
+            if our_model_dict[our_model_key].size() != model_to_load_dict[our_model_key].size():
+                del model_to_load_dict[our_model_key]
+    return model_to_load_dict
 
 def model_create_load_run_save(gpu, args, files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
@@ -380,12 +391,12 @@ def model_create_load_run_save(gpu, args, files):
         sys.stdout.flush()
         checkpoint_dict = torch.load(args.initialization_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_layers(checkpoint_dict['model'], 4, args))
+            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args)))
             optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
             scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
             ctr = checkpoint_dict['ctr']
         else:
-            model.load_state_dict(remap_layers(checkpoint_dict, 3, args))
+            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args)))
             ctr = 0
     else:
         ctr = 0

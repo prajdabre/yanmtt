@@ -309,6 +309,8 @@ def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=N
     plt.close(fig)  # close the figure
 
 def remap_layers(model, idx, args): ### Cut this code into half.
+    """This method is used to remap the layers from a pretrained model to the current model. The remapping info comes in the form of 2-1,... which means, map the second layer of the pretrained model to the first layer of the current model."""
+    print("Remapping layers from parent to child.")
     if args.remap_encoder != "":
         keys_to_consider = [key for key in model.keys() if "encoder" in key]
         for mapping in args.remap_encoder.split(","):
@@ -337,6 +339,15 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                     del model[key_copy]
     return model
 
+def eliminate_mismatches(our_model_dict, model_to_load_dict):
+    """This method eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+    print("Eliminating matched params with mismatched sizes from the initial model.")
+    for our_model_key in our_model_dict:
+        if our_model_key in model_to_load_dict:
+            if our_model_dict[our_model_key].size() != model_to_load_dict[our_model_key].size():
+                del model_to_load_dict[our_model_key]
+    return model_to_load_dict
+
 
 def model_create_load_decode(gpu, args):
     """The main function which does the overall decoding, visualization etc. Should be split into multiple parts in the future. Currently monolithc intentionally."""
@@ -362,9 +373,9 @@ def model_create_load_decode(gpu, args):
     
                     
     if type(checkpoint_dict) == dict:
-        model.load_state_dict(remap_layers(checkpoint_dict['model'], 4, args), strict=False if args.multilayer_softmaxing else True) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args))) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     else:
-        model.load_state_dict(remap_layers(checkpoint_dict, 3, args), strict=False if args.multilayer_softmaxing else True) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args))) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
