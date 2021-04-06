@@ -1329,6 +1329,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             return_dict=return_dict,
         )
         lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
+        
+        additional_lm_logits = []
+        
+        if self.config.multilayer_softmaxing:
+            for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
+                additional_lm_logits.append(self.lm_head(lm_representation) + self.final_logits_bias)
 
         masked_lm_loss = None
         if labels is not None:
@@ -1349,6 +1355,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             encoder_last_hidden_state=outputs.encoder_last_hidden_state,
             encoder_hidden_states=outputs.encoder_hidden_states,
             encoder_attentions=outputs.encoder_attentions,
+            additional_lm_logits=additional_lm_logits,
         )
 
     def prepare_inputs_for_generation(

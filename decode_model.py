@@ -49,7 +49,7 @@ rcParams['font.sans-serif'] = ['Source Han Sans TW',
 
 
 def get_sacrebleu(refs, hyp):
-    """Returns the sacrebleu score."""
+    """Returns sacrebleu score. Sacrebleu is a reliable implementation for computing corpus level BLEU scores."""
     bleu = sacrebleu.corpus_bleu(hyp, refs)
     return bleu.score
 
@@ -308,6 +308,36 @@ def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=N
     fig.savefig(file_name)  # save the figure to file
     plt.close(fig)  # close the figure
 
+def remap_layers(model, idx, args): ### Cut this code into half.
+    if args.remap_encoder != "":
+        keys_to_consider = [key for key in model.keys() if "encoder" in key]
+        for mapping in args.remap_encoder.split(","):
+            slayer, tlayer = mapping.split("-")
+            for key in keys_to_consider:
+                key = key.strip().split(".")
+                key_copy = list(key)
+                if key[idx] == slayer:
+                    key_copy[idx] =tlayer
+                    key = ".".join(key)
+                    key_copy = ".".join(key_copy)
+                    model[key] = model[key_copy]
+                    del model[key_copy]
+    if args.remap_decoder != "":
+        keys_to_consider = [key for key in model.keys() if "decoder" in key]
+        for mapping in args.remap_encoder.split(","):
+            slayer, tlayer = mapping.split("-")
+            for key in keys_to_consider:
+                key = key.strip().split(".")
+                key_copy = list(key)
+                if key[idx] == slayer:
+                    key_copy[idx] =tlayer
+                    key = ".".join(key)
+                    key_copy = ".".join(key_copy)
+                    model[key] = model[key_copy]
+                    del model[key_copy]
+    return model
+
+
 def model_create_load_decode(gpu, args):
     """The main function which does the overall decoding, visualization etc. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size. This need not be done using DDP but I am leaving it as is for consistency with my other code. In the future, I plan to support sharding the decoding data into multiple shards which will then be decoded in a distributed fashion.
@@ -319,7 +349,7 @@ def model_create_load_decode(gpu, args):
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config) ## Configuration.
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -329,10 +359,12 @@ def model_create_load_decode(gpu, args):
     
     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
     checkpoint_dict = torch.load(args.model_to_decode, map_location=map_location)
+    
+                    
     if type(checkpoint_dict) == dict:
-        model.load_state_dict(checkpoint_dict['model'])
+        model.load_state_dict(remap_layers(checkpoint_dict['model'], 4, args), strict=False if args.multilayer_softmaxing else True) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     else:
-        model.load_state_dict(checkpoint_dict)
+        model.load_state_dict(remap_layers(checkpoint_dict, 3, args), strict=False if args.multilayer_softmaxing else True) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -505,7 +537,7 @@ def run_demo():
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
-    parser.add_argument('--layer_id', default=0, type=int, help="The id of the layer from 0 to num_layers-1")
+    parser.add_argument('--layer_id', default=0, type=int, help="The id of the layer from 0 to num_layers. Note that the implementation returns the embedding layer output at index 0 so the output of layer 1 is actually at index 1.")
     parser.add_argument('--att_head_id', default=0, type=int, help="The id of the attention head from 0 to encoder_attention_heads-1 or decoder_attention_heads-1")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
@@ -514,9 +546,9 @@ def run_demo():
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
-    parser.add_argument('--max_decode_length_multiplier', default=1.5, type=float, 
+    parser.add_argument('--max_decode_length_multiplier', default=2.0, type=float, 
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
-    parser.add_argument('--min_decode_length_multiplier', default=0.25, type=float, 
+    parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
                         help='This multiplied by the source sentence length will be the minimum decoding length.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
@@ -552,6 +584,12 @@ def run_demo():
                         help='Should we mask words in the input sentence? We should use this for hallucinating variations of the input sentences.')
     parser.add_argument('--return_all_sequences', action='store_true', 
                         help='Should we return all beam sequences?')
+    parser.add_argument('--multilayer_softmaxing', action='store_true', 
+                        help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
+    parser.add_argument('--remap_encoder', default='', type=str, 
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
+    parser.add_argument('--remap_decoder', default='', type=str, 
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
     
     args = parser.parse_args()
     print("IP address is", args.ipaddr)

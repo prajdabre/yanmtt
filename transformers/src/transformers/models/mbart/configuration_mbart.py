@@ -131,6 +131,7 @@ class MBartConfig(PretrainedConfig):
         decoder_tying_config=None,
         features_vocab_sizes=None,
         features_embed_dims=None,
+        multilayer_softmaxing=False,
         **kwargs
     ):
         super().__init__(
@@ -164,8 +165,9 @@ class MBartConfig(PretrainedConfig):
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
         self.encoder_tying_config = encoder_tying_config
         self.decoder_tying_config = decoder_tying_config
-        self.feature_vocab_sizes = feature_vocab_sizes  
-        self.feature_embed_dims = feature_embed_dims
+        self.features_vocab_sizes = features_vocab_sizes  
+        self.features_embed_dims = features_embed_dims
+        self.multilayer_softmaxing = multilayer_softmaxing
 
     @property
     def num_attention_heads(self) -> int:

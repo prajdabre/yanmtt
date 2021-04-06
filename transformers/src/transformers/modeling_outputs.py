@@ -525,6 +525,8 @@ class Seq2SeqLMOutput(ModelOutput):
 
             Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
             self-attention heads.
+            
+            Logits for softmaxes on the shallower layers of the decoder. This is in accordance with my multilayer softmaxing work.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -536,6 +538,7 @@ class Seq2SeqLMOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_lm_logits: Optional[Tuple[torch.FloatTensor]] = None ## We use this for multilayer softmaxing to keep additional logits. The number of logits will be (number of decoder layers-1).
 
 
 @dataclass
