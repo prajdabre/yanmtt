@@ -254,19 +254,25 @@ def generate_batches(tok, args):
         input_masks = input_ids != tok.pad_token_id
         yield input_ids, input_masks
 
-def nll_loss(lprobs, target, ignore_index=0):
-    """From fairseq. This returns the non-label smoothed cross entropy loss."""
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
+    """From fairseq. This returns the label smoothed cross entropy loss."""
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
     if ignore_index is not None:
         pad_mask = target.eq(ignore_index)
         nll_loss.masked_fill_(pad_mask, 0.0)
+        smooth_loss.masked_fill_(pad_mask, 0.0)
     else:
         nll_loss = nll_loss.squeeze(-1)
+        smooth_loss = smooth_loss.squeeze(-1)
 
-    nll_loss = nll_loss.sum(-1).mean(-1)
-    return nll_loss
+    nll_loss = nll_loss.mean()
+    smooth_loss = smooth_loss.mean()
+    eps_i = epsilon / lprobs.size(-1)
+    loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
+    return loss
 
 def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
     '''
@@ -339,8 +345,25 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                     del model[key_copy]
     return model
 
-def eliminate_mismatches(our_model_dict, model_to_load_dict):
-    """This method eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+def remap_embeddings(our_model_dict, model_to_load_dict, args):
+    """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
+    print("Remapping embeddings.")
+    if args.pretrained_tokenizer_name_or_path is None:
+        return model
+    
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
+    tok_pre = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
+    for token in tok:
+        tok_idx = tok[token]
+        if token in tok_pre:
+            pre_tok_idx = tok_pre[token]
+            our_model_dict["module.model.shared.weight"][tok_idx] = model_to_load_dict["module.model.shared.weight"][pre_tok_idx]
+    model_to_load_dict["module.model.shared.weight"] = our_model_dict["module.model.shared.weight"]
+    return model_to_load_dict
+
+def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
+    """This method first remaps embeddings from pretrained to current model and then eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+    model_to_load_dict = remap_embeddings(our_model_dict, model_to_load_dict, args)
     print("Eliminating matched params with mismatched sizes from the initial model.")
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:
@@ -373,9 +396,9 @@ def model_create_load_decode(gpu, args):
     
                     
     if type(checkpoint_dict) == dict:
-        model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args))) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args)) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     else:
-        model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args))) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args)) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -421,8 +444,8 @@ def model_create_load_decode(gpu, args):
                     outf.write(translation+"\n")
                     outf.flush()
                     hyp.append(translation)
-            else: ## Return the NLL loss.
-                logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
+            else: ## Return the label smoothed loss.
+                logprobs = label_smoothed_nll_loss(softmax, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id)
                 for logprob in logprobs:
                     print(logprob)
                     outf.write(str(logprob)+"\n")
@@ -582,7 +605,9 @@ def run_demo():
     parser.add_argument('--decode_type', default='decode', type=str, 
                         help='One of decode, score, force_align, get_enc_representation, get_dec_representation, teacher_forced_decoding or get_attention. When getting representations or attentions you must specify the index of the layer which you are interested in. By default the last layer is considered.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
-                        help='Name of or path to the pre-trained indic language tokenizer')
+                        help='Name of or path to the tokenizer')
+    parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
+                        help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
     parser.add_argument('--tlang', default='hi', type=str, 
                         help='Target language')
     parser.add_argument('--test_src', default='', type=str, 

@@ -401,8 +401,25 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                     del model[key_copy]
     return model
 
-def eliminate_mismatches(our_model_dict, model_to_load_dict):
-    """This method eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+def remap_embeddings(our_model_dict, model_to_load_dict, args):
+    """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
+    print("Remapping embeddings.")
+    if args.pretrained_tokenizer_name_or_path is None:
+        return model
+    
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
+    tok_pre = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
+    for token in tok:
+        tok_idx = tok[token]
+        if token in tok_pre:
+            pre_tok_idx = tok_pre[token]
+            our_model_dict["module.model.shared.weight"][tok_idx] = model_to_load_dict["module.model.shared.weight"][pre_tok_idx]
+    model_to_load_dict["module.model.shared.weight"] = our_model_dict["module.model.shared.weight"]
+    return model_to_load_dict
+
+def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
+    """This method first remaps embeddings from pretrained to current model and then eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+    model_to_load_dict = remap_embeddings(our_model_dict, model_to_load_dict, args)
     print("Eliminating matched params with mismatched sizes from the initial model.")
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:
@@ -504,9 +521,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args)))
+            model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args))
         else:
-            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args)))
+            model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args))
     elif args.pretrained_bilingual_model != "":
         print("Loading a previous checkpoint")
         dist.barrier()
@@ -514,12 +531,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args)))
+            model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args))
             optimizer.load_state_dict(checkpoint_dict['optimizer'])
             scheduler.load_state_dict(checkpoint_dict['scheduler'])
             ctr = checkpoint_dict['ctr']
         else:
-            model.load_state_dict(eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args)))
+            model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args))
             ctr = 0
     else:
         print("Training from scratch")
@@ -842,7 +859,9 @@ def run_demo():
     parser.add_argument('--train_slang', default='en', type=str, 
                         help='Source language(s) for training')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
-                        help='Name of or path to the pre-trained indic language tokenizer')
+                        help='Name of or path to the tokenizer')
+    parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
+                        help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
     parser.add_argument('--train_tlang', default='hi', type=str, 
                         help='Target language(s) for training')
     parser.add_argument('--train_src', default='', type=str, 
