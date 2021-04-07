@@ -274,18 +274,31 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
         max_tgt_sent_len = 0
         start = time.time()
         sents_in_batch = 0
+        if args.cross_distillation: ## We assume an additional source language.
+            max_src_sent_len_parent = 0
+            encoder_input_batch_parent = []
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
+            if args.cross_distillation: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of Y[tab]X.
+                src_sent = src_sent.split("\t")
+                src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
+                src_sent = src_sent[0] ## This is the sentence for X
             src_sent = src_sent.strip()
             tgt_sent = tgt_sent.strip()
             slangtlang = language_list[language_idx].strip().split("-")
-            slang = "<2"+slangtlang[0]+">"
-            tlang = "<2"+slangtlang[1]+">"
+            if args.cross_distillation: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
+                slang_parent = "<2"+slangtlang[0]+">"
+                slang = "<2"+slangtlang[1]+">"
+                tlang = "<2"+slangtlang[2]+">"
+            else:
+                slang = "<2"+slangtlang[0]+">"
+                tlang = "<2"+slangtlang[1]+">"
             src_sent_split = src_sent.split(" ")
             tgt_sent_split = tgt_sent.split(" ")
             tgt_sent_len = len(tgt_sent_split)
             src_sent_len = len(src_sent_split)
+            
             if src_sent_len <=1 or tgt_sent_len <=1:
                 continue
             else:   # Initial truncation
@@ -297,8 +310,19 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
                     tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
                     tgt_sent = " ".join(tgt_sent_split)
                     tgt_sent_len = args.max_tgt_length
-                
-            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization. In fact a single condition based on a flag should be sufficient but I am too lazy to make a change. Come fight me if you disagree.
+            
+            if args.cross_distillation:
+                src_sent_split_parent = src_sent_parent.split(" ")
+                src_sent_len_parent = len(src_sent_split_parent)
+                if src_sent_len_parent <=1:
+                    continue
+                else:   # Initial truncation
+                    if src_sent_len_parent >= args.max_src_length: ## The same sentence length constraint applies to Y as it does to X.
+                        src_sent_split_parent = src_sent_split_parent[:args.max_src_length]
+                        src_sent_parent = " ".join(src_sent_split_parent)
+                        src_sent_len_parent = args.max_src_length
+                        
+            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization. We wont bother using this condition for cross distillation. In fact a single condition based on a flag should be sufficient but I am too lazy to make a change. Come fight me if you disagree.
                 if args.source_masking_for_bilingual:
                     mask_percent = random.uniform(0.0, mp_val_or_range[0]) ## Do less masking
                 else:
@@ -327,6 +351,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
             curr_src_sent_len = len(iids[0])
             
+                
             iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
 
@@ -335,12 +360,19 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             
             if curr_tgt_sent_len > max_tgt_sent_len:
                 max_tgt_sent_len = curr_tgt_sent_len
-            
+                
             encoder_input_batch.append(src_sent + " </s> " + slang)
             decoder_input_batch.append(tlang + " " + tgt_sent)
             decoder_label_batch.append(tgt_sent + " </s>")
+            if args.cross_distillation:
+                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_src_sent_len_parent = len(iids[0])
+                if curr_src_sent_len_parent > max_src_sent_len_parent:
+                    max_src_sent_len_parent = curr_src_sent_len_parent
+                encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
+                
             sents_in_batch += 1
-            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch
+            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch ## We limit ourselves based on the source language of interest (X and not Y).
             if curr_batch_count > args.batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -353,8 +385,16 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         if len(labels[0]) > args.max_tgt_length: ## Truncate again if we exceed the maximum sequence length.
             labels = labels[:,:args.max_tgt_length]
-        end = time.time()
-        yield input_ids, input_masks, decoder_input_ids, labels
+        if args.cross_distillation:
+            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+            if len(input_ids_parent[0]) > args.max_src_length: ## Truncate again if we exceed the maximum sequence length.
+                input_ids_parent = input_ids_parent[:,:args.max_src_length]
+            input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+            end = time.time()
+            yield [input_ids_parent, input_ids], [input_masks_parent, input_masks], decoder_input_ids, labels
+        else:
+            end = time.time()
+            yield input_ids, input_masks, decoder_input_ids, labels
    
 def init_weights(module, in_features, out_features):
     """Method to initialize model weights. Not used for now but might be used in the future. Tries to mimic t2t initialization.
@@ -664,6 +704,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             scheduler.load_state_dict(checkpoint_dict['scheduler'])
         
         dist.barrier()
+        if args.cross_distillation: ## The returned input ids and input masks are actually a list of two items each. The first item is to be fed to the parent model and the second item is to be fed to the child model.
+            input_ids_parent=input_ids[0]
+            input_ids=input_ids[1]
+            input_ids_parent = input_ids_parent.to(gpu) ## Move to gpu
+            input_masks_parent=input_masks[0]
+            input_masks=input_masks[1]
+            input_masks_parent = input_masks_parent.to(gpu) ## Move to gpu
         input_ids=input_ids.to(gpu) ## Move to gpu
         input_masks=input_masks.to(gpu) ## Move to gpu
         decoder_input_ids=decoder_input_ids.to(gpu) ## Move to gpu
@@ -691,6 +738,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         entropy = -(torch.exp(lprobs)*lprobs).mean()
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
                     if args.distillation: ## Time to distill.
+                        if args.cross_distillation: ## The input ids and masks should be replaced with those appropriate for the parent.
+                            input_ids = input_ids_parent
+                            input_masks = input_masks_parent
                         with torch.no_grad(): ## No gradient to avoid memory allocation.
                             parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
                         distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
@@ -716,6 +766,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     entropy = -(torch.exp(lprobs)*lprobs).mean()
                     loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
                 if args.distillation: ## Time to distill.
+                    if args.cross_distillation: ## The input ids and masks should be replaced with those appropriate for the parent.
+                        input_ids = input_ids_parent
+                        input_masks = input_masks_parent
                     with torch.no_grad(): ## No gradient to avoid memory allocation.
                         parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
                         distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
@@ -731,6 +784,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         input_masks=input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         decoder_input_ids=decoder_input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         labels=labels.to('cpu') ## Move to CPU. May not be needed but its a safety net.
+        if args.cross_distillation:
+            input_ids_parent=input_ids_parent.to('cpu') ## Move to CPU. May not be needed but its a safety net.
+            input_masks_parent=input_masks_parent.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation.
             scaler.scale(loss).backward()
         else:
@@ -897,6 +953,8 @@ def run_demo():
     ### Distillation flags
     parser.add_argument('--distillation', action='store_true', 
                         help='Should we perform distillation from a parent model? If so then you must specify the model using "parent_pretrained_model". There are several distillation options check the flag called "distillation_styles".')
+    parser.add_argument('--cross_distillation', action='store_true', 
+                        help='Should we perform cross distillation from a parent model which has been trained on another source language but the same target language? If so then you must specify the model using "parent_pretrained_model". Additionally you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence" There are several distillation options check the flag called "distillation_styles".')
     parser.add_argument('--parent_pretrained_model', default='', type=str, 
                         help='Path to the parent pretrained model for distillation. The pretrained_model flag will be used to initialize the child model.')
     parser.add_argument('--distillation_loss_weight', type=float, default=0.7, 
