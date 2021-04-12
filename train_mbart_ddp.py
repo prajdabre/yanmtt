@@ -55,6 +55,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
     return loss
 
+    
 def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, ignore_index, args):
     """Implemented by me. This is based on distill bert, distill mbart etc.
     There are 3 types of distillation losses for now: cross_entropy, hidden_layer_regression and attention_distillation.
@@ -160,8 +161,15 @@ def shard_files(files, world_size):
         print("File for language", lang, "has been sharded.")
         sys.stdout.flush()
         
+def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter):
+    """Here we start at a particular random index and select the rest of the sentences. This is to make sure that we dont always see only the initial part of each document all the time."""
+    sentence_split = sentence.split(" "+document_level_sentence_delimiter+" ")
+    sentence_split_length = len(sentence_split)
+    start_idx = random.randint(0, sentence_split_length-1)
+    return (" "+document_level_sentence_delimiter+" ").join(sentence_split)
 
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100):
+    
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100, args): ## Todo clean this signature and make everything rely on args
     """Generates the source, target and source attention masks for denoising. Long sequences are truncated and short sequences are ignored."""
     
     batch_count = 0
@@ -194,6 +202,8 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             sentence = next(language_file_dict[language_list[language_idx]]).strip()
+            if args.is_document:
+                sentence = sub_sample_and_permute_document(sentence, args.document_level_sentence_delimiter)
             lang = "<2"+language_list[language_idx]+">"
             if type(mp_val_or_range) is float:
                 mask_percent = mp_val_or_range
@@ -244,7 +254,7 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
             sents_in_batch += 1
-            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch
+            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) #Assume that we leave a buffer for an additional sentence to prevent us from going over limits.
             if curr_batch_count > batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -309,7 +319,7 @@ def remap_embeddings(our_model_dict, model_to_load_dict, args):
     """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
     print("Remapping embeddings.")
     if args.pretrained_tokenizer_name_or_path is None:
-        return model
+        return model_to_load_dict
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
     tok_pre = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
@@ -328,6 +338,7 @@ def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:
             if our_model_dict[our_model_key].size() != model_to_load_dict[our_model_key].size():
+                print("Eliminating", our_model_key)
                 del model_to_load_dict[our_model_key]
     return model_to_load_dict
 
@@ -409,19 +420,21 @@ def model_create_load_run_save(gpu, args, files):
         checkpoint_dict = torch.load(args.initialization_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args))
-            optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
-            scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+            if args.remap_encoder is '' and args.remap_decoder is '': ## No not load optimizers and schedulers when remapping
+                optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+                scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
             ctr = checkpoint_dict['ctr']
         else:
             model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args))
             ctr = 0
     else:
+        print("Training from scratch")
         ctr = 0
     model.train()
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, args.batch_size, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files, args.max_length): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, args.batch_size, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files, args.max_length, args): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
         start = time.time()
         optimizer.zero_grad() ## Empty the gradients before any computation.
         
@@ -578,6 +591,10 @@ def run_demo():
                         help='Should we normalize embeddings?')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
+    parser.add_argument('--is_document', action='store_true', 
+                        help='This assumes that the input corpus is a document level corpus and each line is in fact a document. Each line also contains a token such as "[SEP]" (controlled by the "document_level_sentence_delimiter" flag) to mark the boundaries of sentences. When generating training data we will use this flag to select arbitrary sequences of sentences in case of long documents.')
+    parser.add_argument('--document_level_sentence_delimiter', default='[SEP]', type=str, 
+                        help='If the corpus is document level then we assume that sentences are separated via this token. Please change this in case you have a different type of delimiter.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
@@ -618,9 +635,9 @@ def run_demo():
     parser.add_argument('--multilayer_softmaxing', action='store_true', 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
     parser.add_argument('--remap_encoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     parser.add_argument('--remap_decoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     ### Distillation flags
     parser.add_argument('--distillation', action='store_true', 
                         help='Should we perform distillation from a parent model? If so then you must specify the model using "parent_pretrained_model". There are several distillation options check the flag called "distillation_styles".')

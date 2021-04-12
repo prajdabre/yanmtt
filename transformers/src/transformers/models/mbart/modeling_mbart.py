@@ -675,26 +675,30 @@ class MBartEncoder(MBartPreTrainedModel):
             self.embed_tokens = embed_tokens
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, embed_dim, self.padding_idx)
-            
-        if config.features_vocab_sizes is not None:
+        
+        ### Modification by Raj Dabre. START.
+        if config.features_vocab_sizes is not None: ### Set up embedders for features
             self.features_embed_tokens = [nn.Embedding(feature_vocab_size, feature_embed_dim, self.padding_idx) for feature_vocab_size, feature_embed_dim in zip(config.features_vocab_sizes, config.features_embed_dims)]
             self.features_final_project = nn.Linear(embed_dim+sum(config.features_embed_dims), embed_dim, bias=False)
         else:
             self.features_embed_tokens = None
             self.features_final_project = None
-
+        ### Modification by Raj Dabre. END.
+        
         self.embed_positions = MBartLearnedPositionalEmbedding(
             config.max_position_embeddings,
             embed_dim,
             self.padding_idx,
         )
-        if config.encoder_tying_config is not None:
+        ### Modification by Raj Dabre. START.
+        if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
             unique_idxs = set(layer_idxs)
             unique_layers = {idx: MBartEncoderLayer(config) for idx in unique_idxs}
             self.layers = nn.ModuleList([unique_layers[idx] for idx in layer_idxs])
         else:
             self.layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.encoder_layers)])
+        ### Modification by Raj Dabre. END.
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
@@ -767,10 +771,12 @@ class MBartEncoder(MBartPreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-            if self.features_final_project is not None and self.features_embed_tokens is not None:
+            ### Modification by Raj Dabre. START.
+            if self.features_final_project is not None and self.features_embed_tokens is not None: ## Perform feature computation and concatenation and projection.
                 features_embeds = [feature_embed_tokens(feature_id) for feature_embed_tokens, feature_input_id in zip(self.features_embed_tokens, features_ids)]
                 all_embeds = [inputs_embeds] + features_embeds
                 input_embeds = self.features_final_project(torch.cat(all_embeds, dim=-1))## Basic feature based model. Add relevance model here.
+            ### Modification by Raj Dabre. END.
             
 
         embed_pos = self.embed_positions(input_shape)
@@ -866,13 +872,15 @@ class MBartDecoder(MBartPreTrainedModel):
             config.d_model,
             self.padding_idx,
         )
-        if config.decoder_tying_config is not None:
+        ### Modification by Raj Dabre. START.
+        if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")
             unique_idxs = set(layer_idxs)
             unique_layers = {idx: MBartDecoderLayer(config) for idx in unique_idxs}
             self.layers = nn.ModuleList([unique_layers[idx] for idx in layer_idxs])
         else:
             self.layers = nn.ModuleList([MBartDecoderLayer(config) for _ in range(config.decoder_layers)])
+        ### Modification by Raj Dabre. END.
         self.layernorm_embedding = nn.LayerNorm(config.d_model)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
@@ -1329,13 +1337,13 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             return_dict=return_dict,
         )
         lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
-        
-        additional_lm_logits = []
+        ### Modification by Raj Dabre. START.
+        additional_lm_logits = [] ## The additional logits will be collected here and then returned to my main code.
         
         if self.config.multilayer_softmaxing:
             for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 additional_lm_logits.append(self.lm_head(lm_representation) + self.final_logits_bias)
-
+        ### Modification by Raj Dabre. END.
         masked_lm_loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()

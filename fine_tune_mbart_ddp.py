@@ -372,7 +372,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
                 encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
                 
             sents_in_batch += 1
-            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*sents_in_batch ## We limit ourselves based on the source language of interest (X and not Y).
+            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target. Assume that we leave a buffer for an additional sentence to prevent us from going over limits.
             if curr_batch_count > args.batch_size:
                 break
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -445,7 +445,7 @@ def remap_embeddings(our_model_dict, model_to_load_dict, args):
     """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
     print("Remapping embeddings.")
     if args.pretrained_tokenizer_name_or_path is None:
-        return model
+        return model_to_load_dict
     
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
     tok_pre = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
@@ -464,6 +464,7 @@ def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:
             if our_model_dict[our_model_key].size() != model_to_load_dict[our_model_key].size():
+                print("Eliminating", our_model_key)
                 del model_to_load_dict[our_model_key]
     return model_to_load_dict
 
@@ -569,11 +570,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
+        checkpoint_dict = torch.load(args.pretrained_bilingual_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args))
-            optimizer.load_state_dict(checkpoint_dict['optimizer'])
-            scheduler.load_state_dict(checkpoint_dict['scheduler'])
+            if args.remap_encoder is '' and args.remap_decoder is '': ## No not load optimizers and schedulers when remapping
+                optimizer.load_state_dict(checkpoint_dict['optimizer'])
+                scheduler.load_state_dict(checkpoint_dict['scheduler'])
             ctr = checkpoint_dict['ctr']
         else:
             model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args))
@@ -588,7 +590,6 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     print("Using softmax temperature of", args.softmax_temperature)
     if args.max_ent_weight != -1:
         print("Doing entropy maximization during loss computation.")
-    ctr = 0
     global_sbleu_history = [] ## To save the global evaluation metric history.
     max_global_sbleu = 0 ## Maximum global evaluation metric score.
     max_global_sbleu_step = 0 ## Step at which we achieved the maximum global evaluation metric score.
@@ -947,9 +948,9 @@ def run_demo():
     parser.add_argument('--multilayer_softmaxing', action='store_true', 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
     parser.add_argument('--remap_encoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     parser.add_argument('--remap_decoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     ### Distillation flags
     parser.add_argument('--distillation', action='store_true', 
                         help='Should we perform distillation from a parent model? If so then you must specify the model using "parent_pretrained_model". There are several distillation options check the flag called "distillation_styles".')

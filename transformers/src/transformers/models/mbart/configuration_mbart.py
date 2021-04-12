@@ -127,11 +127,11 @@ class MBartConfig(PretrainedConfig):
         pad_token_id=1,
         bos_token_id=0,
         eos_token_id=2,
-        encoder_tying_config=None,
-        decoder_tying_config=None,
-        features_vocab_sizes=None,
-        features_embed_dims=None,
-        multilayer_softmaxing=False,
+        decoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper.
+        encoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
+        features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
+        features_embed_dims=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
+        multilayer_softmaxing=False, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
         **kwargs
     ):
         super().__init__(
@@ -163,11 +163,11 @@ class MBartConfig(PretrainedConfig):
         self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
-        self.encoder_tying_config = encoder_tying_config
-        self.decoder_tying_config = decoder_tying_config
-        self.features_vocab_sizes = features_vocab_sizes  
-        self.features_embed_dims = features_embed_dims
-        self.multilayer_softmaxing = multilayer_softmaxing
+        self.encoder_tying_config = encoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper.
+        self.decoder_tying_config = decoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
+        self.features_vocab_sizes = features_vocab_sizes  ## Argument to control feature based NMT. According to my paper with Abhisek. 
+        self.features_embed_dims = features_embed_dims ## Argument to control feature based NMT. According to my paper with Abhisek.
+        self.multilayer_softmaxing = multilayer_softmaxing ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
 
     @property
     def num_attention_heads(self) -> int:
