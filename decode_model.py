@@ -23,8 +23,9 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 ##
 
-
-
+## Our imports
+from common_utils import *
+##
 
 ## Other imports
 import math
@@ -47,11 +48,6 @@ rcParams['font.sans-serif'] = ['Source Han Sans TW',
 #from torch.utils.tensorboard import SummaryWriter
 ##
 
-
-def get_sacrebleu(refs, hyp):
-    """Returns sacrebleu score. Sacrebleu is a reliable implementation for computing corpus level BLEU scores."""
-    bleu = sacrebleu.corpus_bleu(hyp, refs)
-    return bleu.score
 
 def generate_batches_pair(tok, args):
     """Generates the source, target and source attention masks for the training set."""
@@ -254,26 +250,6 @@ def generate_batches(tok, args):
         input_masks = input_ids != tok.pad_token_id
         yield input_ids, input_masks
 
-def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=0):
-    """From fairseq. This returns the label smoothed cross entropy loss."""
-    if target.dim() == lprobs.dim() - 1:
-        target = target.unsqueeze(-1)
-    nll_loss = -lprobs.gather(dim=-1, index=target)
-    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
-    if ignore_index is not None:
-        pad_mask = target.eq(ignore_index)
-        nll_loss.masked_fill_(pad_mask, 0.0)
-        smooth_loss.masked_fill_(pad_mask, 0.0)
-    else:
-        nll_loss = nll_loss.squeeze(-1)
-        smooth_loss = smooth_loss.squeeze(-1)
-
-    nll_loss = nll_loss.mean()
-    smooth_loss = smooth_loss.mean()
-    eps_i = epsilon / lprobs.size(-1)
-    loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
-    return loss
-
 def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
     '''
       Plot the attention model heatmap
@@ -313,64 +289,6 @@ def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=N
     print("Saving figures %s" % file_name)
     fig.savefig(file_name)  # save the figure to file
     plt.close(fig)  # close the figure
-
-def remap_layers(model, idx, args): ### Cut this code into half.
-    """This method is used to remap the layers from a pretrained model to the current model. The remapping info comes in the form of 2-1,... which means, map the second layer of the pretrained model to the first layer of the current model."""
-    print("Remapping layers from parent to child.")
-    if args.remap_encoder != "":
-        keys_to_consider = [key for key in model.keys() if "encoder" in key]
-        for mapping in args.remap_encoder.split(","):
-            slayer, tlayer = mapping.split("-")
-            for key in keys_to_consider:
-                key = key.strip().split(".")
-                key_copy = list(key)
-                if key[idx] == slayer:
-                    key_copy[idx] =tlayer
-                    key = ".".join(key)
-                    key_copy = ".".join(key_copy)
-                    model[key] = model[key_copy]
-                    del model[key_copy]
-    if args.remap_decoder != "":
-        keys_to_consider = [key for key in model.keys() if "decoder" in key]
-        for mapping in args.remap_encoder.split(","):
-            slayer, tlayer = mapping.split("-")
-            for key in keys_to_consider:
-                key = key.strip().split(".")
-                key_copy = list(key)
-                if key[idx] == slayer:
-                    key_copy[idx] =tlayer
-                    key = ".".join(key)
-                    key_copy = ".".join(key_copy)
-                    model[key] = model[key_copy]
-                    del model[key_copy]
-    return model
-
-def remap_embeddings(our_model_dict, model_to_load_dict, args):
-    """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
-    print("Remapping embeddings.")
-    if args.pretrained_tokenizer_name_or_path is None:
-        return model_to_load_dict
-    
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
-    tok_pre = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True).get_vocab()
-    for token in tok:
-        tok_idx = tok[token]
-        if token in tok_pre:
-            pre_tok_idx = tok_pre[token]
-            our_model_dict["module.model.shared.weight"][tok_idx] = model_to_load_dict["module.model.shared.weight"][pre_tok_idx]
-    model_to_load_dict["module.model.shared.weight"] = our_model_dict["module.model.shared.weight"]
-    return model_to_load_dict
-
-def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
-    """This method first remaps embeddings from pretrained to current model and then eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
-    model_to_load_dict = remap_embeddings(our_model_dict, model_to_load_dict, args)
-    print("Eliminating matched params with mismatched sizes from the initial model.")
-    for our_model_key in our_model_dict:
-        if our_model_key in model_to_load_dict:
-            if our_model_dict[our_model_key].size() != model_to_load_dict[our_model_key].size():
-                print("Eliminating", our_model_key)
-                del model_to_load_dict[our_model_key]
-    return model_to_load_dict
 
 
 def model_create_load_decode(gpu, args):
