@@ -34,6 +34,7 @@ import numpy as np
 import sacrebleu
 from rouge_score import rouge_scorer
 import gc
+import functools
 ##
 
 ## Seed setting here
@@ -80,10 +81,18 @@ def generate_batches_eval(tok, args, file, slang):
     for src_line in src_file:
         start = time.time()
         src_sent = src_line.strip()
-        lang = "<2"+slang+">"
+        if args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
+            src_sent = src_sent.split("\t")
+            src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
+            src_sent = src_sent[0] ## This is the sentence for X
+            slang = slang.split("-")
+            slang_parent = slang[1]
+            slang = slang[0]
+            lang_parent = "<2"+slang_parent+">"
+        lang = "<2"+slang+">" ## proceed from here to generate a batch for the multisource development set.
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
-        if sent_len > args.max_src_length:
+        if sent_len > args.max_src_length: ## Initial truncation
             src_sent_split=src_sent_split[:args.max_src_length]
             src_sent = " ".join(src_sent_split)
             sent_len = args.max_src_length
@@ -96,10 +105,12 @@ def generate_batches_eval(tok, args, file, slang):
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if len(input_ids[0]) > args.max_src_length:
-                input_ids = input_ids[:,:args.max_src_length]
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             end = time.time()
+            if args.is_summarization:
+                print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
             yield input_ids, input_masks
             curr_batch_count = 0
             encoder_input_batch = []
@@ -107,9 +118,11 @@ def generate_batches_eval(tok, args, file, slang):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if len(input_ids[0]) > args.max_src_length:
-            input_ids = input_ids[:,:args.max_src_length]
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
+        if args.is_summarization:
+            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
         yield input_ids, input_masks
 
 
@@ -144,22 +157,24 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
         batch_count += 1
         max_src_sent_len = 0
         max_tgt_sent_len = 0
+        prev_max_src_sent_len = 0
+        prev_max_tgt_sent_len = 0
         start = time.time()
         sents_in_batch = 0
-        if args.cross_distillation: ## We assume an additional source language.
+        if args.cross_distillation or args.multi_source: ## We assume an additional source language.
             max_src_sent_len_parent = 0
             encoder_input_batch_parent = []
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
-            if args.cross_distillation: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of Y[tab]X.
+            if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
                 src_sent = src_sent.split("\t")
                 src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
                 src_sent = src_sent[0] ## This is the sentence for X
             src_sent = src_sent.strip()
             tgt_sent = tgt_sent.strip()
             slangtlang = language_list[language_idx].strip().split("-")
-            if args.cross_distillation: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
+            if args.cross_distillation or args.multi_source: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
                 slang_parent = "<2"+slangtlang[0]+">"
                 slang = "<2"+slangtlang[1]+">"
                 tlang = "<2"+slangtlang[2]+">"
@@ -183,7 +198,7 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
                     tgt_sent = " ".join(tgt_sent_split)
                     tgt_sent_len = args.max_tgt_length
             
-            if args.cross_distillation:
+            if args.cross_distillation or args.multi_source:
                 src_sent_split_parent = src_sent_parent.split(" ")
                 src_sent_len_parent = len(src_sent_split_parent)
                 if src_sent_len_parent <=1:
@@ -228,39 +243,50 @@ def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
             curr_tgt_sent_len = len(iids[0])
 
             if curr_src_sent_len > max_src_sent_len:
+                prev_max_src_sent_len = max_src_sent_len
                 max_src_sent_len = curr_src_sent_len
             
             if curr_tgt_sent_len > max_tgt_sent_len:
+                prev_max_tgt_sent_len = max_tgt_sent_len
                 max_tgt_sent_len = curr_tgt_sent_len
-                
+            
+            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
+            if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                max_src_sent_len = prev_max_src_sent_len
+                max_tgt_sent_len = prev_max_tgt_sent_len
+                break
+            
             encoder_input_batch.append(src_sent + " </s> " + slang)
             decoder_input_batch.append(tlang + " " + tgt_sent)
             decoder_label_batch.append(tgt_sent + " </s>")
-            if args.cross_distillation:
+            sents_in_batch += 1
+            if args.cross_distillation or args.multi_source:
                 iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
                 curr_src_sent_len_parent = len(iids[0])
                 if curr_src_sent_len_parent > max_src_sent_len_parent:
                     max_src_sent_len_parent = curr_src_sent_len_parent
                 encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
                 
-            sents_in_batch += 1
-            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target. Assume that we leave a buffer for an additional sentence to prevent us from going over limits.
-            if curr_batch_count > args.batch_size:
-                break
+        if len(encoder_input_batch) == 0:
+            print("Zero size batch due to an abnormal example. Skipping empty batch.")
+            continue    
+
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if len(input_ids[0]) > args.max_src_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:args.max_src_length]
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if len(decoder_input_ids[0]) > args.max_tgt_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
+        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if len(labels[0]) > args.max_tgt_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:args.max_tgt_length]
-        if args.cross_distillation:
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            labels = labels[:,:args.hard_truncate_length]
+        if args.is_summarization:
+            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
+        if args.cross_distillation or args.multi_source:
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
-            if len(input_ids_parent[0]) > args.max_src_length: ## Truncate again if we exceed the maximum sequence length.
-                input_ids_parent = input_ids_parent[:,:args.max_src_length]
+            if args.hard_truncate_length > 0 and  len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
             end = time.time()
             yield [input_ids_parent, input_ids], [input_masks_parent, input_masks], decoder_input_ids, labels
@@ -398,14 +424,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     max_individual_sbleu_step = {dev_pair: 0 for dev_pair in dev_files} ## The step at which maximum score was achieved per pair.
     curr_eval_step = 0
     annealing_attempt = 0 ## We use this to limit the number of times annealing will take place. When we anneal the LR is divided by a factor. How this is achieved will be explained below.
-    inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])] for dev_pair in dev_files} ## Get all inputs for each pair.
+    inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])][:args.max_eval_batches*args.dev_batch_size] for dev_pair in dev_files} ## Get all inputs for each pair. Select up to args.max_eval_batches*args.dev_batch_size examples.
     if args.is_summarization: ## Slight data structure difference for summarization vs translation when computing the evaluation metric. For summarization the metric is Rouge.
-        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files} ## Get all references for each input.
+        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair in dev_files} ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
         scores = {dev_pair: 0 for dev_pair in dev_files} ## The rouge scorer works at the sentence level so we have to add all individual scores per sentence and this dictionary keeps track of the score. This dictionary may not be needed.
     else:
-        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])]] for dev_pair in dev_files}
+        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair in dev_files} ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
     for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank, (0.30, 0.40), 3.5): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
-        optimizer.zero_grad() ## Empty the gradients before any computation.
         start = time.time()
         if ctr % args.eval_every == 0: ## We have to evaluate our model every eval_every steps.
             CHECKPOINT_PATH = args.fine_tuned_model
@@ -418,17 +443,24 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr} ## This training state will be saved.
                     for dev_pair in dev_files: ## For each evaluation pair we will decode and compute scores.
                         slangtlang =dev_pair.strip().split("-")
-                        slang=slangtlang[0]
-                        tlang=slangtlang[1]
+                        if args.multi_source: ## In case we do multisource NMT
+                            slang=slangtlang[0]+"-"+slangtlang[1] ## This will be split in the generate_batches_eval function as we expect a triplet. 
+                            tlang=slangtlang[2]
+                        else:
+                            slang=slangtlang[0]
+                            tlang=slangtlang[1]
+                        eval_batch_counter = 0
                         for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args, inps[dev_pair], slang):
                             start = time.time()
+                            if args.is_summarization: ## Things can be slow so best show progress
+                                print("Decoding batch from a pool of", len(inps[dev_pair]), "examples")
                             with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
                                 translations = model.module.generate(dev_input_ids.to(gpu), use_cache=True, num_beams=1, max_length=int(len(dev_input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(dev_input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size) ## We translate the batch.
                             translations=translations.to('cpu') ## Move to cpu. Not needed but its a safe step.
                             for translation in translations:
                                 translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
                                 hyp[dev_pair].append(translation)
-                        if args.is_summarization: ## Get the evaluation metric score.
+                        if args.use_rouge: ## Get the evaluation metric score.
                             for curr_ref, curr_pred in zip(refs[dev_pair][0], hyp[dev_pair]):
                                 score = scorer.score(curr_ref, curr_pred)
                                 scores[dev_pair] += score['rougeL'].fmeasure
@@ -498,14 +530,14 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             # configure map_location properly
             print("Loading from checkpoint")
             sys.stdout.flush()
-            map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
             checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
             model.load_state_dict(checkpoint_dict['model'])
             optimizer.load_state_dict(checkpoint_dict['optimizer'])
             scheduler.load_state_dict(checkpoint_dict['scheduler'])
         
         dist.barrier()
-        if args.cross_distillation: ## The returned input ids and input masks are actually a list of two items each. The first item is to be fed to the parent model and the second item is to be fed to the child model.
+        if args.cross_distillation or args.multi_source: ## The returned input ids and input masks are actually a list of two items each. The first item is to be fed to the parent model and the second item is to be fed to the child model.
             input_ids_parent=input_ids[0]
             input_ids=input_ids[1]
             input_ids_parent = input_ids_parent.to(gpu) ## Move to gpu
@@ -516,6 +548,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         input_masks=input_masks.to(gpu) ## Move to gpu
         decoder_input_ids=decoder_input_ids.to(gpu) ## Move to gpu
         labels=labels.to(gpu) ## Move to gpu
+        optimizer.zero_grad() ## Empty the gradients before any computation.
         try:
             if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
                 with torch.cuda.amp.autocast():
@@ -691,7 +724,7 @@ def run_demo():
                         help='Path to save the fine tuned model')
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
-    parser.add_argument('--batch_size', default=1024, type=int, 
+    parser.add_argument('--batch_size', default=2048, type=int, 
                         help='Train batch sizes in tokens')
     parser.add_argument('--dev_batch_size', default=1024, type=int, 
                         help='Dev batch sizes in lines')
@@ -709,6 +742,8 @@ def run_demo():
                         help='How many additional checkpoints should we wait till declaring convergence? This will be multiplied with the annealing step number.')
     parser.add_argument('--num_batches', default=1000000, type=int, 
                         help='Number of batches to train on')
+    parser.add_argument('--max_eval_batches', default=1000, type=int, 
+                        help='These many evaluation batches will be considered. Use a small value like 5 to cover a portion of the evaluation data.')
     parser.add_argument('--max_decode_length_multiplier', default=2.0, type=float, 
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
     parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
@@ -741,10 +776,16 @@ def run_demo():
                         help='Should we use masking on source sentences when training on parallel corpora?')
     parser.add_argument('--is_summarization', action='store_true', 
                         help='Should we use masking on source sentences when training on parallel corpora?')
+    parser.add_argument('--hard_truncate_length', default=0, type=int, 
+                        help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
+    parser.add_argument('--use_rouge', action='store_true', 
+                        help='Should we use ROUGE for evaluation?')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
+    parser.add_argument('--multi_source', action='store_true', 
+                        help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
     parser.add_argument('--multilayer_softmaxing', action='store_true', 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
     parser.add_argument('--remap_encoder', default='', type=str, 

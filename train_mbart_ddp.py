@@ -33,6 +33,7 @@ import random
 import numpy as np
 import math
 import sacrebleu
+import functools
 ##
 
 ## Seed setting here
@@ -50,7 +51,7 @@ def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter)
     return (" "+document_level_sentence_delimiter+" ").join(sentence_split)
 
     
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100, args): ## Todo clean this signature and make everything rely on args
+def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100, args=None): ## Todo clean this signature and make everything rely on args
     """Generates the source, target and source attention masks for denoising. Long sequences are truncated and short sequences are ignored."""
     
     batch_count = 0
@@ -78,6 +79,8 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
         batch_count += 1
         max_src_sent_len = 0
         max_tgt_sent_len = 0
+        prev_max_src_sent_len = 0
+        prev_max_tgt_sent_len = 0
         start = time.time()
         sents_in_batch = 0
         while True:
@@ -122,33 +125,41 @@ def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3
             
             iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
-            
-            if curr_src_sent_len > 256 or curr_tgt_sent_len > 256: ## Hard limit. These are too long after tokenization and we dont want them for now.
-                continue
-            
+                        
             if curr_src_sent_len > max_src_sent_len:
+                prev_max_src_sent_len = max_src_sent_len
                 max_src_sent_len = curr_src_sent_len
             
             if curr_tgt_sent_len > max_tgt_sent_len:
+                prev_max_tgt_sent_len = max_tgt_sent_len
                 max_tgt_sent_len = curr_tgt_sent_len
+            
+            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1)
+            if potential_batch_count > batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                max_src_sent_len = prev_max_src_sent_len
+                max_tgt_sent_len = prev_max_tgt_sent_len
+                break
             encoder_input_batch.append(masked_sentence + " </s> " + lang)
             decoder_input_batch.append(lang + " " + sentence)
             decoder_label_batch.append(sentence + " </s>")
             sents_in_batch += 1
-            curr_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) #Assume that we leave a buffer for an additional sentence to prevent us from going over limits.
-            if curr_batch_count > batch_size:
-                break
+        
+        if len(encoder_input_batch) == 0:
+            print("Zero size batch due to an abnormal example. Skipping empty batch.")
+            continue
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if len(input_ids[0]) > max_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:max_length]
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if len(decoder_input_ids[0]) > max_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:max_length]
+        if args.hard_truncate_length and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if len(labels[0]) > max_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:max_length]
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            labels = labels[:,:args.hard_truncate_length]
         end = time.time()
+        if rank == 0:
+            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
         yield input_ids, input_masks, decoder_input_ids, labels
 
 def model_create_load_run_save(gpu, args, files):
@@ -412,9 +423,11 @@ def run_demo():
                         help='Scheduler warmup steps')
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
-    parser.add_argument('--max_length', default=100, type=int, 
+    parser.add_argument('--max_length', default=128, type=int, 
                         help='Maximum sequence length for training')
-    parser.add_argument('--batch_size', default=2048, type=int, 
+    parser.add_argument('--hard_truncate_length', default=0, type=int, 
+                        help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
+    parser.add_argument('--batch_size', default=4096, type=int, 
                         help='Maximum number of tokens in batch')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
