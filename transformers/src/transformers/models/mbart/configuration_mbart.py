@@ -132,6 +132,7 @@ class MBartConfig(PretrainedConfig):
         features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         features_embed_dims=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         multilayer_softmaxing=False, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
+        wait_k=None, ## Argument to control whether we will be doing SNMT or not.
         **kwargs
     ):
         super().__init__(
@@ -168,6 +169,7 @@ class MBartConfig(PretrainedConfig):
         self.features_vocab_sizes = features_vocab_sizes  ## Argument to control feature based NMT. According to my paper with Abhisek. 
         self.features_embed_dims = features_embed_dims ## Argument to control feature based NMT. According to my paper with Abhisek.
         self.multilayer_softmaxing = multilayer_softmaxing ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
+        self.wait_k = wait_k ## Argument to control whether we will be doing SNMT or not.
 
     @property
     def num_attention_heads(self) -> int:
