@@ -136,37 +136,59 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
 def remap_layers(model, idx, args): ### Cut this code into half.
     """This method is used to remap the layers from a pretrained model to the current model. The remapping info comes in the form of 2-1,... which means, map the second layer of the pretrained model to the first layer of the current model."""
     print("Remapping layers from parent to child.")
+    model_copy = model.copy()
     if args.remap_encoder != "":
-        keys_to_consider = [key for key in model.keys() if "encoder" in key]
+        keys_to_consider = [key for key in model.keys() if ".encoder.layers" in key]
+        keys_to_keep = set() ## Keys to keep in the model dict once remapping is done as we assume that the user always specifies ALL desired target model keys to be remapped.
         for mapping in args.remap_encoder.split(","):
             slayer, tlayer = mapping.split("-")
+            slayer = str(int(slayer)-1) # Zero indexing
+            tlayer = str(int(tlayer)-1) # Zero indexing
+            keys_to_keep.add(slayer) ## Key remapped so it should not be deleted
             for key in keys_to_consider:
                 key = key.strip().split(".")
                 key_copy = list(key)
                 if key[idx] == slayer:
+                    print("Remapping", key)
                     key_copy[idx] =tlayer
                     key = ".".join(key)
                     key_copy = ".".join(key_copy)
-                    model[key] = model[key_copy]
-                    del model[key_copy]
+                    model[key] = model_copy[key_copy]
+        for key in keys_to_consider: ## Purge all unspecified keys.
+            key = key.strip().split(".")
+            if key[idx] not in keys_to_keep:
+                key = ".".join(key)
+                print("Deleting", key)
+                del model[key]
+
     if args.remap_decoder != "":
-        keys_to_consider = [key for key in model.keys() if "decoder" in key]
+        keys_to_consider = [key for key in model.keys() if ".decoder.layers" in key]
+        keys_to_keep = set() ## Keys to keep in the model dict once remapping is done as we assume that the user always specifies ALL desired target model keys to be remapped.
         for mapping in args.remap_encoder.split(","):
             slayer, tlayer = mapping.split("-")
+            slayer = str(int(slayer)-1) # Zero indexing
+            tlayer = str(int(tlayer)-1) # Zero indexing
+            keys_to_keep.add(slayer) ## Key remapped so it should not be deleted
             for key in keys_to_consider:
                 key = key.strip().split(".")
                 key_copy = list(key)
                 if key[idx] == slayer:
+                    print("Remapping", key)
                     key_copy[idx] =tlayer
                     key = ".".join(key)
                     key_copy = ".".join(key_copy)
-                    model[key] = model[key_copy]
-                    del model[key_copy]
+                    model[key] = model_copy[key_copy]
+        for key in keys_to_consider: ## Purge all unspecified keys.
+            key = key.strip().split(".")
+            if key[idx] not in keys_to_keep:
+                key = ".".join(key)
+                print("Deleting", key)
+                del model[key]
+    print("Final model dictionary after remapping is:", model.keys())
     return model
 
 def remap_embeddings(our_model_dict, model_to_load_dict, args):
     """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
-    print("Remapping embeddings.")
     if args.pretrained_tokenizer_name_or_path is None:
         return model_to_load_dict
     
@@ -177,12 +199,19 @@ def remap_embeddings(our_model_dict, model_to_load_dict, args):
         if token in tok_pre:
             pre_tok_idx = tok_pre[token]
             our_model_dict["module.model.shared.weight"][tok_idx] = model_to_load_dict["module.model.shared.weight"][pre_tok_idx]
+            our_model_dict["module.model.encoder.embed_tokens.weight"][tok_idx] = model_to_load_dict["module.model.encoder.embed_tokens.weight"][pre_tok_idx]
+            our_model_dict["module.model.decoder.embed_tokens.weight"][tok_idx] = model_to_load_dict["module.model.decoder.embed_tokens.weight"][pre_tok_idx]
     model_to_load_dict["module.model.shared.weight"] = our_model_dict["module.model.shared.weight"]
+    model_to_load_dict["module.model.encoder.embed_tokens.weight"] = our_model_dict["module.model.encoder.embed_tokens.weight"]
+    model_to_load_dict["module.model.decoder.embed_tokens.weight"] = our_model_dict["module.model.decoder.embed_tokens.weight"]
     return model_to_load_dict
 
-def remap_embeddings_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
+def remap_embeddings_eliminate_components_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
     """This method first remaps embeddings from pretrained to current model and then eliminates mismatched layers between the pretrained model and the current model. A mismatch is when the size of the pretrained parameter is not the same as the parameter of the current model."""
+    print("Remapping embeddings.")
     model_to_load_dict = remap_embeddings(our_model_dict, model_to_load_dict, args)
+    
+    print("Eliminating ")
     print("Eliminating matched params with mismatched sizes from the initial model.")
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:

@@ -100,14 +100,16 @@ def generate_batches_pair(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if len(input_ids[0]) > args.max_src_length:
-                input_ids = input_ids[:,:args.max_src_length]
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-            if len(decoder_input_ids[0]) > args.max_tgt_length:
-                decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
+            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
             decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+                labels = labels[:,:args.hard_truncate_length]
             end = time.time()
             yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
             curr_batch_count = 0
@@ -119,17 +121,19 @@ def generate_batches_pair(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if len(input_ids[0]) > args.max_src_length:
-            input_ids = input_ids[:,:args.max_src_length]
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if len(decoder_input_ids[0]) > args.max_tgt_length:
-            decoder_input_ids = decoder_input_ids[:,:args.max_tgt_length]
+        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
         decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+            labels = labels[:,:args.hard_truncate_length]
         yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
 
-def generate_batches_pair_masked(tok, args):
+def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation logic here if something bugs out.
     """Generates the source, target and source attention masks for the training set."""
     src_file = open(args.test_src)
     tgt_file = open(args.test_ref)
@@ -177,10 +181,16 @@ def generate_batches_pair_masked(tok, args):
                 decoder_input_batch.append(tlang + " " + new_tgt_sent)
                 decoder_label_batch.append(new_tgt_sent + " </s>")
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
             tgt_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+                labels = labels[:,:args.hard_truncate_length]
             end = time.time()
 
             yield input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos
@@ -234,8 +244,8 @@ def generate_batches(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if len(input_ids[0]) > args.max_src_length:
-                input_ids = input_ids[:,:args.max_src_length]
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
             yield input_ids, input_masks
@@ -245,8 +255,8 @@ def generate_batches(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if len(input_ids[0]) > args.max_src_length:
-            input_ids = input_ids[:,:args.max_src_length]
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = input_ids != tok.pad_token_id
         yield input_ids, input_masks
 
@@ -302,7 +312,7 @@ def model_create_load_decode(gpu, args):
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing) ## Configuration.
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -315,9 +325,9 @@ def model_create_load_decode(gpu, args):
     
                     
     if type(checkpoint_dict) == dict:
-        model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args)) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     else:
-        model.load_state_dict(remap_embeddings_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args)) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -496,6 +506,7 @@ def run_demo():
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=8, type=int, help="The value for number of decoder attention heads")
+    parser.add_argument('--wait_k', default=-1, type=int, help="The value for k in wait-k snmt. Keep as -1 for non-snmt aka vanilla NMT.")
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
@@ -503,6 +514,8 @@ def run_demo():
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
     parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
                         help='This multiplied by the source sentence length will be the minimum decoding length.')
+    parser.add_argument('--hard_truncate_length', default=0, type=int, 
+                        help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
     parser.add_argument('--normalize_before', action='store_true', 
@@ -542,9 +555,15 @@ def run_demo():
     parser.add_argument('--multilayer_softmaxing', action='store_true', 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
     parser.add_argument('--remap_encoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. IMPORTANT NOTE: Ensure that you specify ALL child layer indices you wish mapped. For example if you want 1-2,2-1,3-3 you MUST NOT skip the 3-3 part else it will be deleted from the model dictionary and will be randomly initialized. The loading mechanism is not strict so it will ignore missing or non matching keys. ADDITIONAL NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     parser.add_argument('--remap_decoder', default='', type=str, 
-                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
+                        help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. IMPORTANT NOTE: Ensure that you specify ALL child layer indices you wish mapped. For example if you want 1-2,2-1,3-3 you MUST NOT skip the 3-3 part else it will be deleted from the model dictionary and will be randomly initialized. The loading mechanism is not strict so it will ignore missing or non matching keys. ADDITIONAL NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
+    parser.add_argument('--eliminate_encoder_before_initialization', action='store_true', 
+                        help='Lets wipe out the encoder params from the pretrained model before we use it to initialize the current model. This means we have random encoder initialization.')
+    parser.add_argument('--eliminate_decoder_before_initialization', action='store_true', 
+                        help='Lets wipe out the decoder params from the pretrained model before we use it to initialize the current model. This means we have random decoder initialization.')
+    parser.add_argument('--eliminate_embeddings_before_initialization', action='store_true', 
+                        help='Lets wipe out the embedding params from the pretrained model before we use it to initialize the current model. This means we have random embedding initialization.')
     
     args = parser.parse_args()
     print("IP address is", args.ipaddr)
