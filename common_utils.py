@@ -307,3 +307,661 @@ def yield_corpus_indefinitely_bi(corpus, language):
         epoch_counter += 1
         print("Finished epoch", epoch_counter, "for language:", language)
     return None, None ## We should never reach this point.
+
+def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter):
+    """Here we start at a particular random index and select the rest of the sentences. This is to make sure that we dont always see only the initial part of each document all the time."""
+    sentence_split = sentence.split(" "+document_level_sentence_delimiter+" ")
+    sentence_split_length = len(sentence_split)
+    start_idx = random.randint(0, sentence_split_length-1)
+    sentence_split = sentence_split[start_idx:]
+    random.shuffle(sentence_split)
+    return (" "+document_level_sentence_delimiter+" ").join(sentence_split)
+
+    
+def generate_batches_monolingual_masked(tok, args, files, rank):
+    """Generates the source, target and source attention masks for denoising. Long sequences are truncated and short sequences are ignored."""
+    
+    batch_count = 0
+    if len(args.token_masking_probs_range) == 1:
+        mp_val_or_range = args.token_masking_probs_range[0]
+    elif len(args.token_masking_probs_range) == 2:
+        mp_val_or_range = args.token_masking_probs_range
+    print("Masking ratio:", mp_val_or_range)
+    language_list = list(files.keys())
+    print("Training for:", language_list)
+    language_file_dict = {}
+    probs = {}
+    for l in language_list:
+        file_content = open(files[l]+"."+"%02d" % rank).readlines()
+        probs[l] = len(file_content)
+        language_file_dict[l] = yield_corpus_indefinitely_mono(file_content, l)
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]**(1.0/args.data_sampling_temperature) for lang in probs} ## Temperature sampling probabilities.
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = [probs_temp[lang] for lang in language_list]
+    num_langs = len(language_list)
+    language_indices = list(range(num_langs))
+    while batch_count != args.num_batches:
+        curr_batch_count = 0
+        encoder_input_batch = []
+        decoder_input_batch = []
+        decoder_label_batch = []
+        batch_count += 1
+        max_src_sent_len = 0
+        max_tgt_sent_len = 0
+        prev_max_src_sent_len = 0
+        prev_max_tgt_sent_len = 0
+        start = time.time()
+        sents_in_batch = 0
+        while True:
+            language_idx = random.choices(language_indices, probs)[0]
+            sentence = next(language_file_dict[language_list[language_idx]]).strip()
+            if args.is_document:
+                sentence = sub_sample_and_permute_document(sentence, args.document_level_sentence_delimiter)
+            lang = "<2"+language_list[language_idx]+">"
+            if type(mp_val_or_range) is float:
+                mask_percent = mp_val_or_range
+            else:
+                mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
+            sentence_split = sentence.split(" ")
+            sent_len = len(sentence_split)
+            if sent_len < 1: 
+                continue
+            if sent_len > args.max_length: ## Initial truncation
+                sentence_split = sentence_split[:args.max_length]
+                sentence = " ".join(sentence_split)
+                sent_len = args.max_length
+            mask_count = 0
+            max_mask_count = int(mask_percent*sent_len)
+            spans_to_mask = list(np.random.poisson(args.token_masking_lambda, 1000))
+            curr_sent_len = sent_len
+            while mask_count < max_mask_count:
+                try:
+                    span_to_mask = spans_to_mask[0]
+                    del spans_to_mask[0]
+                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                        continue
+                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                        sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                        mask_count += span_to_mask
+                        curr_sent_len -= (span_to_mask-1)
+                except:
+                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+            
+            masked_sentence = " ".join(sentence_split)
+            iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len = len(iids[0])
+            
+            iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_tgt_sent_len = len(iids[0])
+                        
+            if curr_src_sent_len > max_src_sent_len:
+                prev_max_src_sent_len = max_src_sent_len
+                max_src_sent_len = curr_src_sent_len
+            
+            if curr_tgt_sent_len > max_tgt_sent_len:
+                prev_max_tgt_sent_len = max_tgt_sent_len
+                max_tgt_sent_len = curr_tgt_sent_len
+            
+            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1)
+            if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                max_src_sent_len = prev_max_src_sent_len
+                max_tgt_sent_len = prev_max_tgt_sent_len
+                break
+            encoder_input_batch.append(masked_sentence + " </s> " + lang)
+            decoder_input_batch.append(lang + " " + sentence)
+            decoder_label_batch.append(sentence + " </s>")
+            sents_in_batch += 1
+        
+        if len(encoder_input_batch) == 0:
+            print("Zero size batch due to an abnormal example. Skipping empty batch.")
+            continue
+        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            input_ids = input_ids[:,:args.hard_truncate_length]
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            labels = labels[:,:args.hard_truncate_length]
+        end = time.time()
+#         if rank == 0:
+#             print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
+        yield input_ids, input_masks, decoder_input_ids, labels
+    
+    
+def assert_all_frozen(model):
+    """Checks if frozen parameters are all linked to each other or not. Ensures no disjoint components of graphs."""
+    model_grads: List[bool] = list(grad_status(model))
+    n_require_grad = sum(lmap(int, model_grads))
+    npars = len(model_grads)
+    assert not any(model_grads), f"{n_require_grad/npars:.1%} of {npars} weights require grad"
+
+def grad_status(model):
+    """Checks whether the parameter needs gradient or not. Part of asserting that the correct parts of the model are frozen."""
+    return (par.requires_grad for par in model.parameters())
+
+
+def freeze_params(model):
+    """Set requires_grad=False for each of model.parameters() thereby freezing those parameters. We use this when we want to prevent parts of the model from being trained."""
+    for par in model.parameters():
+        par.requires_grad = False
+
+def freeze_embeds(model):
+    """Freeze token embeddings and positional embeddings for bart, just token embeddings for mbart."""
+    try:
+        freeze_params(model.model.shared)
+        for d in [model.model.encoder, model.model.decoder]:
+            freeze_params(d.embed_positions)
+            freeze_params(d.embed_tokens)
+    except AttributeError:
+        freeze_params(model.shared)
+        for d in [model.encoder, model.decoder]:
+            freeze_params(d.embed_tokens)
+
+def generate_batches_eval_bilingual(tok, args, file, slang):
+    """Generates the source sentences for the dev set. This ensures that long sentences are truncated and then batched. The batch size is the number of sentences and not the number of tokens."""
+    src_file = file
+    curr_batch_count = 0
+    encoder_input_batch = []
+    max_src_sent_len = 0
+
+    for src_line in src_file:
+        start = time.time()
+        src_sent = src_line.strip()
+        if args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
+            src_sent = src_sent.split("\t")
+            src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
+            src_sent = src_sent[0] ## This is the sentence for X
+            slang = slang.split("-")
+            slang_parent = slang[1]
+            slang = slang[0]
+            lang_parent = "<2"+slang_parent+">"
+        lang = "<2"+slang+">" ## proceed from here to generate a batch for the multisource development set.
+        src_sent_split = src_sent.split(" ")
+        sent_len = len(src_sent_split)
+        if sent_len > args.max_src_length: ## Initial truncation
+            src_sent_split=src_sent_split[:args.max_src_length]
+            src_sent = " ".join(src_sent_split)
+            sent_len = args.max_src_length
+        iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
+        curr_src_sent_len = len(iids[0])
+        if curr_src_sent_len > max_src_sent_len:
+            max_src_sent_len = curr_src_sent_len
+
+        encoder_input_batch.append(src_sent + " </s> " + lang)
+        curr_batch_count += 1
+        if curr_batch_count == args.dev_batch_size:
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
+            input_masks = (input_ids != tok.pad_token_id).int()
+            end = time.time()
+            if args.is_summarization:
+                print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
+            yield input_ids, input_masks
+            curr_batch_count = 0
+            encoder_input_batch = []
+            max_src_sent_len = 0
+
+    if len(encoder_input_batch) != 0:
+        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
+        input_masks = (input_ids != tok.pad_token_id).int()
+        if args.is_summarization:
+            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
+        yield input_ids, input_masks
+
+
+
+def generate_batches_bilingual(tok, args, files, rank):
+    """Generates the source, target and source attention masks for the training set. The source and target sentences are ignored if empty and are truncated if longer than a threshold. The batch size in this context is the maximum number of tokens in the batch post padding."""
+    batch_count = 0
+    if len(args.token_masking_probs_range) == 1:
+        mp_val_or_range = args.token_masking_probs_range[0]
+    elif len(args.token_masking_probs_range) == 2:
+        mp_val_or_range = args.token_masking_probs_range
+    print("Masking ratio:", mp_val_or_range)
+
+    language_list = list(files.keys())
+    print("Training for:", language_list)
+    language_file_dict = {}
+    probs = {}
+    for l in language_list:
+        src_file_content = open(files[l][0]+"."+"%02d" % rank).readlines()
+        tgt_file_content = open(files[l][1]+"."+"%02d" % rank).readlines()
+        probs[l] = len(src_file_content)
+        file_content = list(zip(src_file_content, tgt_file_content))
+        language_file_dict[l] = yield_corpus_indefinitely_bi(file_content, l)
+    print("Corpora stats:", probs)
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]**(1.0/args.data_sampling_temperature) for lang in probs} ## Temperature sampling probabilities.
+    probs = probs_temp
+    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs = [probs_temp[lang] for lang in language_list]
+    num_langs = len(language_list)
+    language_indices = list(range(num_langs))
+    while batch_count != args.num_batches:
+        curr_batch_count = 0
+        encoder_input_batch = []
+        decoder_input_batch = []
+        decoder_label_batch = []
+        batch_count += 1
+        max_src_sent_len = 0
+        max_tgt_sent_len = 0
+        prev_max_src_sent_len = 0
+        prev_max_tgt_sent_len = 0
+        start = time.time()
+        sents_in_batch = 0
+        if args.cross_distillation or args.multi_source: ## We assume an additional source language.
+            max_src_sent_len_parent = 0
+            encoder_input_batch_parent = []
+        while True:
+            language_idx = random.choices(language_indices, probs)[0]
+            src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
+            if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
+                src_sent = src_sent.split("\t")
+                src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
+                src_sent = src_sent[0] ## This is the sentence for X
+            src_sent = src_sent.strip()
+            tgt_sent = tgt_sent.strip()
+            slangtlang = language_list[language_idx].strip().split("-")
+            if args.cross_distillation or args.multi_source: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
+                slang_parent = "<2"+slangtlang[0]+">"
+                slang = "<2"+slangtlang[1]+">"
+                tlang = "<2"+slangtlang[2]+">"
+            else:
+                slang = "<2"+slangtlang[0]+">"
+                tlang = "<2"+slangtlang[1]+">"
+            src_sent_split = src_sent.split(" ")
+            tgt_sent_split = tgt_sent.split(" ")
+            tgt_sent_len = len(tgt_sent_split)
+            src_sent_len = len(src_sent_split)
+            
+            if src_sent_len <=1 or tgt_sent_len <=1:
+                continue
+            else:   # Initial truncation
+                if src_sent_len >= args.max_src_length:
+                    src_sent_split = src_sent_split[:args.max_src_length]
+                    src_sent = " ".join(src_sent_split)
+                    src_sent_len = args.max_src_length
+                if tgt_sent_len >= args.max_tgt_length:
+                    tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
+                    tgt_sent = " ".join(tgt_sent_split)
+                    tgt_sent_len = args.max_tgt_length
+            
+            if args.cross_distillation or args.multi_source:
+                src_sent_split_parent = src_sent_parent.split(" ")
+                src_sent_len_parent = len(src_sent_split_parent)
+                if src_sent_len_parent <=1:
+                    continue
+                else:   # Initial truncation
+                    if src_sent_len_parent >= args.max_src_length: ## The same sentence length constraint applies to Y as it does to X.
+                        src_sent_split_parent = src_sent_split_parent[:args.max_src_length]
+                        src_sent_parent = " ".join(src_sent_split_parent)
+                        src_sent_len_parent = args.max_src_length
+                        
+            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization. We wont bother using this condition for cross distillation. In fact a single condition based on a flag should be sufficient but I am too lazy to make a change. Come fight me if you disagree.
+                if args.source_masking_for_bilingual:
+                    mask_percent = random.uniform(0.0, mp_val_or_range[0]) ## Do less masking
+                else:
+                    if type(mp_val_or_range) is float:
+                        mask_percent = mp_val_or_range
+                    else:
+                        mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
+                mask_count = 0
+                max_mask_count = int(mask_percent*src_sent_len)
+                spans_to_mask = list(np.random.poisson(args.token_masking_lambda, 1000))
+                curr_sent_len = src_sent_len
+                while mask_count < max_mask_count:
+                    try:
+                        span_to_mask = spans_to_mask[0]
+                        del spans_to_mask[0]
+                        if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                            continue
+                        idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                        if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                            src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                            mask_count += span_to_mask
+                            curr_sent_len -= (span_to_mask-1)
+                    except:
+                        break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+                src_sent = " ".join(src_sent_split)
+            iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len = len(iids[0])
+            
+                
+            iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_tgt_sent_len = len(iids[0])
+
+            if curr_src_sent_len > max_src_sent_len:
+                prev_max_src_sent_len = max_src_sent_len
+                max_src_sent_len = curr_src_sent_len
+            
+            if curr_tgt_sent_len > max_tgt_sent_len:
+                prev_max_tgt_sent_len = max_tgt_sent_len
+                max_tgt_sent_len = curr_tgt_sent_len
+            
+            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
+            if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                max_src_sent_len = prev_max_src_sent_len
+                max_tgt_sent_len = prev_max_tgt_sent_len
+                break
+            
+            encoder_input_batch.append(src_sent + " </s> " + slang)
+            if args.unify_encoder:
+                decoder_input_batch.append(tgt_sent + " </s> " + tlang)
+                decoder_label_batch.append(tgt_sent + " </s> " + tlang) ## This should not be used when we unify encoders.
+            else:
+                decoder_input_batch.append(tlang + " " + tgt_sent)
+                decoder_label_batch.append(tgt_sent + " </s>")
+            sents_in_batch += 1
+            if args.cross_distillation or args.multi_source:
+                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_src_sent_len_parent = len(iids[0])
+                if curr_src_sent_len_parent > max_src_sent_len_parent:
+                    max_src_sent_len_parent = curr_src_sent_len_parent
+                encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
+                
+        if len(encoder_input_batch) == 0:
+            print("Zero size batch due to an abnormal example. Skipping empty batch.")
+            continue    
+
+        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            input_ids = input_ids[:,:args.hard_truncate_length]
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            labels = labels[:,:args.hard_truncate_length]
+        if args.is_summarization:
+            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
+        if args.cross_distillation or args.multi_source:
+            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+            if args.hard_truncate_length > 0 and  len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+            end = time.time()
+            yield [input_ids_parent, input_ids], [input_masks_parent, input_masks], decoder_input_ids, labels
+        else:
+            end = time.time()
+            yield input_ids, input_masks, decoder_input_ids, labels
+
+            
+def generate_batches_pair(tok, args):
+    """Generates the source, target and source attention masks for the training set."""
+    src_file = open(args.test_src)
+    tgt_file = open(args.test_ref)
+    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
+    epoch_counter = 0
+    curr_batch_count = 0
+    encoder_input_batch = []
+    decoder_input_batch = []
+    decoder_label_batch = []
+    max_src_sent_len = 0
+    max_tgt_sent_len = 0
+    for src_sent, tgt_sent in corpus:
+        src_sent = src_sent.strip()
+        tgt_sent = tgt_sent.strip()
+        start = time.time()
+        slang = "<2"+args.slang+">"
+        tlang = "<2"+args.tlang+">"
+        src_sent_split = src_sent.split(" ")
+        tgt_sent_split = tgt_sent.split(" ")
+        tgt_sent_len = len(tgt_sent_split)
+        src_sent_len = len(src_sent_split)
+        if src_sent_len <=1 or tgt_sent_len <=1:
+            print("Big problem")
+            #continue
+        else:   # Initial truncation
+            if src_sent_len >= args.max_src_length:
+                src_sent_split = src_sent_split[:args.max_src_length]
+                src_sent = " ".join(src_sent_split)
+                src_sent_len = args.max_src_length
+            if tgt_sent_len >= args.max_tgt_length:
+                tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
+                tgt_sent = " ".join(tgt_sent_split)
+                tgt_sent_len = args.max_tgt_length
+        iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
+        curr_src_sent_len = len(iids[0])
+
+        iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
+        curr_tgt_sent_len = len(iids[0])
+        if curr_src_sent_len > max_src_sent_len:
+            max_src_sent_len = curr_src_sent_len
+
+        if curr_tgt_sent_len > max_tgt_sent_len:
+            max_tgt_sent_len = curr_tgt_sent_len
+
+        encoder_input_batch.append(src_sent + " </s> " + slang)
+        decoder_input_batch.append(tlang + " " + tgt_sent)
+        decoder_label_batch.append(tgt_sent + " </s>")
+        curr_batch_count += 1
+        if curr_batch_count == args.batch_size:
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
+            input_masks = (input_ids != tok.pad_token_id).int()
+            decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+            decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
+            labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+                labels = labels[:,:args.hard_truncate_length]
+            end = time.time()
+            yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
+            curr_batch_count = 0
+            encoder_input_batch = []
+            decoder_input_batch = []
+            decoder_label_batch = []
+            max_src_sent_len = 0
+            max_tgt_sent_len = 0
+
+    if len(encoder_input_batch) != 0:
+        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
+        input_masks = (input_ids != tok.pad_token_id).int()
+        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+        decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
+        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+            labels = labels[:,:args.hard_truncate_length]
+        yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
+
+def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation logic here if something bugs out.
+    """Generates the source, target and source attention masks for the training set."""
+    src_file = open(args.test_src)
+    tgt_file = open(args.test_ref)
+    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
+    epoch_counter = 0
+    curr_batch_count = 0
+    for src_sent, tgt_sent in corpus:
+        src_sent = src_sent.strip()
+        tgt_sent = tgt_sent.strip()
+        start = time.time()
+        slang = "<2"+args.slang+">"
+        tlang = "<2"+args.tlang+">"
+        src_sent_split = src_sent.split(" ")
+        tgt_sent_split = tgt_sent.split(" ")
+        tgt_sent_len = len(tgt_sent_split)
+        src_sent_len = len(src_sent_split)
+        if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
+            continue
+        
+        for pos_src in range(src_sent_len):
+            encoder_input_batch = []
+            decoder_input_batch = []
+            decoder_label_batch = []
+            dec_pos = []
+            enc_pos = pos_src
+            max_src_sent_len = 0
+            max_tgt_sent_len = 0
+            new_src_sent_split = list(src_sent_split)
+            new_src_sent_split[pos_src] = "[MASK]"
+            new_src_sent = " ".join(new_src_sent_split)
+            iids = tok(new_src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len = len(iids[0])
+            if curr_src_sent_len > max_src_sent_len:
+                max_src_sent_len = curr_src_sent_len
+            for pos_tgt in range(tgt_sent_len):
+                dec_pos.append(pos_tgt)
+                new_tgt_sent_split = list(tgt_sent_split)
+                new_tgt_sent_split[pos_tgt] = "[MASK]"
+                new_tgt_sent = " ".join(new_tgt_sent_split)
+                iids = tok(tlang + " " + new_tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > max_tgt_sent_len:
+                    max_tgt_sent_len = curr_tgt_sent_len
+                encoder_input_batch.append(new_src_sent + " </s> " + slang)
+                decoder_input_batch.append(tlang + " " + new_tgt_sent)
+                decoder_label_batch.append(new_tgt_sent + " </s>")
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
+            input_masks = (input_ids != tok.pad_token_id).int()
+            decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+            tgt_masks = (decoder_input_ids != tok.pad_token_id).int()
+            labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+                labels = labels[:,:args.hard_truncate_length]
+            end = time.time()
+
+            yield input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos
+        
+def generate_batches_bilingual_for_decoding(tok, args):
+    """Generates the source sentences for the test set."""
+    src_file = open(args.test_src)
+    curr_batch_count = 0
+    encoder_input_batch = []
+    max_src_sent_len = 0
+    
+    if len(args.token_masking_probs_range) == 1:
+        mp_val_or_range = args.token_masking_probs_range[0]
+    elif len(args.token_masking_probs_range) == 2:
+        mp_val_or_range = args.token_masking_probs_range
+    print("Masking ratio:", mp_val_or_range)
+
+    for src_line in src_file:
+        start = time.time()
+        src_sent = src_line.strip()
+        lang = "<2"+args.slang+">"
+        src_sent_split = src_sent.split(" ")
+        sent_len = len(src_sent_split)
+        if sent_len > args.max_src_length:
+            src_sent_split = src_sent_split[:args.max_src_length]
+            src_sent = " ".join(src_sent_split)
+            sent_len = args.max_src_length
+        
+        if args.mask_input:
+            if type(mp_val_or_range) is float:
+                mask_percent = mp_val_or_range
+            else:
+                mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
+            mask_count = 0
+            max_mask_count = int(mask_percent*sent_len)
+            spans_to_mask = list(np.random.poisson(args.token_masking_lambda, 1000))
+            curr_sent_len = sent_len
+            while mask_count < max_mask_count:
+                try:
+                    span_to_mask = spans_to_mask[0]
+                    del spans_to_mask[0]
+                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
+                        continue
+                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
+                        src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
+                        mask_count += span_to_mask
+                        curr_sent_len -= (span_to_mask-1)
+                except:
+                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
+            src_sent = " ".join(src_sent_split)
+            
+        iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
+        curr_src_sent_len = len(iids[0])
+
+        if curr_src_sent_len > max_src_sent_len:
+            max_src_sent_len = curr_src_sent_len
+
+        encoder_input_batch.append(src_sent + " </s> " + lang)
+        curr_batch_count += 1
+        if curr_batch_count == args.batch_size:
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+                input_ids = input_ids[:,:args.hard_truncate_length]
+            input_masks = input_ids != tok.pad_token_id
+            end = time.time()
+            yield input_ids, input_masks
+            curr_batch_count = 0
+            encoder_input_batch = []
+            max_src_sent_len = 0
+
+    if len(encoder_input_batch) != 0:
+        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
+        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            input_ids = input_ids[:,:args.hard_truncate_length]
+        input_masks = input_ids != tok.pad_token_id
+        yield input_ids, input_masks
+
+def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
+    '''
+      Plot the attention model heatmap
+      Args:
+        data: attn_matrix with shape [ty, tx], cut before 'PAD'
+        X_label: list of size tx, encoder tags
+        Y_label: list of size ty, decoder tags
+    '''
+    print(len(X_label))
+    print(len(Y_label))
+    print(data.shape)
+    fig, ax = plt.subplots(figsize=(20, 20*num_heads))  # set figure size
+    im = ax.imshow(data)
+
+
+    
+    # We want to show all ticks...
+    ax.set_xticks(np.arange(len(X_label)))
+    ax.set_yticks(np.arange(len(Y_label)))
+    # ... and label them with the respective list entries
+    ax.set_xticklabels(X_label)
+    ax.set_yticklabels(Y_label)
+    ax.xaxis.tick_top()
+
+
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="left",
+         rotation_mode="anchor")
+    
+    for i in range(len(Y_label)):
+        for j in range(len(X_label)):
+            text = ax.text(j, i, "%.1f" % data[i, j],
+                           ha="center", va="center", color="b",size=10.0)
+    # Save Figure
+    ax.set_title(plot_title)
+    fig.tight_layout()
+
+    print("Saving figures %s" % file_name)
+    fig.savefig(file_name)  # save the figure to file
+    plt.close(fig)  # close the figure
+
+
+def generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files, ctr):
+    """This will return masked monolingual or bilingual batches according to a fixed ratio."""
+    if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0:
+        generate_batches_bilingual(tok, args, train_files, rank)
+    else:
+        generate_batches_monolingual(tok, args, files, rank)

@@ -41,259 +41,6 @@ import functools
 torch.manual_seed(621311)
 ##
 
-
-def assert_all_frozen(model):
-    """Checks if frozen parameters are all linked to each other or not. Ensures no disjoint components of graphs."""
-    model_grads: List[bool] = list(grad_status(model))
-    n_require_grad = sum(lmap(int, model_grads))
-    npars = len(model_grads)
-    assert not any(model_grads), f"{n_require_grad/npars:.1%} of {npars} weights require grad"
-
-def grad_status(model):
-    """Checks whether the parameter needs gradient or not. Part of asserting that the correct parts of the model are frozen."""
-    return (par.requires_grad for par in model.parameters())
-
-
-def freeze_params(model):
-    """Set requires_grad=False for each of model.parameters() thereby freezing those parameters. We use this when we want to prevent parts of the model from being trained."""
-    for par in model.parameters():
-        par.requires_grad = False
-
-def freeze_embeds(model):
-    """Freeze token embeddings and positional embeddings for bart, just token embeddings for mbart."""
-    try:
-        freeze_params(model.model.shared)
-        for d in [model.model.encoder, model.model.decoder]:
-            freeze_params(d.embed_positions)
-            freeze_params(d.embed_tokens)
-    except AttributeError:
-        freeze_params(model.shared)
-        for d in [model.encoder, model.decoder]:
-            freeze_params(d.embed_tokens)
-
-def generate_batches_eval(tok, args, file, slang):
-    """Generates the source sentences for the dev set. This ensures that long sentences are truncated and then batched. The batch size is the number of sentences and not the number of tokens."""
-    src_file = file
-    curr_batch_count = 0
-    encoder_input_batch = []
-    max_src_sent_len = 0
-
-    for src_line in src_file:
-        start = time.time()
-        src_sent = src_line.strip()
-        if args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
-            src_sent = src_sent.split("\t")
-            src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
-            src_sent = src_sent[0] ## This is the sentence for X
-            slang = slang.split("-")
-            slang_parent = slang[1]
-            slang = slang[0]
-            lang_parent = "<2"+slang_parent+">"
-        lang = "<2"+slang+">" ## proceed from here to generate a batch for the multisource development set.
-        src_sent_split = src_sent.split(" ")
-        sent_len = len(src_sent_split)
-        if sent_len > args.max_src_length: ## Initial truncation
-            src_sent_split=src_sent_split[:args.max_src_length]
-            src_sent = " ".join(src_sent_split)
-            sent_len = args.max_src_length
-        iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
-        curr_src_sent_len = len(iids[0])
-        if curr_src_sent_len > max_src_sent_len:
-            max_src_sent_len = curr_src_sent_len
-
-        encoder_input_batch.append(src_sent + " </s> " + lang)
-        curr_batch_count += 1
-        if curr_batch_count == args.dev_batch_size:
-            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
-            input_masks = (input_ids != tok.pad_token_id).int()
-            end = time.time()
-            if args.is_summarization:
-                print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
-            yield input_ids, input_masks
-            curr_batch_count = 0
-            encoder_input_batch = []
-            max_src_sent_len = 0
-
-    if len(encoder_input_batch) != 0:
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        input_masks = (input_ids != tok.pad_token_id).int()
-        if args.is_summarization:
-            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
-        yield input_ids, input_masks
-
-
-
-def generate_batches(tok, args, files, rank, mp_val_or_range=0.3, lamb=3.5):
-    """Generates the source, target and source attention masks for the training set. The source and target sentences are ignored if empty and are truncated if longer than a threshold. The batch size in this context is the maximum number of tokens in the batch post padding."""
-    batch_count = 0
-    language_list = list(files.keys())
-    print("Training for:", language_list)
-    language_file_dict = {}
-    probs = {}
-    for l in language_list:
-        src_file_content = open(files[l][0]+"."+"%02d" % rank).readlines()
-        tgt_file_content = open(files[l][1]+"."+"%02d" % rank).readlines()
-        probs[l] = len(src_file_content)
-        file_content = list(zip(src_file_content, tgt_file_content))
-        language_file_dict[l] = yield_corpus_indefinitely_bi(file_content, l)
-    print("Corpora stats:", probs)
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = probs_temp
-    probs_temp = {lang: probs[lang]**(1.0/args.data_sampling_temperature) for lang in probs} ## Temperature sampling probabilities.
-    probs = probs_temp
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = [probs_temp[lang] for lang in language_list]
-    num_langs = len(language_list)
-    language_indices = list(range(num_langs))
-    while batch_count != args.num_batches:
-        curr_batch_count = 0
-        encoder_input_batch = []
-        decoder_input_batch = []
-        decoder_label_batch = []
-        batch_count += 1
-        max_src_sent_len = 0
-        max_tgt_sent_len = 0
-        prev_max_src_sent_len = 0
-        prev_max_tgt_sent_len = 0
-        start = time.time()
-        sents_in_batch = 0
-        if args.cross_distillation or args.multi_source: ## We assume an additional source language.
-            max_src_sent_len_parent = 0
-            encoder_input_batch_parent = []
-        while True:
-            language_idx = random.choices(language_indices, probs)[0]
-            src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
-            if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
-                src_sent = src_sent.split("\t")
-                src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
-                src_sent = src_sent[0] ## This is the sentence for X
-            src_sent = src_sent.strip()
-            tgt_sent = tgt_sent.strip()
-            slangtlang = language_list[language_idx].strip().split("-")
-            if args.cross_distillation or args.multi_source: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
-                slang_parent = "<2"+slangtlang[0]+">"
-                slang = "<2"+slangtlang[1]+">"
-                tlang = "<2"+slangtlang[2]+">"
-            else:
-                slang = "<2"+slangtlang[0]+">"
-                tlang = "<2"+slangtlang[1]+">"
-            src_sent_split = src_sent.split(" ")
-            tgt_sent_split = tgt_sent.split(" ")
-            tgt_sent_len = len(tgt_sent_split)
-            src_sent_len = len(src_sent_split)
-            
-            if src_sent_len <=1 or tgt_sent_len <=1:
-                continue
-            else:   # Initial truncation
-                if src_sent_len >= args.max_src_length:
-                    src_sent_split = src_sent_split[:args.max_src_length]
-                    src_sent = " ".join(src_sent_split)
-                    src_sent_len = args.max_src_length
-                if tgt_sent_len >= args.max_tgt_length:
-                    tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
-                    tgt_sent = " ".join(tgt_sent_split)
-                    tgt_sent_len = args.max_tgt_length
-            
-            if args.cross_distillation or args.multi_source:
-                src_sent_split_parent = src_sent_parent.split(" ")
-                src_sent_len_parent = len(src_sent_split_parent)
-                if src_sent_len_parent <=1:
-                    continue
-                else:   # Initial truncation
-                    if src_sent_len_parent >= args.max_src_length: ## The same sentence length constraint applies to Y as it does to X.
-                        src_sent_split_parent = src_sent_split_parent[:args.max_src_length]
-                        src_sent_parent = " ".join(src_sent_split_parent)
-                        src_sent_len_parent = args.max_src_length
-                        
-            if (slang == tlang and not args.is_summarization) or args.source_masking_for_bilingual: ## Copying task should DEFINITELY use source masking unless we are doing summarization. We wont bother using this condition for cross distillation. In fact a single condition based on a flag should be sufficient but I am too lazy to make a change. Come fight me if you disagree.
-                if args.source_masking_for_bilingual:
-                    mask_percent = random.uniform(0.0, mp_val_or_range[0]) ## Do less masking
-                else:
-                    if type(mp_val_or_range) is float:
-                        mask_percent = mp_val_or_range
-                    else:
-                        mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
-                mask_count = 0
-                max_mask_count = int(mask_percent*src_sent_len)
-                spans_to_mask = list(np.random.poisson(lamb, 1000))
-                curr_sent_len = src_sent_len
-                while mask_count < max_mask_count:
-                    try:
-                        span_to_mask = spans_to_mask[0]
-                        del spans_to_mask[0]
-                        if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
-                            continue
-                        idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
-                        if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
-                            src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                            mask_count += span_to_mask
-                            curr_sent_len -= (span_to_mask-1)
-                    except:
-                        break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
-                src_sent = " ".join(src_sent_split)
-            iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_src_sent_len = len(iids[0])
-            
-                
-            iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_tgt_sent_len = len(iids[0])
-
-            if curr_src_sent_len > max_src_sent_len:
-                prev_max_src_sent_len = max_src_sent_len
-                max_src_sent_len = curr_src_sent_len
-            
-            if curr_tgt_sent_len > max_tgt_sent_len:
-                prev_max_tgt_sent_len = max_tgt_sent_len
-                max_tgt_sent_len = curr_tgt_sent_len
-            
-            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
-            if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
-                max_src_sent_len = prev_max_src_sent_len
-                max_tgt_sent_len = prev_max_tgt_sent_len
-                break
-            
-            encoder_input_batch.append(src_sent + " </s> " + slang)
-            decoder_input_batch.append(tlang + " " + tgt_sent)
-            decoder_label_batch.append(tgt_sent + " </s>")
-            sents_in_batch += 1
-            if args.cross_distillation or args.multi_source:
-                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_src_sent_len_parent = len(iids[0])
-                if curr_src_sent_len_parent > max_src_sent_len_parent:
-                    max_src_sent_len_parent = curr_src_sent_len_parent
-                encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
-                
-        if len(encoder_input_batch) == 0:
-            print("Zero size batch due to an abnormal example. Skipping empty batch.")
-            continue    
-
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        input_masks = (input_ids != tok.pad_token_id).int()
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:args.hard_truncate_length]
-        if args.is_summarization:
-            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
-        if args.cross_distillation or args.multi_source:
-            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
-            if args.hard_truncate_length > 0 and  len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
-            input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
-            end = time.time()
-            yield [input_ids_parent, input_ids], [input_masks_parent, input_masks], decoder_input_ids, labels
-        else:
-            end = time.time()
-            yield input_ids, input_masks, decoder_input_ids, labels
-
 def model_create_load_run_save(gpu, args, train_files, dev_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     
@@ -431,7 +178,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         scores = {dev_pair: 0 for dev_pair in dev_files} ## The rouge scorer works at the sentence level so we have to add all individual scores per sentence and this dictionary keeps track of the score. This dictionary may not be needed.
     else:
         refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair in dev_files} ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args, train_files, rank, (0.30, 0.40), 3.5): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches_bilingual(tok, args, train_files, rank): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
         start = time.time()
         if ctr % args.eval_every == 0: ## We have to evaluate our model every eval_every steps.
             CHECKPOINT_PATH = args.fine_tuned_model
@@ -451,7 +198,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             slang=slangtlang[0]
                             tlang=slangtlang[1]
                         eval_batch_counter = 0
-                        for dev_input_ids, dev_input_masks in generate_batches_eval(tok, args, inps[dev_pair], slang):
+                        for dev_input_ids, dev_input_masks in generate_batches_eval_bilingual(tok, args, inps[dev_pair], slang):
                             start = time.time()
                             dev_input_ids = dev_input_ids.to(gpu)
                             dev_input_masks = dev_input_masks.to(gpu)
@@ -699,6 +446,8 @@ def run_demo():
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
     parser.add_argument('--data_sampling_temperature', default=5.0, type=float, help="The value for the data sampling temperature")
+    parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
+    parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")
     parser.add_argument('--repetition_penalty', default=1.0, type=float, 
                         help='To prevent repetition during decoding. 1.0 means no repetition. 1.2 was supposed to be a good value for some settings according to some researchers.')
     parser.add_argument('--no_repeat_ngram_size', default=0, type=int, 
@@ -829,6 +578,7 @@ def run_demo():
     parser.add_argument('--parent_d_model', default=512, type=int, help="The value for model hidden size")
     ###
     args = parser.parse_args()
+    assert len(args.token_masking_probs_range) <= 2
     print("IP address is", args.ipaddr)
     
     args.world_size = args.gpus * args.nodes                #

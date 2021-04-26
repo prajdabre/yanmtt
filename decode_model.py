@@ -49,258 +49,6 @@ rcParams['font.sans-serif'] = ['Source Han Sans TW',
 ##
 
 
-def generate_batches_pair(tok, args):
-    """Generates the source, target and source attention masks for the training set."""
-    src_file = open(args.test_src)
-    tgt_file = open(args.test_ref)
-    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
-    epoch_counter = 0
-    curr_batch_count = 0
-    encoder_input_batch = []
-    decoder_input_batch = []
-    decoder_label_batch = []
-    max_src_sent_len = 0
-    max_tgt_sent_len = 0
-    for src_sent, tgt_sent in corpus:
-        src_sent = src_sent.strip()
-        tgt_sent = tgt_sent.strip()
-        start = time.time()
-        slang = "<2"+args.slang+">"
-        tlang = "<2"+args.tlang+">"
-        src_sent_split = src_sent.split(" ")
-        tgt_sent_split = tgt_sent.split(" ")
-        tgt_sent_len = len(tgt_sent_split)
-        src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or tgt_sent_len <=1:
-            print("Big problem")
-            #continue
-        else:   # Initial truncation
-            if src_sent_len >= args.max_src_length:
-                src_sent_split = src_sent_split[:args.max_src_length]
-                src_sent = " ".join(src_sent_split)
-                src_sent_len = args.max_src_length
-            if tgt_sent_len >= args.max_tgt_length:
-                tgt_sent_split = tgt_sent_split[:args.max_tgt_length]
-                tgt_sent = " ".join(tgt_sent_split)
-                tgt_sent_len = args.max_tgt_length
-        iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
-        curr_src_sent_len = len(iids[0])
-
-        iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
-        curr_tgt_sent_len = len(iids[0])
-        if curr_src_sent_len > max_src_sent_len:
-            max_src_sent_len = curr_src_sent_len
-
-        if curr_tgt_sent_len > max_tgt_sent_len:
-            max_tgt_sent_len = curr_tgt_sent_len
-
-        encoder_input_batch.append(src_sent + " </s> " + slang)
-        decoder_input_batch.append(tlang + " " + tgt_sent)
-        decoder_label_batch.append(tgt_sent + " </s>")
-        curr_batch_count += 1
-        if curr_batch_count == args.batch_size:
-            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
-            input_masks = (input_ids != tok.pad_token_id).int()
-            decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
-                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-            decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
-            labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
-                labels = labels[:,:args.hard_truncate_length]
-            end = time.time()
-            yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
-            curr_batch_count = 0
-            encoder_input_batch = []
-            decoder_input_batch = []
-            decoder_label_batch = []
-            max_src_sent_len = 0
-            max_tgt_sent_len = 0
-
-    if len(encoder_input_batch) != 0:
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        input_masks = (input_ids != tok.pad_token_id).int()
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
-            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
-        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
-            labels = labels[:,:args.hard_truncate_length]
-        yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
-
-def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation logic here if something bugs out.
-    """Generates the source, target and source attention masks for the training set."""
-    src_file = open(args.test_src)
-    tgt_file = open(args.test_ref)
-    corpus = [(src_line, tgt_line) for src_line, tgt_line in zip(src_file, tgt_file)]
-    epoch_counter = 0
-    curr_batch_count = 0
-    for src_sent, tgt_sent in corpus:
-        src_sent = src_sent.strip()
-        tgt_sent = tgt_sent.strip()
-        start = time.time()
-        slang = "<2"+args.slang+">"
-        tlang = "<2"+args.tlang+">"
-        src_sent_split = src_sent.split(" ")
-        tgt_sent_split = tgt_sent.split(" ")
-        tgt_sent_len = len(tgt_sent_split)
-        src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
-            continue
-        
-        for pos_src in range(src_sent_len):
-            encoder_input_batch = []
-            decoder_input_batch = []
-            decoder_label_batch = []
-            dec_pos = []
-            enc_pos = pos_src
-            max_src_sent_len = 0
-            max_tgt_sent_len = 0
-            new_src_sent_split = list(src_sent_split)
-            new_src_sent_split[pos_src] = "[MASK]"
-            new_src_sent = " ".join(new_src_sent_split)
-            iids = tok(new_src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_src_sent_len = len(iids[0])
-            if curr_src_sent_len > max_src_sent_len:
-                max_src_sent_len = curr_src_sent_len
-            for pos_tgt in range(tgt_sent_len):
-                dec_pos.append(pos_tgt)
-                new_tgt_sent_split = list(tgt_sent_split)
-                new_tgt_sent_split[pos_tgt] = "[MASK]"
-                new_tgt_sent = " ".join(new_tgt_sent_split)
-                iids = tok(tlang + " " + new_tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
-                if curr_tgt_sent_len > max_tgt_sent_len:
-                    max_tgt_sent_len = curr_tgt_sent_len
-                encoder_input_batch.append(new_src_sent + " </s> " + slang)
-                decoder_input_batch.append(tlang + " " + new_tgt_sent)
-                decoder_label_batch.append(new_tgt_sent + " </s>")
-            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
-            input_masks = (input_ids != tok.pad_token_id).int()
-            decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
-                decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-            tgt_masks = (decoder_input_ids != tok.pad_token_id).int()
-            labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
-                labels = labels[:,:args.hard_truncate_length]
-            end = time.time()
-
-            yield input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos
-        
-def generate_batches(tok, args):
-    """Generates the source sentences for the test set."""
-    src_file = open(args.test_src)
-    curr_batch_count = 0
-    encoder_input_batch = []
-    max_src_sent_len = 0
-
-    for src_line in src_file:
-        start = time.time()
-        src_sent = src_line.strip()
-        lang = "<2"+args.slang+">"
-        src_sent_split = src_sent.split(" ")
-        sent_len = len(src_sent_split)
-        if sent_len > args.max_src_length:
-            src_sent_split = src_sent_split[:args.max_src_length]
-            src_sent = " ".join(src_sent_split)
-            sent_len = args.max_src_length
-        
-        if args.mask_input:
-            mask_percent = random.uniform(0.30, 0.35)
-            mask_count = 0
-            max_mask_count = int(mask_percent*sent_len)
-            spans_to_mask = list(np.random.poisson(3.5, 1000))
-            curr_sent_len = sent_len
-            while mask_count < max_mask_count:
-                try:
-                    span_to_mask = spans_to_mask[0]
-                    del spans_to_mask[0]
-                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
-                        continue
-                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
-                    if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
-                        src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                        mask_count += span_to_mask
-                        curr_sent_len -= (span_to_mask-1)
-                except:
-                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
-            src_sent = " ".join(src_sent_split)
-            
-        iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
-        curr_src_sent_len = len(iids[0])
-
-        if curr_src_sent_len > max_src_sent_len:
-            max_src_sent_len = curr_src_sent_len
-
-        encoder_input_batch.append(src_sent + " </s> " + lang)
-        curr_batch_count += 1
-        if curr_batch_count == args.batch_size:
-            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
-            input_masks = input_ids != tok.pad_token_id
-            end = time.time()
-            yield input_ids, input_masks
-            curr_batch_count = 0
-            encoder_input_batch = []
-            max_src_sent_len = 0
-
-    if len(encoder_input_batch) != 0:
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        input_masks = input_ids != tok.pad_token_id
-        yield input_ids, input_masks
-
-def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
-    '''
-      Plot the attention model heatmap
-      Args:
-        data: attn_matrix with shape [ty, tx], cut before 'PAD'
-        X_label: list of size tx, encoder tags
-        Y_label: list of size ty, decoder tags
-    '''
-    print(len(X_label))
-    print(len(Y_label))
-    print(data.shape)
-    fig, ax = plt.subplots(figsize=(20, 20*num_heads))  # set figure size
-    im = ax.imshow(data)
-
-
-    
-    # We want to show all ticks...
-    ax.set_xticks(np.arange(len(X_label)))
-    ax.set_yticks(np.arange(len(Y_label)))
-    # ... and label them with the respective list entries
-    ax.set_xticklabels(X_label)
-    ax.set_yticklabels(Y_label)
-    ax.xaxis.tick_top()
-
-
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="left",
-         rotation_mode="anchor")
-    
-    for i in range(len(Y_label)):
-        for j in range(len(X_label)):
-            text = ax.text(j, i, "%.1f" % data[i, j],
-                           ha="center", va="center", color="b",size=10.0)
-    # Save Figure
-    ax.set_title(plot_title)
-    fig.tight_layout()
-
-    print("Saving figures %s" % file_name)
-    fig.savefig(file_name)  # save the figure to file
-    plt.close(fig)  # close the figure
-
-
 def model_create_load_decode(gpu, args):
     """The main function which does the overall decoding, visualization etc. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size. This need not be done using DDP but I am leaving it as is for consistency with my other code. In the future, I plan to support sharding the decoding data into multiple shards which will then be decoded in a distributed fashion.
@@ -336,7 +84,7 @@ def model_create_load_decode(gpu, args):
         hyp = []
         if args.test_ref is not None:
             refs = [[refline.strip() for refline in open(args.test_ref)]]
-        for input_ids, input_masks in generate_batches(tok, args): #infinite_same_sentence(10000):
+        for input_ids, input_masks in generate_batches_bilingual_for_decoding(tok, args): #infinite_same_sentence(10000):
             start = time.time()
             print("Processing batch:", ctr)
             with torch.no_grad():
@@ -415,10 +163,10 @@ def model_create_load_decode(gpu, args):
             final_src_str = " ".join(src_sent_split)
             final_tgt_str = " ".join(tgt_sent_split)
     elif args.decode_type == "get_enc_representations" or args.decode_type == "get_dec_representations": ## We want to extract the encoder or decoder representations for a given layer.
-        print("Getting encoder or decoder representations for layer "+args.layer_id+". Will save representations for each input line.")
+        print("Getting encoder or decoder representations for layer", args.layer_id, ". Will save representations for each input line.")
         for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), output_hidden_states=True)
-            print(input_masks)
+            #print(input_masks)
             if args.decode_type == "get_enc_representations":
                 pad_mask = input_ids.to(gpu).eq(tok.pad_token_id).unsqueeze(2)
                 hidden_state = mod_compute.encoder_hidden_states[args.layer_id]
@@ -500,7 +248,7 @@ def run_demo():
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
-    parser.add_argument('--layer_id', default=0, type=int, help="The id of the layer from 0 to num_layers. Note that the implementation returns the embedding layer output at index 0 so the output of layer 1 is actually at index 1.")
+    parser.add_argument('--layer_id', default=6, type=int, help="The id of the layer from 0 to num_layers. Note that the implementation returns the embedding layer output at index 0 so the output of layer 1 is actually at index 1.")
     parser.add_argument('--att_head_id', default=0, type=int, help="The id of the attention head from 0 to encoder_attention_heads-1 or decoder_attention_heads-1")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
     parser.add_argument('--activation_dropout', default=0.1, type=float, help="The value for activation dropout")
@@ -516,6 +264,8 @@ def run_demo():
                         help='This multiplied by the source sentence length will be the minimum decoding length.')
     parser.add_argument('--hard_truncate_length', default=0, type=int, 
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
+    parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
+    parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
     parser.add_argument('--normalize_before', action='store_true', 
@@ -566,6 +316,7 @@ def run_demo():
                         help='Lets wipe out the embedding params from the pretrained model before we use it to initialize the current model. This means we have random embedding initialization.')
     
     args = parser.parse_args()
+    assert len(args.token_masking_probs_range) <= 2
     print("IP address is", args.ipaddr)
     #########################################################
     args.world_size = args.gpus * args.nodes                #

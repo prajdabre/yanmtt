@@ -22,6 +22,7 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.optim import Adam
+import torch.nn.functional.cosine_similarity as cosine_similarity
 ##
 
 ## Our imports
@@ -40,135 +41,15 @@ import functools
 torch.manual_seed(621313)
 ##
 
-        
-def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter):
-    """Here we start at a particular random index and select the rest of the sentences. This is to make sure that we dont always see only the initial part of each document all the time."""
-    sentence_split = sentence.split(" "+document_level_sentence_delimiter+" ")
-    sentence_split_length = len(sentence_split)
-    start_idx = random.randint(0, sentence_split_length-1)
-    sentence_split = sentence_split[start_idx:]
-    random.shuffle(sentence_split)
-    return (" "+document_level_sentence_delimiter+" ").join(sentence_split)
 
-    
-def generate_batches(tok, num_batches=1000, batch_size=2048, mp_val_or_range=0.3, lamb=3.5, rank=0, temperature=5.0, files=None, max_length=100, args=None): ## Todo clean this signature and make everything rely on args
-    """Generates the source, target and source attention masks for denoising. Long sequences are truncated and short sequences are ignored."""
-    
-    batch_count = 0
-    language_list = list(files.keys())
-    print("Training for:", language_list)
-    language_file_dict = {}
-    probs = {}
-    for l in language_list:
-        file_content = open(files[l]+"."+"%02d" % rank).readlines()
-        probs[l] = len(file_content)
-        language_file_dict[l] = yield_corpus_indefinitely_mono(file_content, l)
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = probs_temp
-    probs_temp = {lang: probs[lang]**(1.0/temperature) for lang in probs} ## Temperature sampling probabilities.
-    probs = probs_temp
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = [probs_temp[lang] for lang in language_list]
-    num_langs = len(language_list)
-    language_indices = list(range(num_langs))
-    while batch_count != num_batches:
-        curr_batch_count = 0
-        encoder_input_batch = []
-        decoder_input_batch = []
-        decoder_label_batch = []
-        batch_count += 1
-        max_src_sent_len = 0
-        max_tgt_sent_len = 0
-        prev_max_src_sent_len = 0
-        prev_max_tgt_sent_len = 0
-        start = time.time()
-        sents_in_batch = 0
-        while True:
-            language_idx = random.choices(language_indices, probs)[0]
-            sentence = next(language_file_dict[language_list[language_idx]]).strip()
-            if args.is_document:
-                sentence = sub_sample_and_permute_document(sentence, args.document_level_sentence_delimiter)
-            lang = "<2"+language_list[language_idx]+">"
-            if type(mp_val_or_range) is float:
-                mask_percent = mp_val_or_range
-            else:
-                mask_percent = random.uniform(mp_val_or_range[0], mp_val_or_range[1])
-            sentence_split = sentence.split(" ")
-            sent_len = len(sentence_split)
-            if sent_len < 1: 
-                continue
-            if sent_len > max_length: ## Initial truncation
-                sentence_split = sentence_split[:max_length]
-                sentence = " ".join(sentence_split)
-                sent_len = max_length
-            mask_count = 0
-            max_mask_count = int(mask_percent*sent_len)
-            spans_to_mask = list(np.random.poisson(lamb, 1000))
-            curr_sent_len = sent_len
-            while mask_count < max_mask_count:
-                try:
-                    span_to_mask = spans_to_mask[0]
-                    del spans_to_mask[0]
-                    if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
-                        continue
-                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
-                    if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
-                        sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                        mask_count += span_to_mask
-                        curr_sent_len -= (span_to_mask-1)
-                except:
-                    break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
-            
-            masked_sentence = " ".join(sentence_split)
-            iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
-            curr_src_sent_len = len(iids[0])
-            
-            iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_tgt_sent_len = len(iids[0])
-                        
-            if curr_src_sent_len > max_src_sent_len:
-                prev_max_src_sent_len = max_src_sent_len
-                max_src_sent_len = curr_src_sent_len
-            
-            if curr_tgt_sent_len > max_tgt_sent_len:
-                prev_max_tgt_sent_len = max_tgt_sent_len
-                max_tgt_sent_len = curr_tgt_sent_len
-            
-            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1)
-            if potential_batch_count > batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
-                max_src_sent_len = prev_max_src_sent_len
-                max_tgt_sent_len = prev_max_tgt_sent_len
-                break
-            encoder_input_batch.append(masked_sentence + " </s> " + lang)
-            decoder_input_batch.append(lang + " " + sentence)
-            decoder_label_batch.append(sentence + " </s>")
-            sents_in_batch += 1
-        
-        if len(encoder_input_batch) == 0:
-            print("Zero size batch due to an abnormal example. Skipping empty batch.")
-            continue
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        input_masks = (input_ids != tok.pad_token_id).int()
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:args.hard_truncate_length]
-        end = time.time()
-        if rank == 0:
-            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
-        yield input_ids, input_masks, decoder_input_ids, labels
-
-def model_create_load_run_save(gpu, args, files):
+def model_create_load_run_save(gpu, args, files, train_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size.
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_mono(files, args.world_size)
+        shard_files_bi(train_files, args.world_size)
     
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
@@ -228,7 +109,7 @@ def model_create_load_run_save(gpu, args, files):
     
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
     model.train()
-    scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.iters*args.world_size) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
+    scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches*args.world_size) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
@@ -254,7 +135,7 @@ def model_create_load_run_save(gpu, args, files):
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches(tok, args.iters, args.batch_size, (0.30, 0.40), 3.5, rank, args.data_sampling_temperature, files, args.max_length, args): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked.
+    for input_ids, input_masks, decoder_input_ids, labels in generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files, ctr): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked. Since this is pretraining we do not do any evaluations even if we train on parallel corpora.
         start = time.time()
         optimizer.zero_grad() ## Empty the gradients before any computation.
         
@@ -292,6 +173,57 @@ def model_create_load_run_save(gpu, args, files):
         try:
             if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
                 with torch.cuda.amp.autocast():
+                    if args.unify_encoder:
+                        source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
+                        decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
+                        target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
+                        decoder_input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net. 
+                        pad_mask = input_ids.eq(tok.pad_token_id).unsqueeze(2)
+                        source_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
+                        source_hidden_state_encoder = source_hidden_state_encoder.mean(dim=1)
+                        pad_mask = decoder_input_ids.eq(tok.pad_token_id).unsqueeze(2)
+                        target_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
+                        target_hidden_state_encoder = target_hidden_state_encoder.mean(dim=1)
+                        loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
+                    else:
+                        mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Run the model and get logits.
+                        logits = mod_compute.logits
+                        lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1) ## Softmax tempering of logits if needed.
+                        loss = label_smoothed_nll_loss(
+                            lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
+                        ) ## Label smoothed cross entropy loss.
+                        loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                        ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
+                        for logits in mod_compute.additional_lm_logits:
+                            lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1) ## Softmax tempering of logits if needed.
+                            loss_extra = label_smoothed_nll_loss(
+                                lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
+                            ) ## Label smoothed cross entropy loss.
+                            loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                        if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
+                            assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
+                            lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
+                            entropy = -(torch.exp(lprobs)*lprobs).mean()
+                            loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
+                        if args.distillation: ## Time to distill.
+                            with torch.no_grad(): ## No gradient to avoid memory allocation.
+                                parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
+                            distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
+                            loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
+            else:
+                if args.unify_encoder:
+                    source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
+                    decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
+                    target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
+                    decoder_input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net. 
+                    pad_mask = input_ids.eq(tok.pad_token_id).unsqueeze(2)
+                    source_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
+                    source_hidden_state_encoder = source_hidden_state_encoder.mean(dim=1)
+                    pad_mask = decoder_input_ids.eq(tok.pad_token_id).unsqueeze(2)
+                    target_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
+                    target_hidden_state_encoder = target_hidden_state_encoder.mean(dim=1)
+                    loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
+                else:
                     mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Run the model and get logits.
                     logits = mod_compute.logits
                     lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1) ## Softmax tempering of logits if needed.
@@ -313,34 +245,9 @@ def model_create_load_run_save(gpu, args, files):
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
                     if args.distillation: ## Time to distill.
                         with torch.no_grad(): ## No gradient to avoid memory allocation.
-                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
-                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
+                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
+                            distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
                         loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
-            else:
-                mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Run the model and get logits.
-                logits = mod_compute.logits
-                lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1) ## Softmax tempering of logits if needed.
-                loss = label_smoothed_nll_loss(
-                    lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                ) ## Label smoothed cross entropy loss.
-                loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
-                ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
-                for logits in mod_compute.additional_lm_logits:
-                    lprobs = torch.nn.functional.log_softmax(logits/args.softmax_temperature, dim=-1) ## Softmax tempering of logits if needed.
-                    loss_extra = label_smoothed_nll_loss(
-                        lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                    ) ## Label smoothed cross entropy loss.
-                    loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
-                if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
-                    assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
-                    lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
-                    entropy = -(torch.exp(lprobs)*lprobs).mean()
-                    loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
-                if args.distillation: ## Time to distill.
-                    with torch.no_grad(): ## No gradient to avoid memory allocation.
-                        parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
-                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
-                    loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
         
         except Exception as e: ## This is a generic net to catch an exception. Should be a bit more sophisticated in the future. TODO.
             print("NAN loss was computed or something messed up")
@@ -390,9 +297,8 @@ def run_demo():
                         help='number of gpus per node')
     parser.add_argument('-nr', '--nr', default=0, type=int,
                         help='ranking within the nodes')
-    parser.add_argument('-i', '--iters', default=2000000, type=int, 
-                        metavar='N',
-                        help='number of total iterations to run')
+    parser.add_argument('--num_batches', default=2000000, type=int, 
+                        help='Number of batches to train on')
     parser.add_argument('-a', '--ipaddr', default='localhost', type=str, 
                         help='IP address of the main node')
     parser.add_argument('-m', '--model_path', default='ddpdefault', type=str, 
@@ -401,6 +307,20 @@ def run_demo():
                         help='Name of the model')
     parser.add_argument('--langs', default='', type=str, 
                         help='Comma separated string of source languages')
+    parser.add_argument('--mnmt', action='store_true', 
+                        help='Are we training MNMT models? If so then the datagen will be slightly tweaked. We will also expect that training and development files will be comma separated when passed as arguments. The slang and tlang markers will also be comma separated and will follow the order of these files.')
+    parser.add_argument('--train_slang', default='en', type=str, 
+                        help='Source language(s) for training')
+    parser.add_argument('--train_tlang', default='hi', type=str, 
+                            help='Target language(s) for training')
+    parser.add_argument('--train_src', default='', type=str, 
+                            help='Source language training sentences')
+    parser.add_argument('--train_tgt', default='', type=str, 
+                            help='Target language training sentences')
+    parser.add_argument('--bilingual_train_frequency', default=-1, type=int, 
+                        help='If this is -1 then we assume no bilingual corpora. If this is set to a value say 5 then every 5th batch will be a bilingual batch and all others will be monolingual batches.')
+    parser.add_argument('--unify_encoder', action='store_true', 
+                        help='Should we minimize the encoder representation distances instead of regular cross entropy minimization on the parallel corpus?')
     parser.add_argument('--file_prefixes', default='', type=str, 
                         help='Comma separated string of source language file prefixes. Make sure that these are split into N groups where N is the number of GPUs you plan to use.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
@@ -425,6 +345,10 @@ def run_demo():
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
     parser.add_argument('--max_length', default=128, type=int, 
                         help='Maximum sequence length for training')
+    parser.add_argument('--max_src_length', default=256, type=int, 
+                        help='Maximum token length for source language')
+    parser.add_argument('--max_tgt_length', default=256, type=int, 
+                        help='Maximum token length for target language')
     parser.add_argument('--hard_truncate_length', default=0, type=int, 
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--batch_size', default=4096, type=int, 
@@ -442,6 +366,8 @@ def run_demo():
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
     parser.add_argument('--data_sampling_temperature', default=5.0, type=float, help="The value for data sampling temperature")
+    parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
+    parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm")
     parser.add_argument('--softmax_temperature', default=1.0, type=float, help="The value for the softmax temperature")
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
@@ -490,17 +416,35 @@ def run_demo():
     parser.add_argument('--parent_encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--parent_d_model', default=512, type=int, help="The value for model hidden size")
     ###
+    ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. TODO: Modify code to avoid the need for these flags in this script.
+    parser.add_argument('--multi_source', action='store_true', 
+                        help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
+    parser.add_argument('--cross_distillation', action='store_true', 
+                        help='Should we perform cross distillation from a parent model which has been trained on another source language but the same target language? If so then you must specify the model using "parent_pretrained_model". Additionally you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence" There are several distillation options check the flag called "distillation_styles".')
+    ###
     args = parser.parse_args()
+    assert len(args.token_masking_probs_range) <= 2
     print("IP address is", args.ipaddr)
 
     args.world_size = args.gpus * args.nodes                #
 
     files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
     print("All files:", files)
-
+    
+    train_files = {}
+    if args.bilingual_train_frequency != -1:
+        if args.mnmt:
+            slangs = args.train_slang.strip().split(",")
+            tlangs = args.train_tlang.strip().split(",")
+            train_srcs = args.train_src.strip().split(",")
+            train_tgts = args.train_tgt.strip().split(",")
+            train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+        else:
+            train_files = {args.train_slang+"-"+args.train_tlang : (args.train_src, args.train_tgt)}
+        print("Training files are:", train_files)
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = '26023'                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,))         #
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,train_files,))         #
     
 if __name__ == "__main__":
     run_demo()
