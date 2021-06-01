@@ -2,6 +2,7 @@ src_files=$1 # Has to be a comma separated list
 vocab_size=$2
 tgt_folder=$3
 type=$4
+user_tokens=$5
 mkdir -p $tgt_folder
 
 SPM_TRAIN=/share03/draj/softwares_and_scripts/sentencepiece/build/src/spm_train ## Change this to your spm_train path
@@ -19,4 +20,6 @@ echo "Unknown tokenizer."
 exit
 fi
 
-python /share03/draj/data/monolingual_corpora/indic/indic-mbart/create_autoconfig.py $tgt_folder $type $src_files
+## names of the bpe and spm models are set to sentencepiece.bpe and spiece as those are the names that the tokenizer implementations expect.
+
+python /share03/draj/data/monolingual_corpora/indic/indic-mbart/create_autoconfig.py $tgt_folder $type $src_files $user_tokens

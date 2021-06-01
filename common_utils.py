@@ -34,6 +34,7 @@ import numpy as np
 import math
 import sacrebleu
 from rouge_score import rouge_scorer
+import functools
 ##
 
 ## Seed setting here
@@ -470,19 +471,22 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
     curr_batch_count = 0
     encoder_input_batch = []
     max_src_sent_len = 0
-
+    if args.multi_source: ## Additional source batch and length info
+        encoder_input_batch_parent = []
+        max_src_sent_len_parent = 0
+    if args.multi_source:
+        slang = slang.split("-")
+        slang_parent = slang[0]
+        slang = slang[1]
+        lang_parent = "<2"+slang_parent+">"
+    lang = "<2"+slang+">"
     for src_line in src_file:
         start = time.time()
         src_sent = src_line.strip()
         if args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
             src_sent = src_sent.split("\t")
-            src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
-            src_sent = src_sent[0] ## This is the sentence for X
-            slang = slang.split("-")
-            slang_parent = slang[1]
-            slang = slang[0]
-            lang_parent = "<2"+slang_parent+">"
-        lang = "<2"+slang+">" ## proceed from here to generate a batch for the multisource development set.
+            src_sent_parent = src_sent[0].strip() ## This is the sentence for Y
+            src_sent = src_sent[1] ## This is the sentence for X
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
         if sent_len > args.max_src_length: ## Initial truncation
@@ -495,29 +499,62 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             max_src_sent_len = curr_src_sent_len
 
         encoder_input_batch.append(src_sent + " </s> " + lang)
+        if args.multi_source: ## Process the batch for the additional source as well.
+            src_sent_split_parent = src_sent_parent.split(" ")
+            sent_len_parent = len(src_sent_split_parent)
+            if sent_len_parent > args.max_src_length: ## Initial truncation
+                src_sent_split_parent=src_sent_split_parent[:args.max_src_length]
+                src_sent_parent = " ".join(src_sent_split_parent)
+                sent_len_parent = args.max_src_length
+            iids = tok(src_sent_parent + " </s> " + lang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len_parent = len(iids[0])
+            if curr_src_sent_len_parent > max_src_sent_len_parent:
+                max_src_sent_len_parent = curr_src_sent_len_parent
+
+            encoder_input_batch_parent.append(src_sent_parent + " </s> " + lang_parent)
+
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
             if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
                 input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
-            end = time.time()
+            
             if args.is_summarization:
                 print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
-            yield input_ids, input_masks
+            if args.multi_source: ## Process the batch for the additional source as well.
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+                if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
+                    input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+                input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+                #print(input_ids.size(), input_ids_parent.size())
+                yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
+            else:
+                yield input_ids, input_masks
+            end = time.time()
             curr_batch_count = 0
             encoder_input_batch = []
             max_src_sent_len = 0
+            if args.multi_source: ## Additional source batch and length info
+                encoder_input_batch_parent = []
+                max_src_sent_len_parent = 0
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
             input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
+        
         if args.is_summarization:
             print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
-        yield input_ids, input_masks
-
+        if args.multi_source: ## Process the batch for the additional source as well.
+            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
+                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+            yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
+        else:
+            yield input_ids, input_masks
 
 
 def generate_batches_bilingual(tok, args, files, rank):
@@ -562,14 +599,15 @@ def generate_batches_bilingual(tok, args, files, rank):
         sents_in_batch = 0
         if args.cross_distillation or args.multi_source: ## We assume an additional source language.
             max_src_sent_len_parent = 0
+            prev_max_src_sent_len_parent = 0
             encoder_input_batch_parent = []
         while True:
             language_idx = random.choices(language_indices, probs)[0]
             src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
             if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
                 src_sent = src_sent.split("\t")
-                src_sent_parent = src_sent[1].strip() ## This is the sentence for Y
-                src_sent = src_sent[0] ## This is the sentence for X
+                src_sent_parent = src_sent[0].strip() ## This is the sentence for Y
+                src_sent = src_sent[1] ## This is the sentence for X
             src_sent = src_sent.strip()
             tgt_sent = tgt_sent.strip()
             slangtlang = language_list[language_idx].strip().split("-")
@@ -640,6 +678,13 @@ def generate_batches_bilingual(tok, args, files, rank):
                 
             iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
             curr_tgt_sent_len = len(iids[0])
+            
+            if args.cross_distillation or args.multi_source:
+                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_src_sent_len_parent = len(iids[0])
+                if curr_src_sent_len_parent > max_src_sent_len_parent:
+                    prev_max_src_sent_len_parent = max_src_sent_len_parent
+                    max_src_sent_len_parent = curr_src_sent_len_parent    
 
             if curr_src_sent_len > max_src_sent_len:
                 prev_max_src_sent_len = max_src_sent_len
@@ -649,10 +694,15 @@ def generate_batches_bilingual(tok, args, files, rank):
                 prev_max_tgt_sent_len = max_tgt_sent_len
                 max_tgt_sent_len = curr_tgt_sent_len
             
-            potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
+            if args.cross_distillation or args.multi_source:
+                potential_batch_count = max(max_src_sent_len, max_src_sent_len_parent, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
+            else:
+                potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
             if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
                 max_src_sent_len = prev_max_src_sent_len
                 max_tgt_sent_len = prev_max_tgt_sent_len
+                if args.cross_distillation or args.multi_source:
+                    max_src_sent_len_parent = prev_max_src_sent_len_parent
                 break
             
             encoder_input_batch.append(src_sent + " </s> " + slang)
@@ -662,13 +712,10 @@ def generate_batches_bilingual(tok, args, files, rank):
             else:
                 decoder_input_batch.append(tlang + " " + tgt_sent)
                 decoder_label_batch.append(tgt_sent + " </s>")
-            sents_in_batch += 1
             if args.cross_distillation or args.multi_source:
-                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_src_sent_len_parent = len(iids[0])
-                if curr_src_sent_len_parent > max_src_sent_len_parent:
-                    max_src_sent_len_parent = curr_src_sent_len_parent
                 encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
+            
+            sents_in_batch += 1
                 
         if len(encoder_input_batch) == 0:
             print("Zero size batch due to an abnormal example. Skipping empty batch.")
@@ -692,7 +739,8 @@ def generate_batches_bilingual(tok, args, files, rank):
                 input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
             end = time.time()
-            yield [input_ids_parent, input_ids], [input_masks_parent, input_masks], decoder_input_ids, labels
+            #print(input_ids.size(), input_ids_parent.size(), decoder_input_ids.size())
+            yield [input_ids, input_ids_parent], [input_masks, input_masks_parent], decoder_input_ids, labels
         else:
             end = time.time()
             yield input_ids, input_masks, decoder_input_ids, labels
@@ -843,13 +891,25 @@ def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation 
             end = time.time()
 
             yield input_ids, input_masks, decoder_input_ids, tgt_masks, labels, src_sent_split, tgt_sent_split, enc_pos, dec_pos
-        
+            
+
+
 def generate_batches_bilingual_for_decoding(tok, args):
     """Generates the source sentences for the test set."""
     src_file = open(args.test_src)
+    slang = args.slang
     curr_batch_count = 0
     encoder_input_batch = []
     max_src_sent_len = 0
+    if args.multi_source: ## Additional source batch and length info
+        encoder_input_batch_parent = []
+        max_src_sent_len_parent = 0
+    if args.multi_source:
+        slang = slang.split("-")
+        slang_parent = slang[0]
+        slang = slang[1]
+        lang_parent = "<2"+slang_parent+">"
+    lang = "<2"+slang+">"
     
     if len(args.token_masking_probs_range) == 1:
         mp_val_or_range = args.token_masking_probs_range[0]
@@ -860,10 +920,13 @@ def generate_batches_bilingual_for_decoding(tok, args):
     for src_line in src_file:
         start = time.time()
         src_sent = src_line.strip()
-        lang = "<2"+args.slang+">"
+        if args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
+            src_sent = src_sent.split("\t")
+            src_sent_parent = src_sent[0].strip() ## This is the sentence for Y
+            src_sent = src_sent[1] ## This is the sentence for X
         src_sent_split = src_sent.split(" ")
         sent_len = len(src_sent_split)
-        if sent_len > args.max_src_length:
+        if sent_len > args.max_src_length: ## Initial truncation
             src_sent_split = src_sent_split[:args.max_src_length]
             src_sent = " ".join(src_sent_split)
             sent_len = args.max_src_length
@@ -899,6 +962,20 @@ def generate_batches_bilingual_for_decoding(tok, args):
             max_src_sent_len = curr_src_sent_len
 
         encoder_input_batch.append(src_sent + " </s> " + lang)
+        if args.multi_source: ## Process the batch for the additional source as well.
+            src_sent_split_parent = src_sent_parent.split(" ")
+            sent_len_parent = len(src_sent_split_parent)
+            if sent_len_parent > args.max_src_length: ## Initial truncation
+                src_sent_split_parent=src_sent_split_parent[:args.max_src_length]
+                src_sent_parent = " ".join(src_sent_split_parent)
+                sent_len_parent = args.max_src_length
+            iids = tok(src_sent_parent + " </s> " + lang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+            curr_src_sent_len_parent = len(iids[0])
+            if curr_src_sent_len_parent > max_src_sent_len_parent:
+                max_src_sent_len_parent = curr_src_sent_len_parent
+
+            encoder_input_batch_parent.append(src_sent_parent + " </s> " + lang_parent)
+            
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
@@ -906,17 +983,35 @@ def generate_batches_bilingual_for_decoding(tok, args):
                 input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
-            yield input_ids, input_masks
+            if args.multi_source: ## Process the batch for the additional source as well.
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+                if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
+                    input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+                input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+                yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
+            else:
+                yield input_ids, input_masks
             curr_batch_count = 0
             encoder_input_batch = []
             max_src_sent_len = 0
+            if args.multi_source: ## Additional source batch and length info
+                encoder_input_batch_parent = []
+                max_src_sent_len_parent = 0
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len).input_ids
         if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
             input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = input_ids != tok.pad_token_id
-        yield input_ids, input_masks
+        if args.multi_source: ## Process the batch for the additional source as well.
+            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
+            if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
+                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
+            yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
+        else:
+            yield input_ids, input_masks
+
 
 def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=None, plot_title=None):
     '''
@@ -962,6 +1057,6 @@ def plot_attention(data, X_label=None, Y_label=None, num_heads=None, file_name=N
 def generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files, ctr):
     """This will return masked monolingual or bilingual batches according to a fixed ratio."""
     if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0:
-        generate_batches_bilingual(tok, args, train_files, rank)
+        return generate_batches_bilingual(tok, args, train_files, rank)
     else:
-        generate_batches_monolingual(tok, args, files, rank)
+        return generate_batches_monolingual_masked(tok, args, files, rank)

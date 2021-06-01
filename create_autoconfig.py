@@ -10,7 +10,7 @@ else:
     print("Unknown tokenizer. Exiting!")
     sys.exit(1)
 
-special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"]}
+special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + sys.argv[3].strip().split(",") if sys.argv[3] is not "" else []} ## Add additional special tokens specified by the user as a comma separated list.
 
 for lang_file in sys.argv[3].strip().split(","):
     lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language
@@ -32,9 +32,6 @@ tokenizer = AutoTokenizer.from_pretrained(sys.argv[1], do_lower_case=False, use_
 
 print(tokenizer)
 
-if sys.argv[2] == "albert":
-    print(tokenizer.convert_ids_to_tokens(tokenizer("I am Gone. Làm sao tôi có thể trình bày trong 10 phút về sợi dây liên kết những người phụ nữ qua ba thế hệ , về việc làm thế nào những sợi dây mạnh mẽ đáng kinh ngạc ấy đã níu chặt lấy cuộc sống của một cô bé bốn tuổi co quắp với đứa em gái nhỏ của cô bé ,", add_special_tokens=False).input_ids))
-elif sys.argv[2] == "mbart":
-    print(tokenizer.convert_ids_to_tokens(tokenizer("I am Gone. Làm sao tôi có thể trình bày trong 10 phút về sợi dây liên kết những người phụ nữ qua ba thế hệ , về việc làm thế nào những sợi dây mạnh mẽ đáng kinh ngạc ấy đã níu chặt lấy cuộc sống của một cô bé bốn tuổi co quắp với đứa em gái nhỏ của cô bé ,", add_special_tokens=False).input_ids))
+print(tokenizer.convert_ids_to_tokens(tokenizer("This is a dummy sentence. Depending on the languages you chose for segmentation, this may or may not look weirdly segmented to you.", add_special_tokens=False).input_ids))
     
 print("Success")

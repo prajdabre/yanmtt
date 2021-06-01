@@ -60,7 +60,7 @@ def model_create_load_decode(gpu, args):
 
     print(f"Running DDP checkpoint example on rank {rank}.")
 
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k) ## Configuration.
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, multi_source=args.multi_source, multi_source_method=args.multi_source_method) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -69,7 +69,7 @@ def model_create_load_decode(gpu, args):
     model = DistributedDataParallel(model, device_ids=[gpu])
     
     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-    checkpoint_dict = torch.load(args.model_to_decode, map_location=map_location)
+    checkpoint_dict = torch.load(args.model_path, map_location=map_location)
     
                     
     if type(checkpoint_dict) == dict:
@@ -87,12 +87,17 @@ def model_create_load_decode(gpu, args):
         for input_ids, input_masks in generate_batches_bilingual_for_decoding(tok, args): #infinite_same_sentence(10000):
             start = time.time()
             print("Processing batch:", ctr)
+            if args.multi_source:
+                input_ids_parent = input_ids[1]
+                input_ids = input_ids[0]
+                input_masks_parent = input_masks[1]
+                input_masks = input_masks[0]
             with torch.no_grad():
-                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1) ## We translate the batch.
+                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1, additional_input_ids=input_ids_parent.to(gpu) if args.multi_source else None, additional_input_ids_mask=input_masks_parent.to(gpu) if args.multi_source else None) ## We translate the batch.
             print(len(input_ids), "in and", len(translations), "out")
             for input_id, translation in zip(input_ids, translations):
-                translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
+                translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) 
+                input_id  = tok.decode(input_id, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
                 outf.write(translation+"\n")
                 outf.flush()
                 hyp.append(translation)
@@ -116,8 +121,8 @@ def model_create_load_decode(gpu, args):
                 translations = translations * tgt_masks
                 print(translations.size())
                 for input_id, translation in zip(input_ids, translations):
-                    translation  = tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
-                    input_id  = tok.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False) 
+                    translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) 
+                    input_id  = tok.decode(input_id, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) 
                     outf.write(translation+"\n")
                     outf.flush()
                     hyp.append(translation)
@@ -177,7 +182,7 @@ def model_create_load_decode(gpu, args):
             print(hidden_state.size())
             hidden_state = hidden_state.mean(dim=1)
             for idx, hidden_state_individual in enumerate(hidden_state):
-                metadata=tok.decode(input_ids[idx] if args.decode_type == "get_enc_representations" else decoder_input_ids[idx], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                metadata=tok.decode(input_ids[idx] if args.decode_type == "get_enc_representations" else decoder_input_ids[idx], skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False)
                 outf.write("\t".join([str(elem) for elem in hidden_state_individual.tolist()])+"\n")
                 outf.flush()
     elif args.decode_type == "get_attention": ## We want to extract and visualize the self attention and cross attentions for a particular layer and particular head. TODO make this work with all layers and all heads in a single plot. Currently my IQ is low so I am unable to achieve it.
@@ -189,9 +194,9 @@ def model_create_load_decode(gpu, args):
             decoder_attentions = mod_compute.decoder_attentions[args.layer_id]
             cross_attentions = mod_compute.cross_attentions[args.layer_id]
             for idx, (input_sent, tgt_sent) in enumerate(zip(input_ids, decoder_input_ids)):
-                input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=True)
+                input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=args.no_skip_special_tokens)
                 input_len = len(input_sent)
-                tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=True)
+                tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=args.no_skip_special_tokens)
                 tgt_len = len(tgt_sent)
                 print("Processing for ", input_sent, tgt_sent)
                 num_heads = 1
@@ -230,7 +235,7 @@ def run_demo():
                         help='IP address of the main node')
     parser.add_argument('-p', '--port', default='26023', type=str, 
                         help='Port main node')
-    parser.add_argument('-m', '--model_to_decode', default='pytorch.bin', type=str, 
+    parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
                         help='Path to save the fine tuned model')
     parser.add_argument('--batch_size', default=32, type=int, 
                         help='Batch size in terms of number of sentences')
@@ -255,6 +260,7 @@ def run_demo():
     parser.add_argument('--encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=8, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--wait_k', default=-1, type=int, help="The value for k in wait-k snmt. Keep as -1 for non-snmt aka vanilla NMT.")
+    parser.add_argument('--additional_source_wait_k', default=-1, type=int, help="The value for k in wait-k snmt. Keep as -1 for non-snmt aka vanilla NMT. This is the wait-k for the additional source language. Can be used for simultaneous mutlisource NMT.")
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
@@ -298,10 +304,16 @@ def run_demo():
                         help='Target language translated sentences')
     parser.add_argument('--test_ref', default=None, type=str, 
                         help='Target language reference sentences')
+    parser.add_argument('--multi_source', action='store_true', 
+                        help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
+    parser.add_argument('--multi_source_method', default=None, type=str, 
+                        help='How to merge representations from multiple sources? Should be one of self_relevance_and_merge_after_attention, self_relevance_and_merge_before_attention, merge_after_attention, merge_before_attention. We also need to implement averaging methods such as early averaging (average encoder representations) and late averaging (average softmaxes). Relevance mechanisms should have a separate flag in the future.')
     parser.add_argument('--mask_input', action='store_true', 
                         help='Should we mask words in the input sentence? We should use this for hallucinating variations of the input sentences.')
     parser.add_argument('--return_all_sequences', action='store_true', 
                         help='Should we return all beam sequences?')
+    parser.add_argument('--no_skip_special_tokens', action='store_false', 
+                        help='Should we return outputs without special tokens? We may need this to deal with situations where the user specified control tokens must be in the output.')
     parser.add_argument('--multilayer_softmaxing', action='store_true', 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
     parser.add_argument('--remap_encoder', default='', type=str, 

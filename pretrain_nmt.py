@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.optim import Adam
-import torch.nn.functional.cosine_similarity as cosine_similarity
+from torch.nn.functional import cosine_similarity
 ##
 
 ## Our imports
@@ -78,7 +78,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
-        parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, wait_k=args.wait_k)
+        parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k)
         parent_model = MBartForConditionalGeneration(config)
         parent_model.cuda(gpu)
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
@@ -173,7 +173,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         try:
             if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
                 with torch.cuda.amp.autocast():
-                    if args.unify_encoder:
+                    if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0 and args.unify_encoder:
                         source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
                         decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
                         target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -211,7 +211,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                             distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
                             loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
             else:
-                if args.unify_encoder:
+                if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0 and args.unify_encoder:
                     source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
                     decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
                     target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -245,7 +245,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
                     if args.distillation: ## Time to distill.
                         with torch.no_grad(): ## No gradient to avoid memory allocation.
-                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
+                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
                             distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
                         loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
         
@@ -259,6 +259,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         input_masks=input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         decoder_input_ids=decoder_input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         labels=labels.to('cpu') ## Move to CPU. May not be needed but its a safety net.
+        
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation.
             scaler.scale(loss).backward()
         else:
@@ -362,6 +363,8 @@ def run_demo():
     parser.add_argument('--encoder_attention_heads', default=16, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=16, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--wait_k', default=-1, type=int, help="The value for k in wait-k snmt. Keep as -1 for non-snmt aka vanilla NMT.")
+    parser.add_argument('--mixed_wait_k', action='store_true', 
+                        help='Should we train using up to wait_k? This can help simulate multiple wait_k')
     parser.add_argument('--decoder_ffn_dim', default=4096, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=4096, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=1024, type=int, help="The value for model hidden size")
@@ -416,7 +419,7 @@ def run_demo():
     parser.add_argument('--parent_encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--parent_d_model', default=512, type=int, help="The value for model hidden size")
     ###
-    ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. TODO: Modify code to avoid the need for these flags in this script.
+    ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. These flags are here because the common_utils.py methods assume the existence of these args for when joint mbart training and regular NMT training is done. TODO: Modify code to avoid the need for these flags in this script.
     parser.add_argument('--multi_source', action='store_true', 
                         help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
     parser.add_argument('--cross_distillation', action='store_true', 
