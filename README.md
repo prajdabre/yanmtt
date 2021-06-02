@@ -3,38 +3,39 @@
 YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backstory how I ended up creating this toolkit scroll to the bottom of this README. Although the name says that it is yet another toolkit, it was written with the purpose of better understanding of the flow of training, starting from data pre-processing, sharding, batching, distributed training and decoding. There is a significant emphashis on multilingualism and on cross-lingual learning.
 
 List of features:
-Basic NMT pre-training, fine-tuning, decoding.
+**Basic NMT pre-training, fine-tuning, decoding.**
     Distributed training (tested on up to 48 GPUs. We dont have that much money.).
     Mixed precision training (optimization issues on multiple GPUs).
     Tempered softmax training, entropy maximization training.
     Joint training using monolingual and parallel corpora.
     MBART pre-training with cross-lingual constraints.
-Sentence representation and attention extraction.
-Scoring translations using trained NMT models. (for reranking, filtering or quality estimation)
-Multilingual training.
+    Sentence representation and attention extraction.
+    Scoring translations using trained NMT models. (for reranking, filtering or quality estimation)
+**Multilingual training**
     Fine-grained control over checkpoint saving for optimising per language pair performance.
-Fine-grained control over parameter transfer for fine-tuning.
+**Fine-grained parameter transfer**
     Remap embeddings and layers between pre-trained and fine-tuned models.
-    Eliminate layers prior to decoding or fine-tuning.
-Model compression.
+    Eliminate compoents or layers prior to decoding or fine-tuning.
+**Model compression**
     Training compact models from scratch via recurrently stacked layers (similar to what is used in ALBERT).
     Distillation of pre-trained and fine-tuned models. Distillation styles supported: label cross-entropy, attention cross-entropy, layer similarity.
-Simultaneous NMT
-    Wait-k NMT: Train and decode wait-K models or decode full-sentence models using wait-k.
-Multi-source NMT
+**Simultaneous NMT**
+    Simulated Wait-k NMT where we train and decode wait-K models or decode full-sentence models using wait-k.
+**Multi-source and Document NMT**
     Vanilla multi-source with two input sentences belonging to different languages.
     Document level NMT where one input is the current sentence and the other one is the context.
     Can be combined with wait-k NMT
     
-Prerequisites (core):
-Pytorch v1.7.1
-HuggingFace Transformers v4.3.2
-tensorflow-gpu v2.3.0
-sentencepiece v0.1.95
-gputil v1.4.0
+**Prerequisites (core):**
+    Pytorch v1.7.1
+    HuggingFace Transformers v4.3.2 (install the modified copy of the transformers library provided with this toolkit)
+    tensorflow-gpu v2.3.0
+    sentencepiece v0.1.95
+    gputil v1.4.0
 
 How to install:
-You only need to install the required packages via: pip -r requirements.txt
+1. Install the required packages via: pip -r requirements.txt
+2. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
 
 Scripts and their functionality:
 1. create_autotokenizer.sh and create_autotokenizer.py: These scripts govern the creation of a unigram SPM or BPE tokenizer. The shell script creates the subword segmenter using sentencepiece which can make both SPM and BPE models. All you need is a monolingual corpus for the languages you are interested in. The python script wraps this around an AlbertTokenizer (for SPM) or MBartTokenizer (for BPE), adds special user defined tokens and saves a configuration file for use in the future via an AutoTokenizer.
