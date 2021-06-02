@@ -31,6 +31,7 @@ Pytorch v1.7.1
 HuggingFace Transformers v4.3.2
 tensorflow-gpu v2.3.0
 sentencepiece v0.1.95
+gputil v1.4.0
 
 How to install:
 You only need to install the required packages via: pip -r requirements.txt
@@ -39,13 +40,22 @@ Scripts and their functionality:
 1. create_autotokenizer.sh and create_autotokenizer.py: These scripts govern the creation of a unigram SPM or BPE tokenizer. The shell script creates the subword segmenter using sentencepiece which can make both SPM and BPE models. All you need is a monolingual corpus for the languages you are interested in. The python script wraps this around an AlbertTokenizer (for SPM) or MBartTokenizer (for BPE), adds special user defined tokens and saves a configuration file for use in the future via an AutoTokenizer.
 Usage: see examples/create_tokenizer.sh
 
-2. pretrain_nmt.py: This is used to train an MBART model. At the very least you need a monolingual corpus for the languages you are interested in and a tokenizer trained for those languages. This script can also be used to do joint MBART style training jointly with regular NMT training although the NMT training is rather basic. If you want to do advanced NMT training then you should use the "train_nmt.py" script. Ultimately, you should not use the outcome of this script to perform final translations. 
+2. pretrain_nmt.py: This is used to train an MBART model. At the very least you need a monolingual corpus for the languages you are interested in and a tokenizer trained for those languages. This script can also be used to do joint MBART style training jointly with regular NMT training although the NMT training is rather basic because there is no evaluation during training. If you want to do advanced NMT training then you should use the "train_nmt.py" script. Ultimately, you should not use the outcome of this script to perform final translations. Additional advanced usages involve: simulated wait-k simultaneous NMT, knowledge distillation, fine-tuning pre-existing MBART models with fine-grained control over what should be initialized or tuned etc. Read the code and the command line arguments for a better understanding of the advanced features.  
 Usage: see examples/train_mbart_model.sh
 
-3. train_nmt.py: This is used to either train a NMT model from scratch or fine-tune a pre-existing MBART or NMT model. At the very least you need a parallel corpus (preferrably split into train, dev and test) for the language pairs you are interested in.
-Usage
+3. train_nmt.py: This is used to either train a NMT model from scratch or fine-tune a pre-existing MBART or NMT model. At the very least you need a parallel corpus (preferrably split into train, dev and test sets although we can make do with only a train set) for the language pairs you are interested in. There are several advanced features such as: simulated wait-k simultaneous NMT, knowledge distillation, 
+fine-grained control over what should be initialized or tuned, document NMT, multi-source NMT, multilingual NMT training.
+Usage: see examples/train_or_fine_tune_model.sh
 
-1. Training a NMT model:
+4. decode_model.py: This is used to decode sentences using a trained model. Additionally you can do translation pair scoring, forced decoding, forced alignment (experimental), encoder/decoder representation extraction and alignment visualization.
+Usage: see examples/decode_or_probe_model.sh
+
+5. common_utils.py: This contains all housekeeping functions such as corpora splitting, batch generation, loss computation etc. Do take a look at all the methods since you may need to modify them.
+
+6. average_checkpoints.py: You can average the specified checkpoints using either arithmetic or geometric averaging.
+Usage: see examples/avergage_model_checkpoints.sh
+
+7. gpu_blocker.py: This is used to temporarily occupy a gpu in case you use a shared GPU environment. Run this in the background before launching the training processes so that while the training scripts are busy doing preprocessing like sharding or model loading, the GPU you aim for is not occupied by someone else.
  
 
 Backstory: Why I made this toolkit

@@ -322,7 +322,7 @@ def run_demo():
                         help='If this is -1 then we assume no bilingual corpora. If this is set to a value say 5 then every 5th batch will be a bilingual batch and all others will be monolingual batches.')
     parser.add_argument('--unify_encoder', action='store_true', 
                         help='Should we minimize the encoder representation distances instead of regular cross entropy minimization on the parallel corpus?')
-    parser.add_argument('--file_prefixes', default='', type=str, 
+    parser.add_argument('--mono_src', default='', type=str, 
                         help='Comma separated string of source language file prefixes. Make sure that these are split into N groups where N is the number of GPUs you plan to use.')
     parser.add_argument('--add_final_layer_norm', action='store_true', 
                         help='Should we add a final layer norm?')
@@ -431,7 +431,7 @@ def run_demo():
 
     args.world_size = args.gpus * args.nodes                #
 
-    files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.file_prefixes.strip().split(","))}
+    files = {lang: file_prefix for lang, file_prefix in zip(args.langs.strip().split(","), args.mono_src.strip().split(","))}
     print("All files:", files)
     
     train_files = {}

@@ -241,6 +241,7 @@ class BaseModelOutputWithPastAndCrossAttentions(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 
 @dataclass
@@ -302,6 +303,11 @@ class Seq2SeqModelOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_encoder_last_hidden_state: Optional[torch.FloatTensor] = None
+    additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    context_encoder_representations: torch.FloatTensor = None
 
 
 @dataclass
@@ -539,6 +545,13 @@ class Seq2SeqLMOutput(ModelOutput):
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_lm_logits: Optional[Tuple[torch.FloatTensor]] = None ## We use this for multilayer softmaxing to keep additional logits. The number of logits will be (number of decoder layers-1).
+    additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_encoder_last_hidden_state: Optional[torch.FloatTensor] = None
+    additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    additional_source_lm_logits: Optional[Tuple[torch.FloatTensor]] = None
+    additional_past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    context_encoder_representations: torch.FloatTensor = None
 
 
 @dataclass

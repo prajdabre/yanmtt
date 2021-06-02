@@ -189,7 +189,7 @@ def remap_layers(model, idx, args): ### Cut this code into half.
     return model
 
 def remap_embeddings(our_model_dict, model_to_load_dict, args):
-    """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings"""
+    """This method will consider two tokenizers, one for the pretrained model and one for the current model. It will then remap the embeddings. When we remapt embeddings we not only remap input embeddings to the encoder and decoder but also the lm head parameters which is a kind of embedding consisting of a weight matrix and biases. Note that embed positions remapping makes no sense."""
     if args.pretrained_tokenizer_name_or_path is None:
         return model_to_load_dict
     
@@ -202,9 +202,13 @@ def remap_embeddings(our_model_dict, model_to_load_dict, args):
             our_model_dict["module.model.shared.weight"][tok_idx] = model_to_load_dict["module.model.shared.weight"][pre_tok_idx]
             our_model_dict["module.model.encoder.embed_tokens.weight"][tok_idx] = model_to_load_dict["module.model.encoder.embed_tokens.weight"][pre_tok_idx]
             our_model_dict["module.model.decoder.embed_tokens.weight"][tok_idx] = model_to_load_dict["module.model.decoder.embed_tokens.weight"][pre_tok_idx]
+            our_model_dict["module.lm_head.weight"][tok_idx] = model_to_load_dict["module.lm_head.weight"][pre_tok_idx]
+            our_model_dict["module.final_logits_bias"][tok_idx] = model_to_load_dict["module.final_logits_bias"][pre_tok_idx]
     model_to_load_dict["module.model.shared.weight"] = our_model_dict["module.model.shared.weight"]
     model_to_load_dict["module.model.encoder.embed_tokens.weight"] = our_model_dict["module.model.encoder.embed_tokens.weight"]
     model_to_load_dict["module.model.decoder.embed_tokens.weight"] = our_model_dict["module.model.decoder.embed_tokens.weight"]
+    model_to_load_dict["module.lm_head.weight"] = our_model_dict["module.lm_head.weight"]
+    model_to_load_dict["module.final_logits_bias"] = our_model_dict["module.final_logits_bias"]
     return model_to_load_dict
 
 def remap_embeddings_eliminate_components_and_eliminate_mismatches(our_model_dict, model_to_load_dict, args):
@@ -212,7 +216,23 @@ def remap_embeddings_eliminate_components_and_eliminate_mismatches(our_model_dic
     print("Remapping embeddings.")
     model_to_load_dict = remap_embeddings(our_model_dict, model_to_load_dict, args)
     
-    print("Eliminating ")
+    if args.eliminate_encoder_before_initialization:
+        print("Eliminating encoder from the model to load")
+        for load_model_key in model_to_load_dict:
+            if "encoder" in load_model_key:
+                del model_to_load_dict[load_model_key]
+    if args.eliminate_decoder_before_initialization:
+        print("Eliminating decoder from the model to load")
+        for load_model_key in model_to_load_dict:
+            if "decoder" in load_model_key:
+                del model_to_load_dict[load_model_key]
+    if args.eliminate_embeddings_before_initialization:
+        print("Eliminating embeddings from the model to load")
+        for load_model_key in model_to_load_dict:
+            if "embed" in load_model_key:
+                del model_to_load_dict[load_model_key]            
+    
+                
     print("Eliminating matched params with mismatched sizes from the initial model.")
     for our_model_key in our_model_dict:
         if our_model_key in model_to_load_dict:
