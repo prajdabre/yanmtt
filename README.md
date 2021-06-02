@@ -55,7 +55,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 6. **average_checkpoints.py**: You can average the specified checkpoints using either arithmetic or geometric averaging. <br>
 **Usage:** see examples/avergage_model_checkpoints.sh
 
-7. **gpu_blocker.py**: This is used to temporarily occupy a gpu in case you use a shared GPU environment. Run this in the background before launching the training processes so that while the training scripts are busy doing preprocessing like sharding or model loading, the GPU you aim for is not occupied by someone else. ****
+7. **gpu_blocker.py**: This is used to temporarily occupy a gpu in case you use a shared GPU environment. Run this in the background before launching the training processes so that while the training scripts are busy doing preprocessing like sharding or model loading, the GPU you aim for is not occupied by someone else. Usage will be shown in the example scripts for training.
  
 
 **Backstory: Why I made this toolkit**
