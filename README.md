@@ -3,7 +3,7 @@
 YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backstory how I ended up creating this toolkit scroll to the bottom of this README. Although the name says that it is yet another toolkit, it was written with the purpose of better understanding of the flow of training, starting from data pre-processing, sharding, batching, distributed training and decoding. There is a significant emphashis on multilingualism and on cross-lingual learning.
 
 List of features:
-**Basic NMT pre-training, fine-tuning, decoding.**
+1. **Basic NMT pre-training, fine-tuning, decoding.**
     Distributed training (tested on up to 48 GPUs. We dont have that much money.).
     Mixed precision training (optimization issues on multiple GPUs).
     Tempered softmax training, entropy maximization training.
@@ -11,17 +11,17 @@ List of features:
     MBART pre-training with cross-lingual constraints.
     Sentence representation and attention extraction.
     Scoring translations using trained NMT models. (for reranking, filtering or quality estimation)
-**Multilingual training**
+2. **Multilingual training**
     Fine-grained control over checkpoint saving for optimising per language pair performance.
-**Fine-grained parameter transfer**
+3. **Fine-grained parameter transfer**
     Remap embeddings and layers between pre-trained and fine-tuned models.
     Eliminate compoents or layers prior to decoding or fine-tuning.
-**Model compression**
+4. **Model compression**
     Training compact models from scratch via recurrently stacked layers (similar to what is used in ALBERT).
     Distillation of pre-trained and fine-tuned models. Distillation styles supported: label cross-entropy, attention cross-entropy, layer similarity.
-**Simultaneous NMT**
+5. **Simultaneous NMT**
     Simulated Wait-k NMT where we train and decode wait-K models or decode full-sentence models using wait-k.
-**Multi-source and Document NMT**
+6. **Multi-source and Document NMT**
     Vanilla multi-source with two input sentences belonging to different languages.
     Document level NMT where one input is the current sentence and the other one is the context.
     Can be combined with wait-k NMT
