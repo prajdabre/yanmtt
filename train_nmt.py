@@ -1,4 +1,26 @@
 # -*- coding: utf-8 -*-
+# Copyright 2021 National Institute of Information and Communication Technology (Raj Dabre)
+# 
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated
+# documentation files (the "Software"), to deal in the
+# Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute,
+# sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+# The above copyright notice and this permission notice shall
+# be included in all copies or substantial portions of the
+# Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+# PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+# OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+# OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ## Basic imports
 import os
 import sys
@@ -90,7 +112,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         if type(parent_checkpoint_dict) == dict:
             parent_model.load_state_dict(parent_checkpoint_dict['model'])
         else:
-            parent_model.load_state_dict(parent_checkpoint_dict)
+            parent_model.module.load_state_dict(parent_checkpoint_dict)
             
         parent_model.train()
 
@@ -128,32 +150,29 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
     
-    if args.pretrained_bilingual_model == "" and args.pretrained_model != "": ## Here we load a pretrained NMT model or a previous checkpoint in case training crashed.
-        print("Loading a pretrained mbart model")
+    if args.pretrained_model != "": ## Here we load a pretrained NMT model or a previous checkpoint in case training crashed.
+        print("Loading a pretrained model")
         dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
+            if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '': ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
+                if 'optimizer' in checkpoint_dict:
+                    print("Reloading optimizer")
+                    optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+                if 'scheduler' in checkpoint_dict:
+                    print("Reloading scheduler")
+                    scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+                if 'ctr' in checkpoint_dict:
+                    print("Reloading ctr. This means we resume training.")
+                    ctr = checkpoint_dict['ctr']
+            else:
+                ctr = 0
         else:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
         ctr = 0
-    elif args.pretrained_bilingual_model != "":
-        print("Loading a previous checkpoint")
-        dist.barrier()
-        # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        checkpoint_dict = torch.load(args.pretrained_bilingual_model, map_location=map_location)
-        if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
-            if args.remap_encoder is '' and args.remap_decoder is '': ## No not load optimizers and schedulers when remapping
-                optimizer.load_state_dict(checkpoint_dict['optimizer'])
-                scheduler.load_state_dict(checkpoint_dict['scheduler'])
-            ctr = checkpoint_dict['ctr']
-        else:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
-            ctr = 0
     else:
         print("Training from scratch")
         ctr = 0
@@ -494,9 +513,9 @@ def run_demo():
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm value")
 
     parser.add_argument('--pretrained_model', default='', type=str, 
-                        help='Path to the pretrained model')
-    parser.add_argument('--pretrained_bilingual_model', default='', type=str, 
-                        help='Path to the pretrained bilingual model. Use this if you want to continue training a bilingual model.')
+                        help='Path to the pretrained model.')
+    parser.add_argument('--no_reload_optimizer_ctr_and_scheduler', action='store_true',
+                        help='Should we reload the optimizer, counter and secheduler? By default we always reload these. Set this to False if we only want to reload the model params and optimize from scratch.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
                         help='Path to save the fine tuned model')
     parser.add_argument('--warmup_steps', default=16000, type=int,

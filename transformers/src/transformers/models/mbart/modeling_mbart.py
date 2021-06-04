@@ -1,5 +1,7 @@
 # coding=utf-8
 # Copyright 2021, The Facebook AI Research Team and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2021, National Institute of Information and Communication Technology (Raj Dabre)
+# Modified portions by Raj Dabre are indicated as so.  
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -83,7 +85,7 @@ def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_
     Make causal mask used for bi-directional self-attention.
     """
     bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), -1e10) ## Changed here to -1e10 float("-inf")
+    mask = torch.full((tgt_len, tgt_len), -1e10) ## Changed here to -1e10 float("-inf") ## Modified by Raj Dabre.
     mask_cond = torch.arange(mask.size(-1))
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
@@ -93,6 +95,7 @@ def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_
     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
 
+## Modified by Raj Dabre. Start.
 # Copied from transformers.models.bart.modeling_bart._expand_mask
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None, wait_k: Optional[int] = -1, curr_decode_length: Optional[int] = -1):
     """
@@ -110,7 +113,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     inverted_mask = 1.0 - expanded_mask
 
     return inverted_mask.masked_fill(inverted_mask.bool(), -1e10) # torch.finfo(dtype).min
-
+## Modified by Raj Dabre. End.
 
 # Copied from transformers.models.bart.modeling_bart.BartLearnedPositionalEmbedding with Bart->MBart
 class MBartLearnedPositionalEmbedding(nn.Embedding):
@@ -162,7 +165,7 @@ class MBartAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        ### Modification by Raj
+        ## Modified by Raj Dabre. Start.
         if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or multi_source_method == "merge_after_attention_with_context_relevance_only": ## We pass the attentions through a gating method. X and Y are combined as w*x+(1-w)*Y where w=sigmoid(W[X:Y]) where [X:Y] is the concatenation of X and Y along hidden axis.
             if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention":
                 self.gating_layer = nn.Linear(2*self.head_dim, self.head_dim, bias=False)
@@ -173,7 +176,7 @@ class MBartAttention(nn.Module):
         else:
             self.multi_source = False
             self.multi_source_method = ""
-        ###
+        ## Modified by Raj Dabre. End.
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -200,6 +203,7 @@ class MBartAttention(nn.Module):
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
         # get key, value proj
+        ## Modified by Raj Dabre. Start.
         if is_cross_attention and past_key_value is not None:
             # reuse k,v, cross_attentions
             key_states = past_key_value[0]
@@ -207,13 +211,16 @@ class MBartAttention(nn.Module):
             if self.multi_source: # additional_past_key_value is not None
                 additional_key_states = additional_past_key_value[0]
                 additional_value_states = additional_past_key_value[1]
+        ## Modified by Raj Dabre. Enf.
         elif is_cross_attention:
             # cross_attentions
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
             value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
+            ## Modified by Raj Dabre. Start.
             if self.multi_source: # additional_past_key_value is not None
                 additional_key_states = self._shape(self.k_proj(additional_key_value_states), -1, bsz)
                 additional_value_states = self._shape(self.v_proj(additional_key_value_states), -1, bsz)
+            ## Modified by Raj Dabre. End.
         elif past_key_value is not None:
             # reuse k, v, self_attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
@@ -234,9 +241,10 @@ class MBartAttention(nn.Module):
             # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
             # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_states, value_states)
+            ## Modified by Raj Dabre. Start.
             if self.multi_source and is_cross_attention: ## Both conditions are not needed as one multi-source logic can only run when there is cross attention. multi_source is sufficient but keeping this condition for checking.
                 additional_past_key_value = (additional_key_states, additional_value_states)
-
+            ## Modified by Raj Dabre. End.
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
@@ -261,7 +269,7 @@ class MBartAttention(nn.Module):
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_weights = F.softmax(attn_weights, dim=-1)
-        
+        ## Modified by Raj Dabre. Start.
         if self.multi_source:
             additional_key_states = additional_key_states.view(*proj_shape)
             additional_value_states = additional_value_states.view(*proj_shape)
@@ -283,17 +291,20 @@ class MBartAttention(nn.Module):
                 additional_attn_weights = additional_attn_weights.view(bsz * self.num_heads, tgt_len, additional_src_len)
 
             additional_attn_weights = F.softmax(additional_attn_weights, dim=-1)
-
+        ## Modified by Raj Dabre. End.
+        
         if layer_head_mask is not None:
             assert layer_head_mask.size() == (
                 self.num_heads,
             ), f"Head mask for a single layer should be of size {(self.num_heads,)}, but is {layer_head_mask.size()}"
             attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            ## Modified by Raj Dabre. Start.
             if self.multi_source:
                 additional_attn_weights = layer_head_mask.view(1, -1, 1, 1) * additional_attn_weights.view(bsz, self.num_heads, tgt_len, additional_src_len)
                 additional_attn_weights = additional_attn_weights.view(bsz * self.num_heads, tgt_len, additional_src_len)
-
+            ## Modified by Raj Dabre. End.
+            
         if output_attentions:
             # this operation is a bit akward, but it's required to
             # make sure that attn_weights keeps its gradient.
@@ -301,15 +312,18 @@ class MBartAttention(nn.Module):
             # twice and have to be reused in the following
             attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
+            ## Modified by Raj Dabre. Start.
             if self.multi_source:
                 additional_attn_weights_reshaped = additional_attn_weights.view(bsz, self.num_heads, tgt_len, additional_src_len)
                 additional_attn_weights = additional_attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, additional_src_len)
-                
+            ## Modified by Raj Dabre. End.
+            
         else:
             attn_weights_reshaped = None
+            ## Modified by Raj Dabre. Start.
             if self.multi_source:
                 additional_attn_weights_reshaped = None
-
+            ## Modified by Raj Dabre. End.
         
         attn_probs = F.dropout(attn_weights, p=self.dropout, training=self.training)
 
@@ -321,6 +335,7 @@ class MBartAttention(nn.Module):
             self.head_dim,
         ), f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is {attn_output.size()}"
         
+        ## Modified by Raj Dabre. Start.
         if self.multi_source:
             additional_attn_probs = F.dropout(additional_attn_weights, p=self.dropout, training=self.training)
 
@@ -339,7 +354,8 @@ class MBartAttention(nn.Module):
                 context_self_relevance_weight = torch.sigmoid(self.gating_layer(additional_attn_output)) ## Compute gating weight.
                 attn_output = attn_output + context_self_relevance_weight*additional_attn_output ## Combine attentions.
 
-            
+        ## Modified by Raj Dabre. End.
+        
         attn_output = (
             attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
             .transpose(1, 2)
@@ -348,11 +364,12 @@ class MBartAttention(nn.Module):
 
         attn_output = self.out_proj(attn_output)
         
+        ## Modified by Raj Dabre. Start.
         if self.multi_source:
             return attn_output, attn_weights_reshaped, additional_attn_weights_reshaped, past_key_value, additional_past_key_value
         else:
             return attn_output, attn_weights_reshaped, past_key_value
-
+        ## Modified by Raj Dabre. End.
 
 class MBartEncoderLayer(nn.Module):
     def __init__(self, config: MBartConfig):
@@ -507,7 +524,8 @@ class MBartDecoderLayer(nn.Module):
         if encoder_hidden_states is not None:
             residual = hidden_states
             hidden_states = self.encoder_attn_layer_norm(hidden_states)
-
+            
+            ## Modified by Raj Dabre. Start.
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
             if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"): ## This if else is not needed but keeping it that way for cleaner flow of logic.
                 cross_attn_past_key_value = past_key_value[-4:-2] if past_key_value is not None else None
@@ -535,15 +553,18 @@ class MBartDecoderLayer(nn.Module):
                     output_attentions=output_attentions,
                 )
 
-                
+            ## Modified by Raj Dabre. End.
+            
             hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
             hidden_states = residual + hidden_states
-
+            
+            ## Modified by Raj Dabre. Start.
             # add cross-attn to positions 3,4 of present_key_value tuple
             if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"):
                 present_key_value = present_key_value + cross_attn_present_key_value + additional_cross_attn_present_key_value
             else:
                 present_key_value = present_key_value + cross_attn_present_key_value ## Deal with the additional_cross_attn_present_key_value
+            ## Modified by Raj Dabre. End.
 
         # Fully Connected
         residual = hidden_states
@@ -558,9 +579,11 @@ class MBartDecoderLayer(nn.Module):
 
         if output_attentions:
             outputs += (self_attn_weights, cross_attn_weights)
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"):
                 outputs += (additional_cross_attn_weights,)
-
+            ## Modified by Raj Dabre. End.
+            
         if use_cache:
             outputs += (present_key_value,) ## Deal with the additional_cross_attn_present_key_value
 
@@ -787,21 +810,21 @@ class MBartEncoder(MBartPreTrainedModel):
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, embed_dim, self.padding_idx)
         
-        ### Modification by Raj Dabre. START.
+        ## Modified by Raj Dabre. Start.
         if config.features_vocab_sizes is not None: ### Set up embedders for features
             self.features_embed_tokens = [nn.Embedding(feature_vocab_size, feature_embed_dim, self.padding_idx) for feature_vocab_size, feature_embed_dim in zip(config.features_vocab_sizes, config.features_embed_dims)]
             self.features_final_project = nn.Linear(embed_dim+sum(config.features_embed_dims), embed_dim, bias=False)
         else:
             self.features_embed_tokens = None
             self.features_final_project = None
-        ### Modification by Raj Dabre. END.
+        ## Modified by Raj Dabre. End.
         
         self.embed_positions = MBartLearnedPositionalEmbedding(
             config.max_position_embeddings,
             embed_dim,
             self.padding_idx,
         )
-        ### Modification by Raj Dabre. START.
+        ## Modified by Raj Dabre. Start.
         if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
             unique_idxs = set(layer_idxs)
@@ -811,7 +834,7 @@ class MBartEncoder(MBartPreTrainedModel):
             self.layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.encoder_layers)])
         if config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only": ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
             self.self_relevance_layer = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        ### Modification by Raj Dabre. END.
+        ## Modified by Raj Dabre. End.
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
@@ -886,12 +909,12 @@ class MBartEncoder(MBartPreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-            ### Modification by Raj Dabre. START.
+            ## Modified by Raj Dabre. Start.
             if self.features_final_project is not None and self.features_embed_tokens is not None: ## Perform feature computation and concatenation and projection.
                 features_embeds = [feature_embed_tokens(feature_id) for feature_embed_tokens, feature_input_id in zip(self.features_embed_tokens, features_ids)]
                 all_embeds = [inputs_embeds] + features_embeds
                 input_embeds = self.features_final_project(torch.cat(all_embeds, dim=-1))## Basic feature based model. Add relevance model here.
-            ### Modification by Raj Dabre. END.
+            ## Modified by Raj Dabre. End.
             
 
         embed_pos = self.embed_positions(input_shape)
@@ -899,11 +922,13 @@ class MBartEncoder(MBartPreTrainedModel):
         hidden_states = inputs_embeds + embed_pos
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-
+        
+        ## Modified by Raj Dabre. Start.
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype, wait_k=self.config.wait_k) ## Raj: Just make the mask wait-k and we are good to go. This value of wait_k will be set to that of additional_source_wait_k when the additional source is being processed.
+        ## Modified by Raj Dabre. End.
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -947,9 +972,11 @@ class MBartEncoder(MBartPreTrainedModel):
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
-
+        
+        ## Modified by Raj Dabre. Start.
         if self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
             hidden_states = hidden_states*torch.sigmoid(self.self_relevance_layer(hidden_states)) # Do self relevance as usual.
+        ## Modified by Raj Dabre. End.
         
         hidden_states = self.layer_norm(hidden_states)
         
@@ -990,7 +1017,7 @@ class MBartDecoder(MBartPreTrainedModel):
             config.d_model,
             self.padding_idx,
         )
-        ### Modification by Raj Dabre. START.
+        ## Modified by Raj Dabre. Start.
         if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")
             unique_idxs = set(layer_idxs)
@@ -998,7 +1025,7 @@ class MBartDecoder(MBartPreTrainedModel):
             self.layers = nn.ModuleList([unique_layers[idx] for idx in layer_idxs])
         else:
             self.layers = nn.ModuleList([MBartDecoderLayer(config) for _ in range(config.decoder_layers)])
-        ### Modification by Raj Dabre. END.
+        ## Modified by Raj Dabre. End.
         self.layernorm_embedding = nn.LayerNorm(config.d_model)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
@@ -1137,7 +1164,8 @@ class MBartDecoder(MBartPreTrainedModel):
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
         )
-
+        
+        ## Modified by Raj Dabre. Start.
         # expand encoder attention mask
         if encoder_hidden_states is not None and encoder_attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1147,6 +1175,7 @@ class MBartDecoder(MBartPreTrainedModel):
                     additional_encoder_attention_mask = _expand_mask(additional_encoder_attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1], wait_k=self.config.additional_source_wait_k, curr_decode_length=curr_decode_length) ## Raj: Just make the mask wait-k and we are good to go.
         # embed positions
         #print(encoder_attention_mask.size() if encoder_attention_mask is not None else 1, additional_encoder_attention_mask.size() if additional_encoder_attention_mask is not None else 1)
+        ## Modified by Raj Dabre. End.
         positions = self.embed_positions(input_shape, past_key_values_length)
 
         hidden_states = inputs_embeds + positions
@@ -1158,6 +1187,7 @@ class MBartDecoder(MBartPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
+        ## Modified by Raj Dabre. Start.
         if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
             additional_all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
         next_decoder_cache = () if use_cache else None
@@ -1165,7 +1195,9 @@ class MBartDecoder(MBartPreTrainedModel):
             encoder_hidden_states = torch.cat([encoder_hidden_states, additional_encoder_hidden_states], 1) ## Concatenate sequences blindly along the sequence axis. 
             encoder_attention_mask = torch.cat([encoder_attention_mask, additional_encoder_attention_mask], -1) ## Concatenate along the src_seq_len axis.
             #print(encoder_hidden_states.size(), encoder_attention_mask.size())
-            
+        
+        ## Modified by Raj Dabre. End.
+        
         # check if head_mask has a correct number of layers specified if desired
         if head_mask is not None:
             assert head_mask.size()[0] == (
@@ -1223,21 +1255,25 @@ class MBartDecoder(MBartPreTrainedModel):
                     additional_encoder_attention_mask=additional_encoder_attention_mask,
                 )
             hidden_states = layer_outputs[0]
-
+            
+            ## Modified by Raj Dabre. Start.
             if use_cache:
                 if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
                     next_decoder_cache += (layer_outputs[4 if output_attentions else 1],)
                 else:
                     next_decoder_cache += (layer_outputs[3 if output_attentions else 1],)
-
+            ## Modified by Raj Dabre. End.
+            
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
                 if encoder_hidden_states is not None:
                     all_cross_attentions += (layer_outputs[2],)
+                    ## Modified by Raj Dabre. Start.
                     if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
                         additional_all_cross_attentions += (layer_outputs[3],)
-
+                    ## Modified by Raj Dabre. End.
+                    
         hidden_states = self.layer_norm(hidden_states)
 
         # add hidden states from the last decoder layer
@@ -1245,6 +1281,7 @@ class MBartDecoder(MBartPreTrainedModel):
             all_hidden_states += (hidden_states,)
 
         next_cache = next_decoder_cache if use_cache else None
+        ## Modified by Raj Dabre. Start.
         if not return_dict:
             if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
                 return tuple(
@@ -1266,6 +1303,7 @@ class MBartDecoder(MBartPreTrainedModel):
             cross_attentions=all_cross_attentions,
             additional_cross_attentions=additional_all_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") else (),
         )
+        ## Modified by Raj Dabre. End.
 
 
 @add_start_docstrings(
@@ -1282,9 +1320,11 @@ class MBartModel(MBartPreTrainedModel):
         self.encoder = MBartEncoder(config, self.shared)
         self.decoder = MBartDecoder(config, self.shared)
         
+        ## Modified by Raj Dabre. Start.
         if config.multi_source_method == "additional_source_attention":
             self.context_attention = MBartDecoderLayer(config)
-
+        ## Modified by Raj Dabre. End.
+        
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -1360,6 +1400,7 @@ class MBartModel(MBartPreTrainedModel):
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
         
+        ## Modified by Raj Dabre. Start.
         if self.config.multi_source:
             if additional_encoder_outputs is None:
                 main_source_wait_k = self.config.wait_k
@@ -1405,7 +1446,7 @@ class MBartModel(MBartPreTrainedModel):
                 #print(type(encoder_outputs), type(context_encoder_representations))
                 encoder_outputs["last_hidden_state"] = context_encoder_representations[0]
                 context_encoder_representations = context_encoder_representations[0]
-
+        
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
@@ -1442,7 +1483,9 @@ class MBartModel(MBartPreTrainedModel):
             additional_cross_attentions=decoder_outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") else (),
             context_encoder_representations = context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None, ## Find a way to return all contents of context_encoder_representations in the future.
         )
+        ## Modified by Raj Dabre. End.
 
+## Modified by Raj Dabre. Start.
 
 @add_start_docstrings(
     "The MBART Model with a language modeling head. Can be used for summarization.", MBART_START_DOCSTRING
@@ -1532,6 +1575,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             if decoder_input_ids is None:
                 decoder_input_ids = shift_tokens_right(labels, self.config.pad_token_id)
         
+        
         if self.config.multi_source_method == "average_softmaxes":
             outputs = self.model(
                 input_ids,
@@ -1598,14 +1642,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 context_encoder_representations=context_encoder_representations,
             )
             lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
-        ### Modification by Raj Dabre. START.
         
         additional_lm_logits = []
         if self.config.multilayer_softmaxing:
             for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 additional_lm_logits.append(self.lm_head(lm_representation) + self.final_logits_bias) ## The additional logits will be collected here and then returned to my main code.
         
-        ### Modification by Raj Dabre. END.
         masked_lm_loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
@@ -1655,6 +1697,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             "additional_past_key_values": kwargs["additional_past"] if self.config.multi_source_method == "average_softmaxes" and "additional_past" in kwargs else None, ## This is for the past of the additional source when averaging softmaxes. 
             "context_encoder_representations": kwargs["context_encoder_representations"] if self.config.multi_source else None, ##  A bit sloppy and should be controlled by an additional condition looking at the value of multi_source type.
         }
+
+## Modified by Raj Dabre. End.
 
     def adjust_logits_during_generation(self, logits, cur_len, max_length):
         if cur_len == max_length - 1 and self.config.eos_token_id is not None:

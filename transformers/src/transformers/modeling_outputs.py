@@ -1,4 +1,6 @@
 # Copyright 2020 The HuggingFace Team. All rights reserved.
+# Copyright 2021, National Institute of Information and Communication Technology (Raj Dabre)
+# Modified portions by Raj Dabre are indicated as so.  
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -241,7 +243,7 @@ class BaseModelOutputWithPastAndCrossAttentions(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
-    additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
 
 
 @dataclass
@@ -303,11 +305,13 @@ class Seq2SeqModelOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    ## Modified by Raj Dabre. Start.
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     context_encoder_representations: torch.FloatTensor = None
+    ## Modified by Raj Dabre. End.
 
 
 @dataclass
@@ -544,6 +548,7 @@ class Seq2SeqLMOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    ## Modified by Raj Dabre. Start.
     additional_lm_logits: Optional[Tuple[torch.FloatTensor]] = None ## We use this for multilayer softmaxing to keep additional logits. The number of logits will be (number of decoder layers-1).
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -552,7 +557,7 @@ class Seq2SeqLMOutput(ModelOutput):
     additional_source_lm_logits: Optional[Tuple[torch.FloatTensor]] = None
     additional_past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     context_encoder_representations: torch.FloatTensor = None
-
+    ## Modified by Raj Dabre. End.
 
 @dataclass
 class NextSentencePredictorOutput(ModelOutput):

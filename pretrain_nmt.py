@@ -1,4 +1,26 @@
 # -*- coding: utf-8 -*-
+# Copyright 2021 National Institute of Information and Communication Technology (Raj Dabre)
+# 
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated
+# documentation files (the "Software"), to deal in the
+# Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute,
+# sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+# The above copyright notice and this permission notice shall
+# be included in all copies or substantial portions of the
+# Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+# PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+# OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+# OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ## Basic imports
 import os
 import argparse
@@ -91,7 +113,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         if type(parent_checkpoint_dict) == dict:
             parent_model.load_state_dict(parent_checkpoint_dict['model'])
         else:
-            parent_model.load_state_dict(parent_checkpoint_dict)
+            parent_model.module.load_state_dict(parent_checkpoint_dict)
 
 
     no_decay = ["bias", "LayerNorm.weight"]
@@ -113,20 +135,28 @@ def model_create_load_run_save(gpu, args, files, train_files):
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
-    if args.initialization_model != "": ## Here we load a previous checkpoint in case training crashed.
+    if args.pretrained_model != "": ## Here we load a previous checkpoint in case training crashed.
         print("Loading from checkpoint. Non strict loading. Missing or non matching keys will be ignored when layer remapping is done.")
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         sys.stdout.flush()
-        checkpoint_dict = torch.load(args.initialization_model, map_location=map_location)
+        checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
-            if args.remap_encoder is '' and args.remap_decoder is '': ## No not load optimizers and schedulers when remapping
-                optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
-                scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
-            ctr = checkpoint_dict['ctr']
+            if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '': ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
+                if 'optimizer' in checkpoint_dict:
+                    print("Reloading optimizer")
+                    optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+                if 'scheduler' in checkpoint_dict:
+                    print("Reloading scheduler")
+                    scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+                if 'ctr' in checkpoint_dict:
+                    print("Reloading ctr. This means we resume training.")
+                    ctr = checkpoint_dict['ctr']
+            else:
+                ctr = 0
         else:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
             ctr = 0
     else:
         print("Training from scratch")
@@ -170,6 +200,10 @@ def model_create_load_run_save(gpu, args, files, train_files):
         input_masks=input_masks.to(gpu) ## Move to gpu
         decoder_input_ids=decoder_input_ids.to(gpu) ## Move to gpu
         labels=labels.to(gpu) ## Move to gpu
+        
+        if args.mixed_wait_k:
+            model.module.config.wait_k = random.randint(1, args.wait_k)
+
         try:
             if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
                 with torch.cuda.amp.autocast():
@@ -304,8 +338,10 @@ def run_demo():
                         help='IP address of the main node')
     parser.add_argument('-m', '--model_path', default='ddpdefault', type=str, 
                         help='Name of the model')
-    parser.add_argument('--initialization_model', default='', type=str, 
+    parser.add_argument('--pretrained_model', default='', type=str, 
                         help='Name of the model')
+    parser.add_argument('--no_reload_optimizer_ctr_and_scheduler', action='store_true',
+                        help='Should we reload the optimizer, counter and secheduler? By default we always reload these. Set this to False if we only want to reload the model params and optimize from scratch.')
     parser.add_argument('--langs', default='', type=str, 
                         help='Comma separated string of source languages')
     parser.add_argument('--mnmt', action='store_true', 

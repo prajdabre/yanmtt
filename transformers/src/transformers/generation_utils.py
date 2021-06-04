@@ -1,6 +1,8 @@
 # coding=utf-8
 # Copyright 2020 The Google AI Language Team Authors, Facebook AI Research authors and The HuggingFace Inc. team.
 # Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright 2021, National Institute of Information and Communication Technology (Raj Dabre)
+# Modified portions by Raj Dabre are indicated as so.  
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,9 +107,10 @@ class GreedySearchEncoderDecoderOutput(ModelOutput):
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    ## Modified by Raj Dabre. Start.
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-
+    ## Modified by Raj Dabre. End.
 
 @dataclass
 class SampleDecoderOnlyOutput(ModelOutput):
@@ -175,9 +178,11 @@ class SampleEncoderDecoderOutput(ModelOutput):
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    ## Modified by Raj Dabre. Start.
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-
+    ## Modified by Raj Dabre. End.
+    
 @dataclass
 class BeamSearchDecoderOnlyOutput(ModelOutput):
     """
@@ -253,9 +258,10 @@ class BeamSearchEncoderDecoderOutput(ModelOutput):
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    ## Modified by Raj Dabre. Start.
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-
+    ## Modified by Raj Dabre. End.
 
 @dataclass
 class BeamSampleDecoderOnlyOutput(ModelOutput):
@@ -329,9 +335,10 @@ class BeamSampleEncoderDecoderOutput(ModelOutput):
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    ## Modified by Raj Dabre. Start.
     additional_encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-
+    ## Modified by Raj Dabre. End.
 
 GreedySearchOutput = Union[GreedySearchEncoderDecoderOutput, GreedySearchDecoderOnlyOutput]
 SampleOutput = Union[SampleEncoderDecoderOutput, SampleDecoderOnlyOutput]
@@ -384,6 +391,7 @@ class GenerationMixin:
             argument: value for argument, value in model_kwargs.items() if not argument.startswith("decoder_")
         }
         model_kwargs["encoder_outputs"]: ModelOutput = encoder(input_ids, return_dict=True, **encoder_kwargs)
+        ## Modified by Raj Dabre. Start.
         if self.config.multi_source:
             main_source_wait_k = self.config.wait_k
             self.config.wait_k = self.config.additional_source_wait_k
@@ -394,7 +402,8 @@ class GenerationMixin:
             self.config.wait_k = main_source_wait_k
             model_kwargs["context_encoder_representations"] = None ## This will be filled with the context attention in the first decoding step which will actually update the main encoder representation. After that this will just be a placeholder to prevent any future computations. A bit sloppy and should be controlled by an additional condition looking at the value of multi_source type.
         return model_kwargs
-
+        ## Modified by Raj Dabre. End.
+    
     def _prepare_decoder_input_ids_for_generation(
         self, input_ids: torch.LongTensor, decoder_start_token_id: int = None, bos_token_id: int = None
     ) -> torch.LongTensor:
@@ -460,21 +469,25 @@ class GenerationMixin:
 
         if attention_mask is not None:
             model_kwargs["attention_mask"] = attention_mask.index_select(0, expanded_return_idx)
+            ## Modified by Raj Dabre. Start.
             if multi_source:
                 model_kwargs["additional_input_ids_mask"] = additional_input_ids_mask.index_select(0, expanded_return_idx)
-
+            ## Modified by Raj Dabre. End.
+            
         if is_encoder_decoder:
             assert encoder_outputs is not None
             encoder_outputs["last_hidden_state"] = encoder_outputs.last_hidden_state.index_select(
                 0, expanded_return_idx.to(encoder_outputs.last_hidden_state.device)
             )
             model_kwargs["encoder_outputs"] = encoder_outputs
+            ## Modified by Raj Dabre. Start.
             if multi_source:
                 assert additional_encoder_outputs is not None
                 additional_encoder_outputs["last_hidden_state"] = additional_encoder_outputs.last_hidden_state.index_select(
                     0, expanded_return_idx.to(additional_encoder_outputs.last_hidden_state.device)
                 )
                 model_kwargs["additional_encoder_outputs"] = additional_encoder_outputs
+            ## Modified by Raj Dabre. End.
         return input_ids, model_kwargs
 
     @staticmethod
@@ -509,8 +522,10 @@ class GenerationMixin:
         # update past
         if "past_key_values" in outputs: ## This will always be true.
             model_kwargs["past"] = outputs.past_key_values
+            ## Modified by Raj Dabre. Start.
             if "additional_past_key_values" in outputs: ## It will always be in outputs
                 model_kwargs["additional_past"] = outputs.additional_past_key_values
+            ## Modified by Raj Dabre. End.
         elif "mems" in outputs:
             model_kwargs["past"] = outputs.mems
         elif "past_buckets_states" in outputs:
@@ -519,9 +534,11 @@ class GenerationMixin:
             model_kwargs["past"] = None
             model_kwargs["additional_past"] = None
         
+        ## Modified by Raj Dabre. Start.
         if "context_encoder_representations" in model_kwargs: ## To ensure that context encoder representations are reused instead of being recomputed.
             model_kwargs["context_encoder_representations"] = outputs.context_encoder_representations
-            
+        ## Modified by Raj Dabre. End.
+        
         # update token_type_ids with last value
         if "token_type_ids" in model_kwargs:
             token_type_ids = model_kwargs["token_type_ids"]
@@ -860,21 +877,25 @@ class GenerationMixin:
         if input_ids is None:
             # init `input_ids` with bos_token_id
             input_ids = self._prepare_input_ids_for_generation(bos_token_id)
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 if model_kwargs["additional_input_ids"] is None:
                     model_kwargs["additional_input_ids"] = self._prepare_input_ids_for_generation(bos_token_id)
-
+            ## Modified by Raj Dabre. End.
+            
         if model_kwargs.get("attention_mask", None) is None:
             # init `attention_mask` depending on `pad_token_id`
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
                 input_ids, pad_token_id, eos_token_id
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 if model_kwargs.get("additional_input_ids_mask", None) is None:
                     # init `attention_mask` depending on `pad_token_id`
                     model_kwargs["additional_input_ids_mask"] = self._prepare_attention_mask_for_generation(
                         model_kwargs["additional_input_ids"], pad_token_id, eos_token_id
                 )
+            ## Modified by Raj Dabre. End.
         # special case if pad_token_id is not defined
         if pad_token_id is None and eos_token_id is not None:
             logger.warning(f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation.")
@@ -882,8 +903,10 @@ class GenerationMixin:
 
         # Storing encoder_input_ids for logits_processor that could use them
         encoder_input_ids = input_ids if self.config.is_encoder_decoder else None
+        ## Modified by Raj Dabre. Start.
         if self.config.multi_source:
             additional_encoder_input_ids = model_kwargs["additional_input_ids"] if self.config.is_encoder_decoder else None
+        ## Modified by Raj Dabre. End.
         
         if self.config.is_encoder_decoder:
             # add encoder_outputs to model_kwargs
@@ -899,9 +922,12 @@ class GenerationMixin:
 
             if "encoder_outputs" not in model_kwargs or not isinstance(model_kwargs["encoder_outputs"], ModelOutput):
                 raise ValueError("Make sure that `model_kwargs` include `encoder_outputs` of type `ModelOutput`.")
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 if "additional_encoder_outputs" not in model_kwargs or not isinstance(model_kwargs["additional_encoder_outputs"], ModelOutput):
                     raise ValueError("Make sure that `model_kwargs` include `additional_encoder_outputs` of type `ModelOutput`.")
+            ## Modified by Raj Dabre. End.
+            
         if input_ids.shape[-1] >= max_length:
             input_ids_string = "decoder_input_ids" if self.config.is_encoder_decoder else "input_ids"
             logger.warning(
@@ -969,7 +995,7 @@ class GenerationMixin:
                 input_ids,
                 expand_size=num_return_sequences,
                 is_encoder_decoder=self.config.is_encoder_decoder, 
-                multi_source=self.config.multi_source,
+                multi_source=self.config.multi_source, ## Modified by Raj Dabre.
                 **model_kwargs,
             )
 
@@ -1007,7 +1033,7 @@ class GenerationMixin:
             # interleave with `num_beams`
             input_ids, model_kwargs = self._expand_inputs_for_generation(
                 input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source, **model_kwargs
-            )
+            ) ## Modified by Raj Dabre.
             return self.beam_search(
                 input_ids,
                 beam_scorer,
@@ -1044,7 +1070,7 @@ class GenerationMixin:
                 is_encoder_decoder=self.config.is_encoder_decoder,
                 multi_source=self.config.multi_source,
                 **model_kwargs,
-            )
+            ) ## Modified by Raj Dabre.
 
             return self.beam_sample(
                 input_ids,
@@ -1084,7 +1110,7 @@ class GenerationMixin:
             # interleave with `num_beams`
             input_ids, model_kwargs = self._expand_inputs_for_generation(
                 input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source, **model_kwargs
-            )
+            ) ## Modified by Raj Dabre.
             return self.group_beam_search(
                 input_ids,
                 diverse_beam_scorer,
@@ -1206,11 +1232,13 @@ class GenerationMixin:
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
                 )
+            ## Modified by Raj Dabre. End.
                 
         # init sequence length tensors
         sequence_lengths, unfinished_sequences, cur_len = self._init_sequence_length_for_generation(
@@ -1230,10 +1258,12 @@ class GenerationMixin:
                 output_hidden_states=output_hidden_states,
             )
             next_token_logits = outputs.logits[:, -1, :]
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but greedy search does not allow for it. Bizzarre.
-
+            ## Modified by Raj Dabre. End.
+            
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 if output_scores:
@@ -1291,8 +1321,8 @@ class GenerationMixin:
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                    additional_encoder_attentions=additional_encoder_attentions,
-                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions
+                    additional_encoder_attentions=additional_encoder_attentions, ## Modified by Raj Dabre.
+                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions ## Modified by Raj Dabre.
                 )
             else:
                 return GreedySearchDecoderOnlyOutput(
@@ -1424,12 +1454,14 @@ class GenerationMixin:
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
                 )
-
+            ## Modified by Raj Dabre. End.
+            
         # init sequence length tensors
         sequence_lengths, unfinished_sequences, cur_len = self._init_sequence_length_for_generation(
             input_ids, max_length
@@ -1448,10 +1480,12 @@ class GenerationMixin:
                 output_hidden_states=output_hidden_states,
             )
             next_token_logits = outputs.logits[:, -1, :]
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
-
+            ## Modified by Raj Dabre. End.
+            
             # pre-process distribution
             next_token_scores = logits_processor(input_ids, next_token_logits)
             next_token_scores = logits_warper(input_ids, next_token_scores)
@@ -1509,8 +1543,8 @@ class GenerationMixin:
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                    additional_encoder_attentions=additional_encoder_attentions,
-                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions
+                    additional_encoder_attentions=additional_encoder_attentions, ## Modified by Raj Dabre.
+                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions ## Modified by Raj Dabre.
                 )
             else:
                 return SampleDecoderOnlyOutput(
@@ -1654,11 +1688,13 @@ class GenerationMixin:
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
                 )
+            ## Modified by Raj Dabre. End.
 
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
@@ -1683,9 +1719,11 @@ class GenerationMixin:
                 output_hidden_states=output_hidden_states,
             )
             next_token_logits = outputs.logits[:, -1, :]
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
+            ## Modified by Raj Dabre. End.
 
             # adjust tokens for Bart, *e.g.*
             next_token_logits = self.adjust_logits_during_generation(
@@ -1746,8 +1784,11 @@ class GenerationMixin:
             )
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
+                ## Modified by Raj Dabre. Start.
                 if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], beam_idx)
+                ## Modified by Raj Dabre. End.
+                
             if beam_scorer.is_done:
                 break
 
@@ -1767,8 +1808,8 @@ class GenerationMixin:
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                    additional_encoder_attentions=additional_encoder_attentions,
-                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions
+                    additional_encoder_attentions=additional_encoder_attentions, ## Modified by Raj Dabre.
+                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions ## Modified by Raj Dabre.
                 )
             else:
                 return BeamSearchDecoderOnlyOutput(
@@ -1925,11 +1966,13 @@ class GenerationMixin:
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
                 )
+            ## Modified by Raj Dabre. End.
 
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
@@ -1949,9 +1992,11 @@ class GenerationMixin:
                 output_hidden_states=output_hidden_states,
             )
             next_token_logits = outputs.logits[:, -1, :]
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
+            ## Modified by Raj Dabre. End.
 
             # adjust token scores (a no-op by default)
             next_token_logits = self.adjust_logits_during_generation(
@@ -2015,8 +2060,10 @@ class GenerationMixin:
             )
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
+                ## Modified by Raj Dabre. Start.
                 if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], beam_idx)
+                ## Modified by Raj Dabre. End.
             if beam_scorer.is_done:
                 break
 
@@ -2036,8 +2083,8 @@ class GenerationMixin:
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                    additional_encoder_attentions=additional_encoder_attentions,
-                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions
+                    additional_encoder_attentions=additional_encoder_attentions, ## Modified by Raj Dabre.
+                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions ## Modified by Raj Dabre.
                 )
             else:
                 return BeamSearchDecoderOnlyOutput(
@@ -2185,11 +2232,13 @@ class GenerationMixin:
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
                 )
+            ## Modified by Raj Dabre. End.
 
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
@@ -2225,10 +2274,12 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            ## Modified by Raj Dabre. Start.
             if self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
-
+            ## Modified by Raj Dabre. End.
+            
             for beam_group_idx in range(num_beam_groups):
                 group_start_idx = beam_group_idx * num_sub_beams
                 group_end_idx = min(group_start_idx + num_sub_beams, num_beams)
@@ -2321,8 +2372,10 @@ class GenerationMixin:
             )
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], reordering_indices)
+                ## Modified by Raj Dabre. Start.
                 if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], reordering_indices)
+                ## Modified by Raj Dabre. End.
             input_ids = torch.cat([input_ids, current_tokens.unsqueeze(-1)], dim=-1)
             cur_len = cur_len + 1
             if beam_scorer.is_done:
@@ -2344,8 +2397,8 @@ class GenerationMixin:
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                    additional_encoder_attentions=additional_encoder_attentions,
-                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions
+                    additional_encoder_attentions=additional_encoder_attentions, ## Modified by Raj Dabre.
+                    additional_encoder_hidden_states=additional_encoder_hidden_states, ## We are missing the cross attentions ## Modified by Raj Dabre.
                 )
             else:
                 return BeamSearchDecoderOnlyOutput(

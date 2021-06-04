@@ -1,5 +1,7 @@
 # coding=utf-8
 # Copyright 2021, The Facebook AI Research Team and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2021, National Institute of Information and Communication Technology (Raj Dabre)
+# Modified portions by Raj Dabre are indicated as so.  
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -127,6 +129,7 @@ class MBartConfig(PretrainedConfig):
         pad_token_id=1,
         bos_token_id=0,
         eos_token_id=2,
+        ## Modified by Raj Dabre. Start.
         decoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         encoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
         features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
@@ -136,6 +139,7 @@ class MBartConfig(PretrainedConfig):
         multi_source=False, ## Argument to control whether we do multi source or not.
         multi_source_method=None, ## Argument to control the multi source combination method. Should be a string.
         additional_source_wait_k=None, ## Argument to indicate whether the additional source also a wait-k input.
+        ## Modified by Raj Dabre. End.
         **kwargs
     ):
         super().__init__(
@@ -167,6 +171,7 @@ class MBartConfig(PretrainedConfig):
         self.num_hidden_layers = encoder_layers
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
+        ## Modified by Raj Dabre. Start.
         self.encoder_tying_config = encoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         self.decoder_tying_config = decoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
         self.features_vocab_sizes = features_vocab_sizes  ## Argument to control feature based NMT. According to my paper with Abhisek. 
@@ -176,7 +181,8 @@ class MBartConfig(PretrainedConfig):
         self.multi_source = multi_source ## Argument to control whether we do multi source or not.
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.
-
+        ## Modified by Raj Dabre. End.
+        
     @property
     def num_attention_heads(self) -> int:
         return self.encoder_attention_heads

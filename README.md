@@ -27,6 +27,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     Can be combined with wait-k NMT <br>
     
 **Prerequisites (core):** <br>
+    Python v3.6
     Pytorch v1.7.1 <br>
     HuggingFace Transformers v4.3.2 (install the modified copy of the transformers library provided with this toolkit) <br>
     tensorflow-gpu v2.3.0 <br>
@@ -34,10 +35,18 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     gputil v1.4.0 <br>
 
 **How to install:**
-1. Install the required packages via: pip -r requirements.txt
-2. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
+1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
+2. Create a virtual environment with python3.6 via and activate it via: "virtualenv -p /usr/bin/python3.6 py36 && source py36/bin/activate"
+3. Install the required packages via: "pip -r requirements.txt"
+4. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
+5. Modify the "create_autotokenizer.sh" file by specifying the correct path to sentencepiece trainer ("spm_train") in line 8
+6. Set the python path to the local transformers repo by: PYTHONPATH=$PYTHONPATH:/path/to/this/toolkit/transformers
+7. Whever you do a git pull and the files in the transformers repo has been updated remember to run "python setup.py install" to update the compiled python scripts
 
 **Scripts and their functionality:**
+
+**Note: Whenever running the example usage scripts simply run them as examples/scriptname.sh from the root directory of the toolkit**
+
 1. **create_autotokenizer.sh** and **create_autotokenizer.py**: These scripts govern the creation of a unigram SPM or BPE tokenizer. The shell script creates the subword segmenter using sentencepiece which can make both SPM and BPE models. All you need is a monolingual corpus for the languages you are interested in. The python script wraps this around an AlbertTokenizer (for SPM) or MBartTokenizer (for BPE), adds special user defined tokens and saves a configuration file for use in the future via an AutoTokenizer. <br>
 **Usage:** see examples/create_tokenizer.sh
 
@@ -60,4 +69,4 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 
 **Backstory: Why I made this toolkit**
 
-Despite the fact that I enjoy coding, I never really pushed myself throughout my Masters and Ph.D. towards writing a self contained toolkit. I had always known that coding is an important part of research and although I had made plenty of meaningful changes to several code bases, I never felt like I owned any of those changes. Fast forward to 2020 where I wanted to play with MBART/BART/MASS. It would have been easy to use fairseq or tensor2tensor but then again the feeling of lack of ownership would remain. Huggingface provides a lot of implementations but (at the time) had no actual script to easily do MBART pre-training. All I had was this single comment "https://github.com/huggingface/transformers/issues/5096#issuecomment-645860271". After a bit of hesitation I decided to get my hands dirty and make a quick notebook for MBART pretraining. That snowballed into me writing my own pipeline for data sharding, preprocessing and training. Since I was at it I wrote a pipeline for tine tuning. Why not go further and write a pipeline for decoding and analysis? Fine-grined control over fine-tuning? Distillation? Multi-source NMT? Document NMT? Simultaneous Wait-K NMT? 3 months later I ended up with this toolkit which I wanted to share with everyone. Since I have worked in low-resource MT and efficent MT this toolkit will mostly contain implementations that somehow involve transfer learning, compression/distillation, simultaneous NMT. I am pretty sure its not as fast or perfect like the ones written by the awesome people at GAFA but I will be more than happy if a few people use my script.
+Despite the fact that I enjoy coding, I never really pushed myself throughout my Masters and Ph.D. towards writing a self contained toolkit. I had always known that coding is an important part of research and although I had made plenty of meaningful changes to several code bases, I never felt like I owned any of those changes. Fast forward to 2020 where I wanted to play with MBART/BART/MASS. It would have been easy to use fairseq or tensor2tensor but then again the feeling of lack of ownership would remain. Huggingface provides a lot of implementations but (at the time) had no actual script to easily do MBART pre-training. All I had was this single comment "https://github.com/huggingface/transformers/issues/5096#issuecomment-645860271". After a bit of hesitation I decided to get my hands dirty and make a quick notebook for MBART pretraining. That snowballed into me writing my own pipeline for data sharding, preprocessing and training. Since I was at it I wrote a pipeline for tine tuning. Why not go further and write a pipeline for decoding and analysis? Fine-grined control over fine-tuning? Distillation? Multi-source NMT? Document NMT? Simultaneous Wait-K NMT? 3 months later I ended up with this toolkit which I wanted to share with everyone. Since I have worked in low-resource MT and efficent MT this toolkit will mostly contain implementations that somehow involve transfer learning, compression/distillation, simultaneous NMT. I am pretty sure its not as fast or perfect like the ones written by the awesome people at GAFA but I will be more than happy if a few people use my toolkit.
