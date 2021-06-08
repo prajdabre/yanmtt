@@ -68,7 +68,6 @@ termcolor==1.1.0
 tokenizers==0.10.1
 torch==1.7.1
 tqdm==4.57.0
-transformers==4.3.2
 typing-extensions==3.7.4.3
 urllib3==1.26.3
 Werkzeug==1.0.1
