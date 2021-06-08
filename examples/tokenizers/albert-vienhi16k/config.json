@@ -1,5 +1,5 @@
 {
-  "_name_or_path": "examples/tokenizer/albert-vienhi16k",
+  "_name_or_path": "examples/tokenizers/albert-vienhi16k",
   "attention_probs_dropout_prob": 0,
   "bos_token": "[CLS]",
   "bos_token_id": 2,
@@ -35,7 +35,7 @@
   "position_embedding_type": "absolute",
   "remove_space": true,
   "sep_token": "[SEP]",
-  "special_tokens_map_file": null,
+  "special_tokens_map_file": "examples/tokenizers/albert-vienhi16k/special_tokens_map.json",
   "strip_accents": false,
   "tokenizer_file": null,
   "transformers_version": "4.3.2",
