@@ -70,7 +70,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 **Scripts and their functionality:**
 
 **Note:** 
-1 Whenever running the example usage scripts simply run them as examples/scriptname.sh from the root directory of the toolkit
+1. Whenever running the example usage scripts simply run them as examples/scriptname.sh from the root directory of the toolkit
 2. The data under examples/data is taken from https://www2.nict.go.jp/astrec-att/member/mutiyama/ALT/ and is released the ALT Parallel Corpus as a Creative Commons Attribution 4.0 International (CC BY 4.0). 
 
 1. **create_autotokenizer.sh** and **create_autotokenizer.py**: These scripts govern the creation of a unigram SPM or BPE tokenizer. The shell script creates the subword segmenter using sentencepiece which can make both SPM and BPE models. All you need is a monolingual corpus for the languages you are interested in. The python script wraps this around an AlbertTokenizer (for SPM) or MBartTokenizer (for BPE), adds special user defined tokens and saves a configuration file for use in the future via an AutoTokenizer. <br>
