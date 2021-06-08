@@ -55,7 +55,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     Pytorch v1.7.1 <br>
     HuggingFace Transformers v4.3.2 (install the modified copy of the transformers library provided with this toolkit) <br>
     tensorflow-gpu v2.3.0 <br>
-    sentencepiece v0.1.95 <br>
+    sentencepiece v0.1.95 (you will need to go to https://github.com/google/sentencepiece and install it as the **spm_train** binary will be used later)<br>
     gputil v1.4.0 <br>
     cuda 10.0/10.1/10.2 (tested on 10.0) <br>
 
