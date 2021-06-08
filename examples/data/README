@@ -4,3 +4,4 @@ About this example dataset:
 2. The dataset contains 13 languages but I have only chosen 3.
 3. The dataset is N-way parallel so the same sentence is available in all languages.
 4. The dataset is split into train/dev/test sets containing 18,088, 1,000 and 1,018 lines respectively.
+5. The ALT dataset was released under the Creative Commons Attribution 4.0 International (CC BY 4.0) license.
