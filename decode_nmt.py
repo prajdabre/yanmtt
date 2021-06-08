@@ -289,7 +289,7 @@ def run_demo():
                         help='This multiplied by the source sentence length will be the maximum decoding length.')
     parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
                         help='This multiplied by the source sentence length will be the minimum decoding length.')
-    parser.add_argument('--hard_truncate_length', default=0, type=int, 
+    parser.add_argument('--hard_truncate_length', default=512, type=int, 
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
     parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")

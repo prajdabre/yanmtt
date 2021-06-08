@@ -136,7 +136,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
     if args.pretrained_model != "": ## Here we load a previous checkpoint in case training crashed.
-        print("Loading from checkpoint. Non strict loading. Missing or non matching keys will be ignored when layer remapping is done.")
+        print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys, they will be ignored when layer remapping or component selection is done.")
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         sys.stdout.flush()

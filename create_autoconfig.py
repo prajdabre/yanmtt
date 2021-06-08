@@ -33,7 +33,7 @@ else:
     print("Unknown tokenizer. Exiting!")
     sys.exit(1)
 
-special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + sys.argv[3].strip().split(",") if sys.argv[3] is not "." else []} ## Add additional special tokens specified by the user as a comma separated list.
+special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + sys.argv[4].strip().split(",") if sys.argv[4] is not "." else []} ## Add additional special tokens specified by the user as a comma separated list.
 
 for lang_file in sys.argv[3].strip().split(","):
     lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language

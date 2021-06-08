@@ -606,7 +606,8 @@ def generate_batches_bilingual(tok, args, files, rank):
         mp_val_or_range = args.token_masking_probs_range[0]
     elif len(args.token_masking_probs_range) == 2:
         mp_val_or_range = args.token_masking_probs_range
-    print("Masking ratio:", mp_val_or_range)
+    if not args.is_summarization or args.source_masking_for_bilingual:
+        print("Masking ratio:", mp_val_or_range)
 
     language_list = list(files.keys())
     print("Training for:", language_list)

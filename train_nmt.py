@@ -151,10 +151,10 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     print("Initial LR is:", scheduler.get_lr()[0])
     
     if args.pretrained_model != "": ## Here we load a pretrained NMT model or a previous checkpoint in case training crashed.
-        print("Loading a pretrained model")
+        print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys, they will be ignored when layer remapping or component selection is done.")
         dist.barrier()
         # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
