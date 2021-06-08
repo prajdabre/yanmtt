@@ -92,6 +92,9 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 1. Whenever running the example usage scripts simply run them as examples/scriptname.sh from the root directory of the toolkit
 2. The data under examples/data is taken from https://www2.nict.go.jp/astrec-att/member/mutiyama/ALT/ and is released the ALT Parallel Corpus as a Creative Commons Attribution 4.0 International (CC BY 4.0)
 
+**License:**
+1. MIT licence for code that I wrote.
+2. Apache licence for modifications or additions to the huggingface code.
 
 **Backstory: Why I made this toolkit**
 
