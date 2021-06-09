@@ -62,11 +62,12 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 **How to install:**
 1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
 2. Create a virtual environment with python3.6 via and activate it via: "virtualenv -p /usr/bin/python3.6 py36 && source py36/bin/activate"
-3. Install the required packages via: "pip install -r requirements.txt"
+3. Update pip via "pip install pip --upgrade" and then install the required packages via: "pip install -r requirements.txt"
 4. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
 5. Modify the "create_autotokenizer.sh" file by specifying the correct path to sentencepiece trainer ("spm_train") in line 8
 6. Set the python path to the local transformers repo by: PYTHONPATH=$PYTHONPATH:/path/to/this/toolkit/transformers
-7. Whever you do a git pull and the files in the transformers repo has been updated remember to run "python setup.py install" to update the compiled python scripts
+7. Make sure that the PATH and LD_LIBRARY_PATH variables point to the appropriate CUDA folders (bin and lib64/lib respectively) 
+8. Whever you do a git pull and the files in the transformers repo has been updated remember to run "python setup.py install" to update the compiled python scripts
 
 **Scripts and their functionality:**
 
