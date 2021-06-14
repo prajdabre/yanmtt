@@ -57,6 +57,12 @@ import math
 import sacrebleu
 from rouge_score import rouge_scorer
 import functools
+import matplotlib.pyplot as plt  # drawing heat map of attention weights
+from matplotlib import rcParams
+rcParams['font.sans-serif'] = ['Source Han Sans TW',
+                                   'sans-serif',
+                                   "FreeSerif"  # fc-list :lang=hi family
+                                   ]
 ##
 
 ## Seed setting here
