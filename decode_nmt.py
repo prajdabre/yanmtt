@@ -80,7 +80,15 @@ def model_create_load_decode(gpu, args):
     print("Tokenizer is:", tok)
 
     print(f"Running DDP checkpoint example on rank {rank}.")
-
+    
+    if args.encoder_tying_config is not None:
+        print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
+    if args.decoder_tying_config is not None:
+        print("We will use recurrently stacked layers for the decoder with configuration:", args.decoder_tying_config)
+    
+    if args.unidirectional_encoder:
+        print("Using unidirectional encoder.")
+    
     config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
