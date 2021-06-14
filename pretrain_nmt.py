@@ -372,6 +372,8 @@ def run_demo():
                         help='This assumes that the input corpus is a document level corpus and each line is in fact a document. Each line also contains a token such as "[SEP]" (controlled by the "document_level_sentence_delimiter" flag) to mark the boundaries of sentences. When generating training data we will use this flag to select arbitrary sequences of sentences in case of long documents.')
     parser.add_argument('--document_level_sentence_delimiter', default='[SEP]', type=str, 
                         help='If the corpus is document level then we assume that sentences are separated via this token. Please change this in case you have a different type of delimiter.')
+    parser.add_argument('--future_prediction', action='store_true', 
+                        help='This assumes that we dont mask token sequences randomly but only after the latter half of the sentence. We do this to make the model more robust towards missing future information. Granted we can achieve this using wait-k but methinks this may be a better way of training.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 

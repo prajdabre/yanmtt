@@ -432,7 +432,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     del spans_to_mask[0]
                     if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
                         continue
-                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1)) ## We mask only the remaining half of the sentence to encourage the model to learn representations that can make do without most of the future tokens.
                     if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
                         sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
                         mask_count += span_to_mask
@@ -713,7 +713,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                         del spans_to_mask[0]
                         if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
                             continue
-                        idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                        idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
                         if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
                             src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
                             mask_count += span_to_mask
@@ -943,7 +943,7 @@ def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation 
             
 
 
-def generate_batches_bilingual_for_decoding(tok, args):
+def generate_batches_for_decoding(tok, args):
     """Generates the source sentences for the test set."""
     src_file = open(args.test_src)
     slang = args.slang
@@ -995,7 +995,7 @@ def generate_batches_bilingual_for_decoding(tok, args):
                     del spans_to_mask[0]
                     if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
                         continue
-                    idx_to_mask = random.randint(0, (curr_sent_len-1)-(span_to_mask-1))
+                    idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
                     if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
                         src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
                         mask_count += span_to_mask
