@@ -175,7 +175,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                 ctr = 0
         else:
             model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
-        ctr = 0
+            ctr = 0
     else:
         print("Training from scratch")
         ctr = 0

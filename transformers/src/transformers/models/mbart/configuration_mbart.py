@@ -179,7 +179,7 @@ class MBartConfig(PretrainedConfig):
         self.features_embed_dims = features_embed_dims ## Argument to control feature based NMT. According to my paper with Abhisek.
         self.multilayer_softmaxing = multilayer_softmaxing ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
         self.wait_k = wait_k ## Argument to control whether we will be doing SNMT or not.
-        self.unidirectional_encoder = unidirectional_encoder, ## Argument to indicate whether we will train a unidirectional encoder or not.
+        self.unidirectional_encoder = unidirectional_encoder ## Argument to indicate whether we will train a unidirectional encoder or not.
         self.multi_source = multi_source ## Argument to control whether we do multi source or not.
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.

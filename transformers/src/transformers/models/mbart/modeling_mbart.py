@@ -927,7 +927,7 @@ class MBartEncoder(MBartPreTrainedModel):
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype, wait_k=1 if self.config.wait_k!=-1 or self.config.unidirectional_encoder else -1) ## Raj: Just make the mask wait-k with a k=1 and we are good to go. We want to have a unidirectional encoder no matter what.
+            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype, wait_k=self.config.wait_k) ## Raj: Just make the mask wait-k with a k=1 and we are good to go. We want to have a unidirectional encoder no matter what.
         ## Modified by Raj Dabre. End.
 
         encoder_states = () if output_hidden_states else None
