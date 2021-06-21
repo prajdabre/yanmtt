@@ -568,8 +568,6 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             
-            if args.is_summarization:
-                print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
             if args.multi_source: ## Process the batch for the additional source as well.
                 input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
                 if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
@@ -593,8 +591,6 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         
-        if args.is_summarization:
-            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()))
         if args.multi_source: ## Process the batch for the additional source as well.
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
             if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
@@ -780,8 +776,6 @@ def generate_batches_bilingual(tok, args, files, rank):
         labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_tgt_sent_len).input_ids
         if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             labels = labels[:,:args.hard_truncate_length]
-        if args.is_summarization:
-            print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
         if args.cross_distillation or args.multi_source:
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_src_sent_len_parent).input_ids
             if args.hard_truncate_length > 0 and  len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
