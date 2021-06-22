@@ -101,16 +101,16 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
     attention_distillation: This is a rather recent approach where we compute cross entropy loss between the attention distributions of the parent (as a label) and the child. The loss is -(parent_layer_x_attention*log(child_layer_x_attention))."""
     distillation_losses_to_compute = args.distillation_styles.split(",")
     all_distillation_losses = []
+    if target.dim() == child_mod_compute.logits.dim() - 1:
+        target = target.unsqueeze(-1)
     pad_mask = target.eq(ignore_index)
+            
     for distillation_loss_to_compute in distillation_losses_to_compute:
         if distillation_loss_to_compute == "cross_entropy":
             parent_logits = parent_mod_compute.logits
             parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.softmax_temperature, dim=-1)
             child_logits = child_mod_compute.logits
             child_lprobs = torch.nn.functional.log_softmax(child_logits/args.softmax_temperature, dim=-1)
-            if target.dim() == child_lprobs.dim() - 1:
-                target = target.unsqueeze(-1)
-    
             parent_softmax = torch.exp(parent_lprobs)
             distillation_cross_entropy = parent_softmax*child_lprobs
             distillation_cross_entropy.masked_fill_(pad_mask, 0.0)

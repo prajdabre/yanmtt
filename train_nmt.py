@@ -110,12 +110,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         print("Loading a parent model from which distillation will be done.")
         dist.barrier()
         # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
         if type(parent_checkpoint_dict) == dict:
-            parent_model.load_state_dict(parent_checkpoint_dict['model'])
+            parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
         else:
-            parent_model.module.load_state_dict(parent_checkpoint_dict)
+            parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
             
         parent_model.train()
 
