@@ -522,7 +522,6 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
     if args.multi_source: ## Additional source batch and length info
         encoder_input_batch_parent = []
         max_src_sent_len_parent = 0
-    if args.multi_source:
         slang = slang.split("-")
         slang_parent = slang[0]
         slang = slang[1]
@@ -947,7 +946,6 @@ def generate_batches_for_decoding(tok, args):
     if args.multi_source: ## Additional source batch and length info
         encoder_input_batch_parent = []
         max_src_sent_len_parent = 0
-    if args.multi_source:
         slang = slang.split("-")
         slang_parent = slang[0]
         slang = slang[1]

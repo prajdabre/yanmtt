@@ -31,13 +31,13 @@
 # Note: Make sure that your corpora files have the language code as a suffix of the file name else you might have issues.
 
 ## An SPM tokenizer without any special user defined tokens.
-bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/albert-vienhi16k albert .
+bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/albert-vienhi16k albert . 1000000 1
 
 ## An SPM tokenizer with tokens indicating some domains.
-# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/albert-vienhi16k albert "<2alt>,<2wikinews>"
+# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/albert-vienhi16k albert "<2alt>,<2wikinews>" 1000000 1
 
 ## A BPE tokenizer without any special user defined tokens.
-# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/mbart-vienhi16k mbart .
+# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/mbart-vienhi16k mbart . 1000000 1
 
 ## A BPE tokenizer with tokens indicating some domains.
-# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/mbart-vienhi16k mbart "<2alt>,<2wikinews>"
+# bash create_autotokenizer.sh examples/data/train.vi,examples/data/train.en,examples/data/train.hi 16000 examples/tokenizers/mbart-vienhi16k mbart "<2alt>,<2wikinews>" 1000000 1
