@@ -1641,12 +1641,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 curr_decode_length=curr_decode_length,
                 context_encoder_representations=context_encoder_representations,
             )
-            lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
+            lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
         
         additional_lm_logits = []
         if self.config.multilayer_softmaxing:
             for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
-                additional_lm_logits.append(self.lm_head(lm_representation) + self.final_logits_bias) ## The additional logits will be collected here and then returned to my main code.
+                additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
         
         masked_lm_loss = None
         if labels is not None:

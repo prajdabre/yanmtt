@@ -108,14 +108,14 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
     for distillation_loss_to_compute in distillation_losses_to_compute:
         if distillation_loss_to_compute == "cross_entropy":
             parent_logits = parent_mod_compute.logits
-            parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.softmax_temperature, dim=-1)
+            parent_lprobs = torch.nn.functional.log_softmax(parent_logits/args.distillation_temperature, dim=-1)
             child_logits = child_mod_compute.logits
-            child_lprobs = torch.nn.functional.log_softmax(child_logits/args.softmax_temperature, dim=-1)
+            child_lprobs = torch.nn.functional.log_softmax(child_logits/args.distillation_temperature, dim=-1)
             parent_softmax = torch.exp(parent_lprobs)
             distillation_cross_entropy = parent_softmax*child_lprobs
             distillation_cross_entropy.masked_fill_(pad_mask, 0.0)
             distillation_cross_entropy = distillation_cross_entropy.sum(dim=-1)
-            distillation_cross_entropy = distillation_cross_entropy.mean() * args.softmax_temperature**2
+            distillation_cross_entropy = distillation_cross_entropy.mean() * args.distillation_temperature**2
             all_distillation_losses.append(distillation_cross_entropy)
         if distillation_loss_to_compute == "hidden_layer_regression":
             all_regression_losses = []
@@ -135,7 +135,7 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
                 all_regression_losses.append(encoder_l2_loss)
                 all_regression_losses.append(decoder_l2_loss)
             regression_loss = torch.mean(torch.stack(all_regression_losses), dim=0)
-            all_distillation_losses.append(regression_loss)
+            all_distillation_losses.append(-regression_loss) ## We will take a negative later so this minus sign here is to negate its effect. We want to minimize the L2 loss after all.
         if distillation_loss_to_compute == "attention_distillation":
             all_attention_distillation_losses = []
             for layer_mapping in args.distillation_layer_mapping.strip().split(","):
@@ -435,7 +435,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1)) ## We mask only the remaining half of the sentence to encourage the model to learn representations that can make do without most of the future tokens.
                     if "[MASK]" not in sentence_split[idx_to_mask:idx_to_mask+span_to_mask]:
                         sentence_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                        mask_count += span_to_mask
+                        mask_count += span_to_mask # We assume that with a low probability there are mask insertions when span lengths are 0 which may cause more mask tokens than planned. I have decided not to count these insersions towards the maximum maskable limit. This means that the total number of mask tokens will be a bit higher than what it should be. 
                         curr_sent_len -= (span_to_mask-1)
                 except:
                     break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
@@ -711,7 +711,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                         idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
                         if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
                             src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                            mask_count += span_to_mask
+                            mask_count += span_to_mask # We assume that with a low probability there are mask insertions when span lengths are 0 which may cause more mask tokens than planned. I have decided not to count these insersions towards the maximum maskable limit. This means that the total number of mask tokens will be a bit higher than what it should be. 
                             curr_sent_len -= (span_to_mask-1)
                     except:
                         break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
@@ -990,7 +990,7 @@ def generate_batches_for_decoding(tok, args):
                     idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
                     if "[MASK]" not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
                         src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = ["[MASK]"]
-                        mask_count += span_to_mask
+                        mask_count += span_to_mask # We assume that with a low probability there are mask insertions when span lengths are 0 which may cause more mask tokens than planned. I have decided not to count these insersions towards the maximum maskable limit. This means that the total number of mask tokens will be a bit higher than what it should be. 
                         curr_sent_len -= (span_to_mask-1)
                 except:
                     break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.

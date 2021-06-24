@@ -135,11 +135,12 @@ class MBartConfig(PretrainedConfig):
         features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         features_embed_dims=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         multilayer_softmaxing=False, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
-        wait_k=None, ## Argument to control whether we will be doing SNMT or not.
+        wait_k=-1, ## Argument to control whether we will be doing SNMT or not.
         unidirectional_encoder=False, ## Argument to indicate whether we will train a unidirectional encoder or not.
         multi_source=False, ## Argument to control whether we do multi source or not.
         multi_source_method=None, ## Argument to control the multi source combination method. Should be a string.
-        additional_source_wait_k=None, ## Argument to indicate whether the additional source also a wait-k input.
+        additional_source_wait_k=-1, ## Argument to indicate whether the additional source also a wait-k input.
+        softmax_temperature=1.0, ## Argument to indicate the softmax temperature.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -183,6 +184,7 @@ class MBartConfig(PretrainedConfig):
         self.multi_source = multi_source ## Argument to control whether we do multi source or not.
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.
+        self.softmax_temperature = softmax_temperature ## Argument to indicate the softmax temperature.
         ## Modified by Raj Dabre. End.
         
     @property
