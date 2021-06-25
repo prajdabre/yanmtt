@@ -141,6 +141,8 @@ class MBartConfig(PretrainedConfig):
         multi_source_method=None, ## Argument to control the multi source combination method. Should be a string.
         additional_source_wait_k=-1, ## Argument to indicate whether the additional source also a wait-k input.
         softmax_temperature=1.0, ## Argument to indicate the softmax temperature.
+        temperature_calibration=False, ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
+        no_embed_norm=False, ## Argument to stop embedding normalization
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -185,6 +187,8 @@ class MBartConfig(PretrainedConfig):
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.
         self.softmax_temperature = softmax_temperature ## Argument to indicate the softmax temperature.
+        self.temperature_calibration = temperature_calibration ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
+        self.no_embed_norm = no_embed_norm ## Argument to stop embedding normalization
         ## Modified by Raj Dabre. End.
         
     @property

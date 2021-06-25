@@ -557,6 +557,7 @@ class Seq2SeqLMOutput(ModelOutput):
     additional_source_lm_logits: Optional[Tuple[torch.FloatTensor]] = None
     additional_past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     context_encoder_representations: torch.FloatTensor = None
+    softmax_temperature: Optional[torch.FloatTensor] = None
     ## Modified by Raj Dabre. End.
 
 @dataclass

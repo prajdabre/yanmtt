@@ -96,13 +96,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature) ## Configuration. TODO: Save this configuration somehow.
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration) ## Configuration. TODO: Save this configuration somehow.
     model = MBartForConditionalGeneration(config)
     model.train()
     
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
-        parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, add_final_layer_norm=args.add_final_layer_norm, normalize_before=args.normalize_before, normalize_embedding=args.normalize_embedding, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], static_position_embeddings=True, encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature)
+        parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration)
         parent_model = MBartForConditionalGeneration(config)
         parent_model.cuda(gpu)
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
@@ -350,12 +350,16 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                     ) ## Label smoothed cross entropy loss.
                     loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                    if args.temperature_calibration: 
+                        loss = loss*mod_compute.softmax_temperature
                     ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
                     for logits in mod_compute.additional_lm_logits:
                         lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
                         loss_extra = label_smoothed_nll_loss(
                             lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                         ) ## Label smoothed cross entropy loss.
+                        if args.temperature_calibration: 
+                            loss_extra = loss_extra*mod_compute.softmax_temperature
                         loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
                     if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
                         assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
@@ -378,12 +382,16 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                 ) ## Label smoothed cross entropy loss.
                 loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                if args.temperature_calibration: 
+                    loss = loss*mod_compute.softmax_temperature
                 ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
                 for logits in mod_compute.additional_lm_logits:
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
                     loss_extra = label_smoothed_nll_loss(
                         lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                     ) ## Label smoothed cross entropy loss.
+                    if args.temperature_calibration: 
+                        loss_extra = loss_extra*mod_compute.softmax_temperature
                     loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
                 if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
                     assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
@@ -466,12 +474,8 @@ def run_demo():
                         help='Should freeze embeddings during fine tuning?')
     parser.add_argument('--freeze_encoder', action='store_true', 
                         help='Should we freeze encoder during fine tuning?')
-    parser.add_argument('--add_final_layer_norm', action='store_true', 
-                        help='Should we add a final layer norm?')
-    parser.add_argument('--normalize_before', action='store_true', 
-                        help='Should we normalize before doing attention?')
-    parser.add_argument('--normalize_embedding', action='store_true', 
-                        help='Should we normalize embeddings?')
+    parser.add_argument('--no_embed_norm', action='store_true', 
+                        help='If true then we wont normalize embeddings.')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
     parser.add_argument('--mnmt', action='store_true', 
@@ -503,6 +507,8 @@ def run_demo():
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--softmax_temperature', default=1.0, type=float, help="The value for the softmax temperature")
     parser.add_argument('--distillation_temperature', default=1.0, type=float, help="The value for the softmax temperature during distillation")
+    parser.add_argument('--temperature_calibration', action='store_true', 
+                        help='Are we calibrating the temperature automatically during training? If yes then the softmax_temperature parameter should have a value of 1.0 furthermore the returned temperature will be used to scale the loss.')
     parser.add_argument('--encoder_attention_heads', default=8, type=int, help="The value for number of encoder attention heads")
     parser.add_argument('--decoder_attention_heads', default=8, type=int, help="The value for number of decoder attention heads")
     parser.add_argument('--wait_k', default=-1, type=int, help="The value for k in wait-k snmt. Keep as -1 for non-snmt aka vanilla NMT.")

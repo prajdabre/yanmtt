@@ -835,7 +835,8 @@ class MBartEncoder(MBartPreTrainedModel):
         if config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only": ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
             self.self_relevance_layer = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         ## Modified by Raj Dabre. End.
-        self.layernorm_embedding = nn.LayerNorm(embed_dim)
+        if not config.no_embed_norm:
+            self.layernorm_embedding = nn.LayerNorm(embed_dim)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
         self.init_weights()
@@ -920,7 +921,8 @@ class MBartEncoder(MBartPreTrainedModel):
         embed_pos = self.embed_positions(input_shape)
 
         hidden_states = inputs_embeds + embed_pos
-        hidden_states = self.layernorm_embedding(hidden_states)
+        if not self.config.no_embed_norm:
+            hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         
         ## Modified by Raj Dabre. Start.
@@ -1026,7 +1028,8 @@ class MBartDecoder(MBartPreTrainedModel):
         else:
             self.layers = nn.ModuleList([MBartDecoderLayer(config) for _ in range(config.decoder_layers)])
         ## Modified by Raj Dabre. End.
-        self.layernorm_embedding = nn.LayerNorm(config.d_model)
+        if not config.no_embed_norm:
+            self.layernorm_embedding = nn.LayerNorm(config.d_model)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
         self.init_weights()
@@ -1179,7 +1182,8 @@ class MBartDecoder(MBartPreTrainedModel):
         positions = self.embed_positions(input_shape, past_key_values_length)
 
         hidden_states = inputs_embeds + positions
-        hidden_states = self.layernorm_embedding(hidden_states)
+        if not self.config.no_embed_norm:
+            hidden_states = self.layernorm_embedding(hidden_states)
 
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 
@@ -1504,8 +1508,13 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         self.model = MBartModel(config)
         self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
         self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
-
+        
         self.init_weights()
+        if config.temperature_calibration:
+            assert self.config.softmax_temperature == 1.0
+            print("Temperature calibration will be done.")
+            self.register_buffer("softmax_temperature", torch.ones(1))
+            print("Initial temperature is: ", self.softmax_temperature)
 
     def get_encoder(self):
         return self.model.get_encoder()
@@ -1597,7 +1606,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
             )
-            lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
+            lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
+            if self.config.temperature_calibration:
+                lm_logits = lm_logits/self.softmax_temperature
             additional_outputs = self.model(
                 additional_input_ids,
                 attention_mask=additional_input_ids_mask,
@@ -1618,7 +1629,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
             )
-            additional_source_lm_logits = self.lm_head(additional_outputs[0]) + self.final_logits_bias
+            additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
+            if self.config.temperature_calibration:
+                additional_source_lm_logits = additional_source_lm_logits/self.softmax_temperature
         else:
             outputs = self.model(
                 input_ids,
@@ -1642,11 +1655,15 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 context_encoder_representations=context_encoder_representations,
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
+            if self.config.temperature_calibration:
+                lm_logits = lm_logits/self.softmax_temperature
         
         additional_lm_logits = []
         if self.config.multilayer_softmaxing:
             for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
+                if self.config.temperature_calibration:
+                    additional_lm_logits = additional_lm_logits/self.softmax_temperature
         
         masked_lm_loss = None
         if labels is not None:
@@ -1675,6 +1692,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             additional_past_key_values=additional_outputs.past_key_values if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
             additional_source_lm_logits=additional_source_lm_logits if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
             context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None,
+            softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
         )
 
     def prepare_inputs_for_generation(
