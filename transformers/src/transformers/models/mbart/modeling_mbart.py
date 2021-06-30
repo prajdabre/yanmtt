@@ -149,6 +149,7 @@ class MBartAttention(nn.Module):
         is_decoder: bool = False,
         bias: bool = True,
         multi_source_method = None,
+        no_scale_attention_embedding = False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -158,7 +159,7 @@ class MBartAttention(nn.Module):
         assert (
             self.head_dim * num_heads == self.embed_dim
         ), f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`: {num_heads})."
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim ** -0.5 if not no_scale_attention_embedding else 1.0
         self.is_decoder = is_decoder
 
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -379,6 +380,7 @@ class MBartEncoderLayer(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
+            no_scale_attention_embedding=config.no_scale_attention_embedding,
         ) ## An if else condition to either return the sann or a FFT. The FFT will be implemented via a method which pre-generates a bunch of matrices and returns a closure which uses the right matrix during runtime. 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.dropout = config.dropout
@@ -447,6 +449,7 @@ class MBartDecoderLayer(nn.Module):
             num_heads=config.decoder_attention_heads,
             dropout=config.attention_dropout,
             is_decoder=True,
+            no_scale_attention_embedding=config.no_scale_attention_embedding,
         )
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
@@ -459,6 +462,7 @@ class MBartDecoderLayer(nn.Module):
             dropout=config.attention_dropout,
             is_decoder=True,
             multi_source_method=config.multi_source_method,
+            no_scale_attention_embedding=config.no_scale_attention_embedding,
         )
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)

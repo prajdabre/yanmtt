@@ -89,7 +89,7 @@ def model_create_load_decode(gpu, args):
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration) ## Configuration.
+    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding) ## Configuration.
     model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -312,6 +312,8 @@ def run_demo():
                         help='If true then we wont normalize embeddings.')
     parser.add_argument('--scale_embedding', action='store_true', 
                         help='Should we scale embeddings?')
+    parser.add_argument('--no_scale_attention_embedding', action='store_true', 
+                        help='Should we scale attention embeddings?')
     parser.add_argument('--max_src_length', default=256, type=int, 
                         help='Maximum token length for source language')
     parser.add_argument('--max_tgt_length', default=256, type=int, 

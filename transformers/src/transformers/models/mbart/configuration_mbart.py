@@ -142,7 +142,8 @@ class MBartConfig(PretrainedConfig):
         additional_source_wait_k=-1, ## Argument to indicate whether the additional source also a wait-k input.
         softmax_temperature=1.0, ## Argument to indicate the softmax temperature.
         temperature_calibration=False, ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
-        no_embed_norm=False, ## Argument to stop embedding normalization
+        no_embed_norm=False, ## Argument to stop embedding normalization.
+        no_scale_attention_embedding=False, ## Argument to stop attention embeddings from being scaled.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -188,7 +189,8 @@ class MBartConfig(PretrainedConfig):
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.
         self.softmax_temperature = softmax_temperature ## Argument to indicate the softmax temperature.
         self.temperature_calibration = temperature_calibration ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
-        self.no_embed_norm = no_embed_norm ## Argument to stop embedding normalization
+        self.no_embed_norm = no_embed_norm ## Argument to stop embedding normalization.
+        self.no_scale_attention_embedding = no_scale_attention_embedding ## Argument to stop attention embeddings from being scaled.
         ## Modified by Raj Dabre. End.
         
     @property
