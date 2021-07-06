@@ -45,6 +45,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.optim import Adam
 from torch.nn.functional import cosine_similarity
+from torch.utils.tensorboard import SummaryWriter
 ##
 
 ## Our imports
@@ -93,6 +94,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
     
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
+    
+    writer = SummaryWriter(args.model_path+".tflogs")
     
     config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding) ## Configuration. TODO: Save this configuration somehow.
     model = MBartForConditionalGeneration(config)
@@ -222,6 +225,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         target_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
                         target_hidden_state_encoder = target_hidden_state_encoder.mean(dim=1)
                         loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
+                        if rank == 0:
+                            writer.add_scalar("encoder unification loss", loss.detach().cpu().numpy(), ctr)
                     else:
                         mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Run the model and get logits.
                         logits = mod_compute.logits
@@ -229,28 +234,46 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         loss = label_smoothed_nll_loss(
                             lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                         ) ## Label smoothed cross entropy loss.
-                        loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                        loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
+                        if rank == 0:
+                            writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
                         if args.temperature_calibration: 
                             loss = loss*mod_compute.softmax_temperature
+                            if rank == 0:
+                                writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
+                                writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
                         ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
-                        for logits in mod_compute.additional_lm_logits:
-                            lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
+                        for additional_logits in mod_compute.additional_lm_logits:
+                            lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## Softmax tempering of logits if needed.
                             loss_extra = label_smoothed_nll_loss(
                                 lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                             ) ## Label smoothed cross entropy loss.
+                            loss_extra = loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
                             if args.temperature_calibration: 
                                 loss_extra = loss_extra*mod_compute.softmax_temperature
-                            loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
-                        if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
+                            loss += loss_extra ## Up scale loss in case of non unitary temperatures. TODO: Perhaps log this too.
+                        if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
                             assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
                             lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                             entropy = -(torch.exp(lprobs)*lprobs).mean()
+                            if rank == 0:
+                                writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
+                            for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
+                                lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## No tempering here
+                                entropy_extra = -(torch.exp(lprobs)*lprobs).mean()
+                                entropy += entropy_extra
                             loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
+                            if rank == 0:
+                                writer.add_scalar("loss with entropy loss", loss.detach().cpu().numpy(), ctr)
                         if args.distillation: ## Time to distill.
                             with torch.no_grad(): ## No gradient to avoid memory allocation.
                                 parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
                             distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
+                            if rank == 0:
+                                writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                             loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
+                            if rank == 0:
+                                writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
             else:
                 if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0 and args.unify_encoder:
                     source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -264,6 +287,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
                     target_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
                     target_hidden_state_encoder = target_hidden_state_encoder.mean(dim=1)
                     loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
+                    if rank == 0:
+                        writer.add_scalar("encoder unification loss", loss.detach().cpu().numpy(), ctr)
                 else:
                     mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Run the model and get logits.
                     logits = mod_compute.logits
@@ -272,27 +297,45 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                     ) ## Label smoothed cross entropy loss.
                     loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                    if rank == 0:
+                        writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
                     if args.temperature_calibration: 
                         loss = loss*mod_compute.softmax_temperature
+                        if rank == 0:
+                            writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
+                            writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
                     ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
-                    for logits in mod_compute.additional_lm_logits:
-                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
+                    for additional_logits in mod_compute.additional_lm_logits:
+                        lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## Softmax tempering of logits if needed.
                         loss_extra = label_smoothed_nll_loss(
                             lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                         ) ## Label smoothed cross entropy loss.
+                        loss_extra = loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
                         if args.temperature_calibration: 
                             loss_extra = loss_extra*mod_compute.softmax_temperature
-                        loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
-                    if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions.
+                        loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
+                    if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
                         assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
                         lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                         entropy = -(torch.exp(lprobs)*lprobs).mean()
+                        if rank == 0:
+                            writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
+                        for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
+                            lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## No tempering here
+                            entropy_extra = -(torch.exp(lprobs)*lprobs).mean()
+                            entropy += entropy_extra
                         loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
+                        if rank == 0:
+                            writer.add_scalar("loss with entropy loss", loss.detach().cpu().numpy(), ctr)
                     if args.distillation: ## Time to distill.
                         with torch.no_grad(): ## No gradient to avoid memory allocation.
                             parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
-                            distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
+                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
+                        if rank == 0:
+                            writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                         loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
+                        if rank == 0:
+                            writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
         
         except Exception as e: ## This is a generic net to catch an exception. Should be a bit more sophisticated in the future. TODO.
             print("NAN loss was computed or something messed up")
@@ -325,6 +368,9 @@ def model_create_load_run_save(gpu, args, files, train_files):
         if ctr % 10 == 0 and rank % 8 == 0: ## Print the current loss every 10 batches but only for the master/prime process.
             print(ctr, lv)
             sys.stdout.flush()
+        if ctr % 1000 == 0 and rank == 0: ## Save the gradient info every time this condition is triggered.
+            for param_name, param_value in model.named_parameters():
+                writer.add_histogram(param_name, param_value.detach().cpu().numpy(), ctr)
         end = time.time()
         ctr += 1
     

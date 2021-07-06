@@ -144,6 +144,8 @@ class MBartConfig(PretrainedConfig):
         temperature_calibration=False, ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
         no_embed_norm=False, ## Argument to stop embedding normalization.
         no_scale_attention_embedding=False, ## Argument to stop attention embeddings from being scaled.
+        num_domains_for_domain_classifier=-1, ## Argument to indicate number of domains for domain classifier.
+        gradient_reversal_for_domain_classifier=False, ## Argument to indicate whether we should do gradient reversal for domain classifier.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -191,6 +193,8 @@ class MBartConfig(PretrainedConfig):
         self.temperature_calibration = temperature_calibration ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
         self.no_embed_norm = no_embed_norm ## Argument to stop embedding normalization.
         self.no_scale_attention_embedding = no_scale_attention_embedding ## Argument to stop attention embeddings from being scaled.
+        self.num_domains_for_domain_classifier = num_domains_for_domain_classifier ## Argument to indicate number of domains for domain classifier.
+        self.gradient_reversal_for_domain_classifier = gradient_reversal_for_domain_classifier ## Argument to indicate whether we should do gradient reversal for domain classifier.
         ## Modified by Raj Dabre. End.
         
     @property

@@ -25,6 +25,9 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
+## Modified by Raj Dabre. Start.
+from torch.autograd import Function
+## Modified by Raj Dabre. End.
 
 from ...activations import ACT2FN
 from ...file_utils import (
@@ -1495,6 +1498,35 @@ class MBartModel(MBartPreTrainedModel):
 
 ## Modified by Raj Dabre. Start.
 
+class GradientReversalFunction(Function): ## Glory be to the gradients in reverse. AMEN!
+    """
+    Gradient Reversal Layer from:
+    Unsupervised Domain Adaptation by Backpropagation (Ganin & Lempitsky, 2015)
+    Forward pass is the identity function. In the backward pass,
+    the upstream gradients are multiplied by -lambda (i.e. gradient is reversed)
+    """
+
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grads):
+        lambda_ = ctx.lambda_
+        lambda_ = grads.new_tensor(lambda_)
+        dx = -lambda_ * grads
+        return dx, None
+
+
+class GradientReversal(nn.Module):
+    def __init__(self, lambda_=1):
+        super(GradientReversal, self).__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+
 @add_start_docstrings(
     "The MBART Model with a language modeling head. Can be used for summarization.", MBART_START_DOCSTRING
 )
@@ -1515,11 +1547,16 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         
         self.init_weights()
         if config.temperature_calibration:
-            assert self.config.softmax_temperature == 1.0
+            assert config.softmax_temperature == 1.0
             print("Temperature calibration will be done.")
-            self.register_buffer("softmax_temperature", torch.ones(1))
+            self.register_parameter("softmax_temperature", torch.ones(1))
             print("Initial temperature is: ", self.softmax_temperature)
-
+            
+        if config.num_domains_for_domain_classifier != -1:
+            self.domain_classifer_head = nn.Linear(config.d_model, config.num_domains_for_domain_classifier, bias=False)
+            if config.gradient_reversal_for_domain_classifier:
+                self.gradient_reversal_layer = GradientReversal()
+            
     def get_encoder(self):
         return self.model.get_encoder()
 
@@ -1572,6 +1609,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         additional_past_key_values=None,
         curr_decode_length=-1,
         context_encoder_representations=None,
+        label_mask=None,
     ):
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
@@ -1612,7 +1650,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
-                lm_logits = lm_logits/self.softmax_temperature
+                lm_logits = lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
             additional_outputs = self.model(
                 additional_input_ids,
                 attention_mask=additional_input_ids_mask,
@@ -1635,7 +1673,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             )
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
-                additional_source_lm_logits = additional_source_lm_logits/self.softmax_temperature
+                additional_source_lm_logits = additional_source_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
         else:
             outputs = self.model(
                 input_ids,
@@ -1667,8 +1705,14 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
                 if self.config.temperature_calibration:
-                    additional_lm_logits = additional_lm_logits/self.softmax_temperature
+                    additional_lm_logits = additional_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
         
+        if self.config.num_domains_for_domain_classifier != -1: ## Pool the output layer representations by taking a mean and then generate logits for them.
+            dom_pooled_outputs = outputs[0].masked_fill(label_mask, 0.0).mean(dim=1)
+            domain_classifier_logits = self.domain_classifer_head(dom_pooled_outputs)
+            if self.config.gradient_reversal_for_domain_classifier: ## If we want to do gradient reversal then thats going ot be done here.
+                domain_classifier_logits = self.gradient_reversal_layer(domain_classifier_logits) 
+            
         masked_lm_loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
@@ -1697,6 +1741,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             additional_source_lm_logits=additional_source_lm_logits if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
             context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None,
             softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
+            domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier != -1 else None,
         )
 
     def prepare_inputs_for_generation(
