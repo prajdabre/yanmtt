@@ -64,7 +64,7 @@ import functools
 torch.manual_seed(621311)
 ##
 
-def model_create_load_run_save(gpu, args, train_files, dev_files):
+def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size.
@@ -295,7 +295,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             print("Terminating training")
                             print("Global dev", metric, "history:", global_sbleu_history)
                             print("Individual", metric, "history:", individual_sbleu_history )
-                            break
+                            quit_condition[0] = -1 ## Since this is a shared variable it will be updated for all processes.
                     curr_eval_step += 1
 
                     model.train() ## Put the model back in training mode where dropout will be done.
@@ -319,6 +319,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
+            if quit_condition[0].cpu().numpy() == -1: ## All processes will see the same value which is always updated by rank 0 processes.
+                break ## Everyone quits.
             # configure map_location properly
             print("Loading from checkpoint")
             sys.stdout.flush()
@@ -503,8 +505,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
-
-    dist.destroy_process_group()
+    dist.barrier() ## Wait till all processes reach this point so that the prime process saves the final checkpoint.
+    dist.destroy_process_group() ## Everything that has a beginning has an end, Neo!
     
 
 def run_demo():
@@ -602,7 +604,7 @@ def run_demo():
                         help='Number of times LR should be annealed.')
     parser.add_argument('--additional_early_stop_checkpoints_per_anneal_step', default=5, type=int, 
                         help='How many additional checkpoints should we wait till declaring convergence? This will be multiplied with the annealing step number.')
-    parser.add_argument('--num_batches', default=100000, type=int, 
+    parser.add_argument('--num_batches', default=500000, type=int, 
                         help='Number of batches to train on')
     parser.add_argument('--max_eval_batches', default=1000, type=int, 
                         help='These many evaluation batches will be considered. Use a small value like 5 to cover a portion of the evaluation data.')
@@ -707,19 +709,22 @@ def run_demo():
     print("Training files are:", train_files)
     
     dev_files = {}
-    if args.mnmt:
-        slangs = args.dev_slang.strip().split(",")
-        tlangs = args.dev_tlang.strip().split(",")
-        dev_srcs = args.dev_src.strip().split(",")
-        dev_tgts = args.dev_tgt.strip().split(",")
-        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
-    else:
-        dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_src, args.dev_tgt)}
+    if not args.no_eval:
+        if args.mnmt:
+            slangs = args.dev_slang.strip().split(",")
+            tlangs = args.dev_tlang.strip().split(",")
+            dev_srcs = args.dev_src.strip().split(",")
+            dev_tgts = args.dev_tgt.strip().split(",")
+            dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
+        else:
+            dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_src, args.dev_tgt)}
     print("Development files are:", dev_files)
     
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files))         #
+    quit_condition = torch.ones(1) ## Create a variable to hold the quitting condition trigger
+    quit_condition.share_memory_() ## Share this among all processes
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files, quit_condition))         #
     
 if __name__ == "__main__":
     run_demo()
