@@ -31,8 +31,8 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 
 ## Huggingface imports
 import transformers
-from transformers import AutoTokenizer
-from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer
+from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
 
@@ -75,7 +75,16 @@ def model_create_load_decode(gpu, args):
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size. This need not be done using DDP but I am leaving it as is for consistency with my other code. In the future, I plan to support sharding the decoding data into multiple shards which will then be decoded in a distributed fashion.
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+    if args.use_official_pretrained:
+        if "mbart" in args.model_path:
+            if "50" in args.model_path:
+                tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
+            else:
+                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path)
+        else:
+            tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
+    else:
+        tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
 
     print("Tokenizer is:", tok)
 
@@ -89,22 +98,27 @@ def model_create_load_decode(gpu, args):
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
-    config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding) ## Configuration.
-    model = MBartForConditionalGeneration(config)
+    if args.use_official_pretrained:
+        if "mbart" in args.model_path:
+            model = MBartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+        elif "bart" in args.model_path:
+            model = BartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+    else:
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings) ## Configuration.
+        model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
     
     model.cuda(gpu)
     model = DistributedDataParallel(model, device_ids=[gpu])
     
-    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-    checkpoint_dict = torch.load(args.model_path, map_location=map_location)
-    
-                    
-    if type(checkpoint_dict) == dict:
-        model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
-    else:
-        model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+    if not args.use_official_pretrained:
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        checkpoint_dict = torch.load(args.model_path, map_location=map_location)
+        if type(checkpoint_dict) == dict:
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+        else:
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -122,7 +136,7 @@ def model_create_load_decode(gpu, args):
                 input_masks_parent = input_masks[1]
                 input_masks = input_masks[0]
             with torch.no_grad():
-                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int(len(input_ids[0])*args.max_decode_length_multiplier), min_length=int(len(input_ids[0])*args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"]).input_ids[0][1], decoder_start_token_id=tok(["<2"+args.tlang+">"]).input_ids[0][1], bos_token_id=tok(["<s>"]).input_ids[0][1], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1, additional_input_ids=input_ids_parent.to(gpu) if args.multi_source else None, additional_input_ids_mask=input_masks_parent.to(gpu) if args.multi_source else None) ## We translate the batch.
+                translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int((len(input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([args.tlang if args.use_official_pretrained else "<2"+args.tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1, additional_input_ids=input_ids_parent.to(gpu) if args.multi_source else None, additional_input_ids_mask=input_masks_parent.to(gpu) if args.multi_source else None) ## We translate the batch.
             print(len(input_ids), "in and", len(translations), "out")
             for input_id, translation in zip(input_ids, translations):
                 translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) 
@@ -215,37 +229,83 @@ def model_create_load_decode(gpu, args):
                 outf.write("\t".join([str(elem) for elem in hidden_state_individual.tolist()])+"\n")
                 outf.flush()
     elif args.decode_type == "get_attention": ## We want to extract and visualize the self attention and cross attentions for a particular layer and particular head. TODO make this work with all layers and all heads in a single plot. Currently my IQ is low so I am unable to achieve it.
-        print("Getting attention for layer ", args.layer_id)  
         sentence_id = 0
         for input_ids, input_masks, decoder_input_ids, decoder_masks, labels in generate_batches_pair(tok, args): 
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu), output_attentions=True)
-            encoder_attentions = mod_compute.encoder_attentions[args.layer_id]
-            decoder_attentions = mod_compute.decoder_attentions[args.layer_id]
-            cross_attentions = mod_compute.cross_attentions[args.layer_id]
-            for idx, (input_sent, tgt_sent) in enumerate(zip(input_ids, decoder_input_ids)):
-                input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=args.no_skip_special_tokens)
-                input_len = len(input_sent)
-                tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=args.no_skip_special_tokens)
-                tgt_len = len(tgt_sent)
-                print("Processing for ", input_sent, tgt_sent)
-                num_heads = 1
-                encoder_sizes = encoder_attentions[idx].size()
-                decoder_sizes = decoder_attentions[idx].size()
-                cross_sizes = cross_attentions[idx].size()
-                print(encoder_sizes, decoder_sizes, cross_sizes)
-                encoder_attention = encoder_attentions[args.att_head_id].view(-1, encoder_sizes[-1]).cpu().detach().numpy()
-                encoder_attention = encoder_attention[0:input_len*num_heads,0:input_len]
-                decoder_attention = decoder_attentions[args.att_head_id].view(-1, decoder_sizes[-1]).cpu().detach().numpy()
-                decoder_attention = decoder_attention[0:tgt_len*num_heads,0:tgt_len]
-                cross_attention = cross_attentions[args.att_head_id].view(-1, cross_sizes[-1]).cpu().detach().numpy()
-                cross_attention = cross_attention[0:tgt_len*num_heads,0:input_len]
-                ## Enc Enc plot
-                plot_attention(encoder_attention, input_sent, input_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_enc.png", "Encoder Encoder Attention")
-                ## Dec Dec plot
-                plot_attention(decoder_attention, tgt_sent, tgt_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".dec_dec.png", "Decoder Decoder Attention")
-                ## Enc Dec plot
-                plot_attention(cross_attention, input_sent, tgt_sent*num_heads, num_heads, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_dec.png", "Encoder Decoder Attention")
-                sentence_id += 1
+            if args.layer_id != -1 and args.att_head_id != -1: ## We will be extracting attention info for specific layers and heads.
+                print("Getting attention for layer ", args.layer_id, " and head ", args.att_head_id)
+                encoder_attentions = mod_compute.encoder_attentions[args.layer_id]
+                decoder_attentions = mod_compute.decoder_attentions[args.layer_id]
+                cross_attentions = mod_compute.cross_attentions[args.layer_id]
+                for idx, (input_sent, tgt_sent) in enumerate(zip(input_ids, labels)):
+                    input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=args.no_skip_special_tokens)
+                    input_len = len(input_sent)
+                    tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=args.no_skip_special_tokens)
+                    tgt_len = len(tgt_sent)
+                    print("Processing for ", input_sent, tgt_sent)
+                    encoder_sizes = encoder_attentions[idx].size()
+                    decoder_sizes = decoder_attentions[idx].size()
+                    cross_sizes = cross_attentions[idx].size()
+                    print(encoder_sizes, decoder_sizes, cross_sizes)
+                    encoder_attention = encoder_attentions[args.att_head_id].view(-1, encoder_sizes[-1]).cpu().detach().numpy()
+                    encoder_attention = encoder_attention[0:input_len,0:input_len]
+                    decoder_attention = decoder_attentions[args.att_head_id].view(-1, decoder_sizes[-1]).cpu().detach().numpy()
+                    decoder_attention = decoder_attention[0:tgt_len,0:tgt_len]
+                    cross_attention = cross_attentions[args.att_head_id].view(-1, cross_sizes[-1]).cpu().detach().numpy()
+                    cross_attention = cross_attention[0:tgt_len,0:input_len]
+                    ## Enc Enc plot
+                    plot_attention(encoder_attention, input_sent, input_sent, 1, 1, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_enc.png", "Encoder Encoder Attention")
+                    ## Dec Dec plot
+                    plot_attention(decoder_attention, tgt_sent, tgt_sent, 1, 1, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".dec_dec.png", "Decoder Decoder Attention")
+                    ## Enc Dec plot
+                    plot_attention(cross_attention, input_sent, tgt_sent, 1, 1, args.test_tgt+".sentence-"+str(sentence_id)+".layer-"+str(args.layer_id)+".head-"+str(args.att_head_id)+".enc_dec.png", "Encoder Decoder Attention")
+                    sentence_id += 1
+            elif args.layer_id == -1 and args.att_head_id == -1: ## We will be extracting attention info for all layers and heads.
+                encoder_attentions = mod_compute.encoder_attentions
+                decoder_attentions = mod_compute.decoder_attentions
+                cross_attentions = mod_compute.cross_attentions
+                for idx, (input_sent, tgt_sent) in enumerate(zip(input_ids, labels)):
+                    input_sent = tok.convert_ids_to_tokens(input_sent, skip_special_tokens=args.no_skip_special_tokens)
+                    input_len = len(input_sent)
+                    tgt_sent = tok.convert_ids_to_tokens(tgt_sent, skip_special_tokens=args.no_skip_special_tokens)
+                    tgt_len = len(tgt_sent)
+                    print("Processing for ", input_sent, tgt_sent)
+                    encenc_info = []
+                    decdec_info = []
+                    encdec_info = []
+                    input_sent_x = []
+                    input_sent_y = []
+                    tgt_sent_x = []
+                    tgt_sent_y = []
+                    for input_word in input_sent:
+                        input_sent_y.append(input_word+" L-"+str(0))
+                        for layer_id in range(1, model.module.config.encoder_layers):
+                            input_sent_y.append("L-"+str(layer_id))
+                    input_sent_x = input_sent*model.module.config.encoder_attention_heads
+                    for tgt_word in tgt_sent:
+                        tgt_sent_y.append(tgt_word+" L-"+str(0))
+                        for layer_id in range(1, model.module.config.encoder_layers):
+                            tgt_sent_y.append("L-"+str(layer_id))
+                    tgt_sent_x = tgt_sent*model.module.config.encoder_attention_heads
+
+                    for layer_id in range(model.module.config.encoder_layers):
+                        encenc_info.append(encoder_attentions[layer_id][idx].transpose(0,1).reshape(input_len,-1).unsqueeze(0))
+                        decdec_info.append(decoder_attentions[layer_id][idx].transpose(0,1).reshape(tgt_len,-1).unsqueeze(0))
+                        encdec_info.append(cross_attentions[layer_id][idx].transpose(0,1).reshape(tgt_len,-1).unsqueeze(0))
+                    encenc_info = torch.cat(encenc_info, 0).transpose(0,1).reshape(input_len*model.module.config.encoder_layers, -1)
+                    decdec_info = torch.cat(decdec_info, 0).transpose(0,1).reshape(tgt_len*model.module.config.encoder_layers, -1)
+                    encdec_info = torch.cat(encdec_info, 0).transpose(0,1).reshape(tgt_len*model.module.config.encoder_layers, -1)
+                    print(encenc_info.size(), decdec_info.size(), encdec_info.size())
+                    encenc_info = encenc_info.cpu().detach().numpy()
+                    decdec_info = decdec_info.cpu().detach().numpy()
+                    encdec_info = encdec_info.cpu().detach().numpy()
+                    ## Enc Enc plot
+                    plot_attention(encenc_info, input_sent_x, input_sent_y, model.module.config.encoder_layers, model.module.config.encoder_attention_heads, args.test_tgt+".sentence-"+str(sentence_id)+".enc_enc.png", "Encoder Encoder Attention")
+                    ## Dec Dec plot
+                    plot_attention(decdec_info, tgt_sent_x, tgt_sent_y, model.module.config.encoder_layers, model.module.config.encoder_attention_heads, args.test_tgt+".sentence-"+str(sentence_id)+".dec_dec.png", "Decoder Decoder Attention")
+                    ## Enc Dec plot
+                    plot_attention(encdec_info, input_sent_x, tgt_sent_y, model.module.config.encoder_layers, model.module.config.encoder_attention_heads, args.test_tgt+".sentence-"+str(sentence_id)+".enc_dec.png", "Encoder Decoder Attention")
+                    sentence_id += 1
                 
     outf.close()
     
@@ -264,6 +324,8 @@ def run_demo():
                         help='IP address of the main node')
     parser.add_argument('-p', '--port', default='26023', type=str, 
                         help='Port main node')
+    parser.add_argument('--use_official_pretrained', action='store_true', 
+                        help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten. This is hacky so sue me.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
                         help='Path to save the fine tuned model')
     parser.add_argument('--batch_size', default=32, type=int, 
@@ -301,13 +363,15 @@ def run_demo():
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
     parser.add_argument('--max_decode_length_multiplier', default=2.0, type=float, 
-                        help='This multiplied by the source sentence length will be the maximum decoding length.')
+                        help='This multiplied by the source sentence length will be the maximum decoding length. If you want to directly specify a particular value then set this to the negative of that value.')
     parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
-                        help='This multiplied by the source sentence length will be the minimum decoding length.')
+                        help='This multiplied by the source sentence length will be the minimum decoding length. If you want to directly specify a particular value then set this to the negative of that value.')
     parser.add_argument('--hard_truncate_length', default=512, type=int, 
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
     parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")
+    parser.add_argument('--positional_encodings', action='store_true', 
+                        help='If true then we will use positional encodings instead of learned positional embeddings.')
     parser.add_argument('--no_embed_norm', action='store_true', 
                         help='If true then we wont normalize embeddings.')
     parser.add_argument('--scale_embedding', action='store_true', 

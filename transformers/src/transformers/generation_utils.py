@@ -392,7 +392,7 @@ class GenerationMixin:
         }
         model_kwargs["encoder_outputs"]: ModelOutput = encoder(input_ids, return_dict=True, **encoder_kwargs)
         ## Modified by Raj Dabre. Start.
-        if self.config.multi_source:
+        if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
             main_source_wait_k = self.config.wait_k
             self.config.wait_k = self.config.additional_source_wait_k
             attention_mask_temp = encoder_kwargs["attention_mask"]
@@ -878,7 +878,7 @@ class GenerationMixin:
             # init `input_ids` with bos_token_id
             input_ids = self._prepare_input_ids_for_generation(bos_token_id)
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 if model_kwargs["additional_input_ids"] is None:
                     model_kwargs["additional_input_ids"] = self._prepare_input_ids_for_generation(bos_token_id)
             ## Modified by Raj Dabre. End.
@@ -889,7 +889,7 @@ class GenerationMixin:
                 input_ids, pad_token_id, eos_token_id
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 if model_kwargs.get("additional_input_ids_mask", None) is None:
                     # init `attention_mask` depending on `pad_token_id`
                     model_kwargs["additional_input_ids_mask"] = self._prepare_attention_mask_for_generation(
@@ -904,7 +904,7 @@ class GenerationMixin:
         # Storing encoder_input_ids for logits_processor that could use them
         encoder_input_ids = input_ids if self.config.is_encoder_decoder else None
         ## Modified by Raj Dabre. Start.
-        if self.config.multi_source:
+        if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
             additional_encoder_input_ids = model_kwargs["additional_input_ids"] if self.config.is_encoder_decoder else None
         ## Modified by Raj Dabre. End.
         
@@ -923,7 +923,7 @@ class GenerationMixin:
             if "encoder_outputs" not in model_kwargs or not isinstance(model_kwargs["encoder_outputs"], ModelOutput):
                 raise ValueError("Make sure that `model_kwargs` include `encoder_outputs` of type `ModelOutput`.")
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 if "additional_encoder_outputs" not in model_kwargs or not isinstance(model_kwargs["additional_encoder_outputs"], ModelOutput):
                     raise ValueError("Make sure that `model_kwargs` include `additional_encoder_outputs` of type `ModelOutput`.")
             ## Modified by Raj Dabre. End.
@@ -995,7 +995,7 @@ class GenerationMixin:
                 input_ids,
                 expand_size=num_return_sequences,
                 is_encoder_decoder=self.config.is_encoder_decoder, 
-                multi_source=self.config.multi_source, ## Modified by Raj Dabre.
+                multi_source=self.config.multi_source if self._get_name() == "MBartForConditionalGeneration" else False, ## Modified by Raj Dabre.
                 **model_kwargs,
             )
 
@@ -1032,7 +1032,7 @@ class GenerationMixin:
             )
             # interleave with `num_beams`
             input_ids, model_kwargs = self._expand_inputs_for_generation(
-                input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source, **model_kwargs
+                input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source if self._get_name() == "MBartForConditionalGeneration" else False, **model_kwargs
             ) ## Modified by Raj Dabre.
             return self.beam_search(
                 input_ids,
@@ -1068,7 +1068,7 @@ class GenerationMixin:
                 input_ids,
                 expand_size=num_beams * num_return_sequences,
                 is_encoder_decoder=self.config.is_encoder_decoder,
-                multi_source=self.config.multi_source,
+                multi_source=self.config.multi_source if self._get_name() == "MBartForConditionalGeneration" else False,
                 **model_kwargs,
             ) ## Modified by Raj Dabre.
 
@@ -1109,7 +1109,7 @@ class GenerationMixin:
             )
             # interleave with `num_beams`
             input_ids, model_kwargs = self._expand_inputs_for_generation(
-                input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source, **model_kwargs
+                input_ids, expand_size=num_beams, is_encoder_decoder=self.config.is_encoder_decoder, multi_source=self.config.multi_source if self._get_name() == "MBartForConditionalGeneration" else False, **model_kwargs
             ) ## Modified by Raj Dabre.
             return self.group_beam_search(
                 input_ids,
@@ -1233,7 +1233,7 @@ class GenerationMixin:
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -1249,7 +1249,8 @@ class GenerationMixin:
         while cur_len < max_length:
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["curr_decode_length"] = cur_len
+            if self._get_name() == "MBartForConditionalGeneration":
+                model_inputs["curr_decode_length"] = cur_len
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -1259,7 +1260,7 @@ class GenerationMixin:
             )
             next_token_logits = outputs.logits[:, -1, :]
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source_method == "average_softmaxes":
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but greedy search does not allow for it. Bizzarre.
             ## Modified by Raj Dabre. End.
@@ -1455,7 +1456,7 @@ class GenerationMixin:
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -1471,7 +1472,8 @@ class GenerationMixin:
         while cur_len < max_length:
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["curr_decode_length"] = cur_len
+            if self._get_name() == "MBartForConditionalGeneration":
+                model_inputs["curr_decode_length"] = cur_len
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -1481,7 +1483,7 @@ class GenerationMixin:
             )
             next_token_logits = outputs.logits[:, -1, :]
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source_method == "average_softmaxes":
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
             ## Modified by Raj Dabre. End.
@@ -1689,7 +1691,7 @@ class GenerationMixin:
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -1711,7 +1713,8 @@ class GenerationMixin:
 
         while cur_len < max_length:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["curr_decode_length"] = cur_len
+            if self._get_name() == "MBartForConditionalGeneration":
+                model_inputs["curr_decode_length"] = cur_len
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -1720,7 +1723,7 @@ class GenerationMixin:
             )
             next_token_logits = outputs.logits[:, -1, :]
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source_method == "average_softmaxes":
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
             ## Modified by Raj Dabre. End.
@@ -1785,7 +1788,7 @@ class GenerationMixin:
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
                 ## Modified by Raj Dabre. Start.
-                if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
+                if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], beam_idx)
                 ## Modified by Raj Dabre. End.
                 
@@ -1967,7 +1970,7 @@ class GenerationMixin:
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -1984,7 +1987,8 @@ class GenerationMixin:
 
         while cur_len < max_length:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["curr_decode_length"] = cur_len
+            if self._get_name() == "MBartForConditionalGeneration":
+                model_inputs["curr_decode_length"] = cur_len
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -1993,7 +1997,7 @@ class GenerationMixin:
             )
             next_token_logits = outputs.logits[:, -1, :]
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source_method == "average_softmaxes":
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
             ## Modified by Raj Dabre. End.
@@ -2061,7 +2065,7 @@ class GenerationMixin:
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
                 ## Modified by Raj Dabre. Start.
-                if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
+                if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], beam_idx)
                 ## Modified by Raj Dabre. End.
             if beam_scorer.is_done:
@@ -2233,7 +2237,7 @@ class GenerationMixin:
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source:
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
                 additional_encoder_attentions = model_kwargs["additional_encoder_outputs"].get("attentions") if output_attentions else None
                 additional_encoder_hidden_states = (
                 model_kwargs["additional_encoder_outputs"].get("hidden_states") if output_hidden_states else None
@@ -2267,7 +2271,8 @@ class GenerationMixin:
 
             # do one decoder step on all beams of all sentences in batch
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["curr_decode_length"] = cur_len
+            if self._get_name() == "MBartForConditionalGeneration":
+                model_inputs["curr_decode_length"] = cur_len
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -2275,7 +2280,7 @@ class GenerationMixin:
                 output_hidden_states=output_hidden_states,
             )
             ## Modified by Raj Dabre. Start.
-            if self.config.multi_source_method == "average_softmaxes":
+            if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source_method == "average_softmaxes":
                 additional_next_token_logits = outputs.additional_source_lm_logits[:, -1, :]
                 next_token_logits = (next_token_logits + additional_next_token_logits)/2.0 ## Late averaging. Ideally want want to average softmaxes but lets see what this leads to.
             ## Modified by Raj Dabre. End.
@@ -2373,7 +2378,7 @@ class GenerationMixin:
             if model_kwargs["past"] is not None:
                 model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], reordering_indices)
                 ## Modified by Raj Dabre. Start.
-                if self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
+                if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source and model_kwargs["additional_past"] is not None: ## Raj: Reorder the additional source info too.
                     model_kwargs["additional_past"] = self._reorder_cache(model_kwargs["additional_past"], reordering_indices)
                 ## Modified by Raj Dabre. End.
             input_ids = torch.cat([input_ids, current_tokens.unsqueeze(-1)], dim=-1)

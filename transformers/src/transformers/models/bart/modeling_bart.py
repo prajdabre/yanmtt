@@ -690,6 +690,7 @@ class BartEncoder(BartPretrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        **kwargs,
     ):
         r"""
         Args:
@@ -882,6 +883,7 @@ class BartDecoder(BartPretrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        **kwargs,
     ):
         r"""
         Args:
@@ -1131,6 +1133,7 @@ class BartModel(BartPretrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        **kwargs,
     ):
 
         # different to other models, Bart automatically creates decoder_input_ids from
@@ -1262,6 +1265,7 @@ class BartForConditionalGeneration(BartPretrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        **kwargs,
     ):
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):

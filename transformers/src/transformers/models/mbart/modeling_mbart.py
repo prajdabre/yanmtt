@@ -21,6 +21,7 @@ import random
 from typing import Optional, Tuple
 
 import torch
+import numpy as np
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
@@ -116,6 +117,41 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     inverted_mask = 1.0 - expanded_mask
 
     return inverted_mask.masked_fill(inverted_mask.bool(), -1e10) # torch.finfo(dtype).min
+
+
+class MBartSinusoidalPositionalEmbedding(nn.Embedding):
+    """This module produces sinusoidal positional embeddings of any length."""
+
+    def __init__(self, num_positions: int, embedding_dim: int, padding_idx: Optional[int] = None):
+        super().__init__(num_positions, embedding_dim)
+        self.weight = self._init_weight(self.weight)
+
+    @staticmethod
+    def _init_weight(out: nn.Parameter):
+        """
+        Identical to the XLM create_sinusoidal_embeddings except features are not interleaved. The cos features are in
+        the 2nd half of the vector. [dim // 2:]
+        """
+        n_pos, dim = out.shape
+        position_enc = np.array(
+            [[pos / np.power(10000, 2 * (j // 2) / dim) for j in range(dim)] for pos in range(n_pos)]
+        )
+        out.requires_grad = False  # set early to avoid an error in pytorch-1.8+
+        sentinel = dim // 2 if dim % 2 == 0 else (dim // 2) + 1
+        out[:, 0:sentinel] = torch.FloatTensor(np.sin(position_enc[:, 0::2]))
+        out[:, sentinel:] = torch.FloatTensor(np.cos(position_enc[:, 1::2]))
+        out.detach_()
+        return out
+
+    @torch.no_grad()
+    def forward(self, input_ids_shape: torch.Size, past_key_values_length: int = 0):
+        """`input_ids_shape` is expected to be [bsz x seqlen]."""
+        bsz, seq_len = input_ids_shape[:2]
+        positions = torch.arange(
+            past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
+        )
+        return super().forward(positions)
+
 ## Modified by Raj Dabre. End.
 
 # Copied from transformers.models.bart.modeling_bart.BartLearnedPositionalEmbedding with Bart->MBart
@@ -826,11 +862,18 @@ class MBartEncoder(MBartPreTrainedModel):
             self.features_final_project = None
         ## Modified by Raj Dabre. End.
         
-        self.embed_positions = MBartLearnedPositionalEmbedding(
-            config.max_position_embeddings,
-            embed_dim,
-            self.padding_idx,
-        )
+        if config.positional_encodings:
+            self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                config.max_position_embeddings,
+                embed_dim,
+                self.padding_idx,
+            )
+        else:
+            self.embed_positions = MBartLearnedPositionalEmbedding(
+                config.max_position_embeddings,
+                embed_dim,
+                self.padding_idx,
+            )
         ## Modified by Raj Dabre. Start.
         if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
@@ -1021,11 +1064,20 @@ class MBartDecoder(MBartPreTrainedModel):
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
 
-        self.embed_positions = MBartLearnedPositionalEmbedding(
-            config.max_position_embeddings,
-            config.d_model,
-            self.padding_idx,
-        )
+        if config.positional_encodings:
+            print("Using positional encodings")
+            self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                config.max_position_embeddings,
+                config.d_model,
+                self.padding_idx,
+            )
+        else:
+            print("Using positional embeddings")
+            self.embed_positions = MBartLearnedPositionalEmbedding(
+                config.max_position_embeddings,
+                config.d_model,
+                self.padding_idx,
+            )
         ## Modified by Raj Dabre. Start.
         if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")

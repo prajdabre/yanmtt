@@ -146,6 +146,7 @@ class MBartConfig(PretrainedConfig):
         no_scale_attention_embedding=False, ## Argument to stop attention embeddings from being scaled.
         num_domains_for_domain_classifier=-1, ## Argument to indicate number of domains for domain classifier.
         gradient_reversal_for_domain_classifier=False, ## Argument to indicate whether we should do gradient reversal for domain classifier.
+        positional_encodings=False, ## Argument to indicate whether we should do use positional encodings or embeddings.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -195,6 +196,7 @@ class MBartConfig(PretrainedConfig):
         self.no_scale_attention_embedding = no_scale_attention_embedding ## Argument to stop attention embeddings from being scaled.
         self.num_domains_for_domain_classifier = num_domains_for_domain_classifier ## Argument to indicate number of domains for domain classifier.
         self.gradient_reversal_for_domain_classifier = gradient_reversal_for_domain_classifier ## Argument to indicate whether we should do gradient reversal for domain classifier.
+        self.positional_encodings = positional_encodings ## Argument to indicate whether we should do use positional encodings or embeddings.
         ## Modified by Raj Dabre. End.
         
     @property
