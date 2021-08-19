@@ -2266,6 +2266,9 @@ class PreTrainedTokenizerBase(SpecialTokensMixin):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
+        sample: bool = False,
+        nbest: int = -1,
+        alpha_or_dropout: float = 0.1,
         **kwargs
     ) -> BatchEncoding:
         """
@@ -2344,6 +2347,9 @@ class PreTrainedTokenizerBase(SpecialTokensMixin):
                 return_offsets_mapping=return_offsets_mapping,
                 return_length=return_length,
                 verbose=verbose,
+                sample=sample,
+                nbest=nbest,
+                alpha_or_dropout=alpha_or_dropout,
                 **kwargs,
             )
         else:
@@ -2365,6 +2371,9 @@ class PreTrainedTokenizerBase(SpecialTokensMixin):
                 return_offsets_mapping=return_offsets_mapping,
                 return_length=return_length,
                 verbose=verbose,
+                sample=sample,
+                nbest=nbest,
+                alpha_or_dropout=alpha_or_dropout,
                 **kwargs,
             )
 

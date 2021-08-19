@@ -249,9 +249,9 @@ class PreTrainedTokenizer(PreTrainedTokenizerBase):
 
         text, kwargs = self.prepare_for_tokenization(text, **kwargs)
 
-        if kwargs:
-            logger.warning(f"Keyword arguments {kwargs} not recognized.")
-
+#         if kwargs:
+#             if "sample" in kwargs or "nbest" in kwargs or "alpha_or_dropout" in kwargs:
+#             logger.warning(f"Keyword arguments {kwargs} not recognized.")
         # TODO: should this be in the base class?
         if hasattr(self, "do_lower_case") and self.do_lower_case:
             # convert non-special tokens to lowercase
@@ -316,7 +316,7 @@ class PreTrainedTokenizer(PreTrainedTokenizerBase):
             if not text.strip():
                 return []
             if not tok_list:
-                return self._tokenize(text)
+                return self._tokenize(text, kwargs["sample"], kwargs["nbest"], kwargs["alpha_or_dropout"])
 
             tokenized_text = []
             text_list = [text]
@@ -332,7 +332,7 @@ class PreTrainedTokenizer(PreTrainedTokenizerBase):
             return list(
                 itertools.chain.from_iterable(
                     (
-                        self._tokenize(token) if token not in self.unique_no_split_tokens else [token]
+                        self._tokenize(token, kwargs["sample"], kwargs["nbest"], kwargs["alpha_or_dropout"]) if token not in self.unique_no_split_tokens else [token]
                         for token in tokenized_text
                     )
                 )
