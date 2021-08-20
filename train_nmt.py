@@ -683,6 +683,12 @@ def run_demo():
                         help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
     parser.add_argument('--multi_source_method', default=None, type=str, 
                         help='How to merge representations from multiple sources? Should be one of self_relevance_and_merge_after_attention, self_relevance_and_merge_before_attention, merge_after_attention, merge_before_attention. We also need to implement averaging methods such as early averaging (average encoder representations) and late averaging (average softmaxes). Relevance mechanisms should have a separate flag in the future.')
+    parser.add_argument('--tokenization_sampling', action='store_true', 
+                        help='Should we use stoachastic tokenization aka BPE dropout or Subword regularization?')
+    parser.add_argument('--tokenization_nbest_list_size', type=int, default=64, 
+                        help='The size of the nbest list when doing stochastic tokenization.')
+    parser.add_argument('--tokenization_alpha_or_dropout', type=float, default=0.1, 
+                        help='The value of sentence piece regularization amount controlled via alpha or the amount of BPE dropout controlled by dropout.')
     parser.add_argument('--train_tlang', default='hi', type=str, 
                         help='Target language(s) for training')
     parser.add_argument('--train_src', default='', type=str, 

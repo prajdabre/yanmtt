@@ -2267,7 +2267,7 @@ class PreTrainedTokenizerBase(SpecialTokensMixin):
         return_length: bool = False,
         verbose: bool = True,
         sample: bool = False,
-        nbest: int = -1,
+        nbest: int = 64,
         alpha_or_dropout: float = 0.1,
         **kwargs
     ) -> BatchEncoding:

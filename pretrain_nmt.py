@@ -498,6 +498,12 @@ def run_demo():
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
                         help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
+    parser.add_argument('--tokenization_sampling', action='store_true', 
+                        help='Should we use stoachastic tokenization aka BPE dropout or Subword regularization?')
+    parser.add_argument('--tokenization_nbest_list_size', type=int, default=64, 
+                        help='The size of the nbest list when doing stochastic tokenization.')
+    parser.add_argument('--tokenization_alpha_or_dropout', type=float, default=0.1, 
+                        help='The value of sentence piece regularization amount controlled via alpha or the amount of BPE dropout controlled by dropout.')
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
     parser.add_argument('--multistep_optimizer_steps', default=1, type=int, help="In case you want to simulate a larger batch you should set this to a higher value.")

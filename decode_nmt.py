@@ -370,6 +370,12 @@ def run_demo():
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--token_masking_lambda', default=3.5, type=float, help="The value for the poisson sampling lambda value")
     parser.add_argument('--token_masking_probs_range', nargs='+', type=float, default=[0.3], help="The range of probabilities with which the token will be masked. If you want a fixed probability then specify one argument else specify ONLY 2.")
+    parser.add_argument('--tokenization_sampling', action='store_true', 
+                        help='Should we use stoachastic tokenization aka BPE dropout or Subword regularization?')
+    parser.add_argument('--tokenization_nbest_list_size', type=int, default=64, 
+                        help='The size of the nbest list when doing stochastic tokenization.')
+    parser.add_argument('--tokenization_alpha_or_dropout', type=float, default=0.1, 
+                        help='The value of sentence piece regularization amount controlled via alpha or the amount of BPE dropout controlled by dropout.')
     parser.add_argument('--positional_encodings', action='store_true', 
                         help='If true then we will use positional encodings instead of learned positional embeddings.')
     parser.add_argument('--no_embed_norm', action='store_true', 
