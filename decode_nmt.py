@@ -112,7 +112,12 @@ def model_create_load_decode(gpu, args):
     model.cuda(gpu)
     model = DistributedDataParallel(model, device_ids=[gpu])
     
-    if not args.use_official_pretrained:
+    
+    if args.use_official_pretrained and args.locally_fine_tuned_model_path is None: ## If we want to directly decode an official model.
+        pass
+    else:
+        if args.use_official_pretrained and args.locally_fine_tuned_model_path is not None: ## If we want to decode a locally fine-tuned version of an official model.
+            args.model_path = args.locally_fine_tuned_model_path
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
@@ -325,9 +330,11 @@ def run_demo():
     parser.add_argument('-p', '--port', default='26023', type=str, 
                         help='Port main node')
     parser.add_argument('--use_official_pretrained', action='store_true', 
-                        help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten. This is hacky so sue me.')
+                        help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
+    parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
+                        help='In case you fine-tuned an official model and have a local checkpoint then specifiy it here. If you did not fine-tune an official model but did your own thing then specify it using model_path.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
-                        help='Path to save the fine tuned model')
+                        help='Path to the model to decode')
     parser.add_argument('--batch_size', default=32, type=int, 
                         help='Batch size in terms of number of sentences')
     parser.add_argument('--beam_size', default=4, type=int, 

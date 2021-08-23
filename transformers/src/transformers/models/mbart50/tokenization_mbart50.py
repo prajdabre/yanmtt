@@ -208,8 +208,11 @@ class MBart50Tokenizer(PreTrainedTokenizer):
         vocab.update(self.added_tokens_encoder)
         return vocab
 
-    def _tokenize(self, text: str) -> List[str]:
-        return self.sp_model.encode(text, out_type=str)
+    def _tokenize(self, text: str, sample=False, nbest=-1, dropout=0.1) -> List[str]:
+        if not sample:
+            return self.sp_model.EncodeAsPieces(text)
+        else:
+            return self.sp_model.SampleEncodeAsPieces(text, nbest, dropout)
 
     def _convert_token_to_id(self, token: str) -> int:
         """Converts a token (str) in an id using the vocab."""
