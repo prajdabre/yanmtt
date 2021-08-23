@@ -479,11 +479,17 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
             
             masked_sentence = " ".join(sentence_split)
-            iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
-            curr_src_sent_len = len(iids[0])
+            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                iids = tok(masked_sentence, return_tensors="pt").input_ids
+                curr_src_sent_len = len(iids[0])
+                iids = tok(sentence, return_tensors="pt").input_ids
+                curr_tgt_sent_len = len(iids[0])
+            else:
+                iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+                curr_src_sent_len = len(iids[0])
+                iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
+                curr_tgt_sent_len = len(iids[0])
             
-            iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_tgt_sent_len = len(iids[0])
                         
             if curr_src_sent_len > max_src_sent_len:
                 prev_max_src_sent_len = max_src_sent_len
@@ -493,14 +499,19 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 prev_max_tgt_sent_len = max_tgt_sent_len
                 max_tgt_sent_len = curr_tgt_sent_len
             
-            if args.batch_size_indicates_lines and sents_in_batch+1 == args.batch_size: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
-                encoder_input_batch.append(masked_sentence + " </s> " + lang)
-                decoder_input_batch.append(lang + " " + sentence)
-                decoder_label_batch.append(sentence + " </s>")
-                if args.tokenization_sampling:
-                    decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
+            if args.batch_size_indicates_lines: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
+                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                    encoder_input_batch.append(src_sent)
+                    decoder_input_batch.append(tgt_sent)
+                else:
+                    encoder_input_batch.append(masked_sentence + " </s> " + lang)
+                    decoder_input_batch.append(lang + " " + sentence)
+                    decoder_label_batch.append(sentence + " </s>")
+                    if args.tokenization_sampling:
+                        decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
                 sents_in_batch += 1
-                break
+                if sents_in_batch == args.batch_size:
+                    break
             else:
                 potential_batch_count = max(max_src_sent_len, max_tgt_sent_len)*(sents_in_batch+1) ## Note that this will be unreliable when we do stochastic subword segmentation.
                 if potential_batch_count > args.batch_size: ## We will drop this sentence for now because we may go over the limit of what the GPU can handle. It may be used in a future iteration. Note that this will be unreliable when we do stochastic subword segmentation.
@@ -508,24 +519,34 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     max_src_sent_len = prev_max_src_sent_len
                     max_tgt_sent_len = prev_max_tgt_sent_len
                     break
-                encoder_input_batch.append(masked_sentence + " </s> " + lang)
-                decoder_input_batch.append(lang + " " + sentence)
-                decoder_label_batch.append(sentence + " </s>")
-                if args.tokenization_sampling:
-                    decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
+                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                    encoder_input_batch.append(src_sent)
+                    decoder_input_batch.append(tgt_sent)
+                else:
+                    encoder_input_batch.append(masked_sentence + " </s> " + lang)
+                    decoder_input_batch.append(lang + " " + sentence)
+                    decoder_label_batch.append(sentence + " </s>")
+                    if args.tokenization_sampling:
+                        decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
                 sents_in_batch += 1
         
         if len(encoder_input_batch) == 0:
             print("Zero size batch due to an abnormal example. Skipping empty batch.")
             continue
-        input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
+            input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
+        else:
+            input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
-        decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
+            decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True).input_ids
+        else:
+            decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        if args.tokenization_sampling: ## We have to be careful when using stochastic segmentation. 
+        if (args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## We have to be careful when using stochastic segmentation. Note again that there will be no stoachastic segmentation with the official bart model. IT JUST WONT WORK.
             labels = decoder_input_ids[:,1:]
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
@@ -888,7 +909,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                 prev_max_tgt_sent_len = max_tgt_sent_len
                 max_tgt_sent_len = curr_tgt_sent_len
             
-            if args.batch_size_indicates_lines and sents_in_batch+1 == args.batch_size: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
+            if args.batch_size_indicates_lines: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
                 if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     encoder_input_batch.append(src_sent)
                     decoder_input_batch.append(tgt_sent)
@@ -907,7 +928,8 @@ def generate_batches_bilingual(tok, args, files, rank):
                         encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
 
                 sents_in_batch += 1
-                break
+                if sents_in_batch == args.batch_size:
+                    break
             else:
                 if args.cross_distillation or args.multi_source:
                     potential_batch_count = max(max_src_sent_len, max_src_sent_len_parent, max_tgt_sent_len)*(sents_in_batch+1) ## We limit ourselves based on the maximum of either source or target.
