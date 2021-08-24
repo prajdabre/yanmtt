@@ -238,8 +238,8 @@ class GPT2Tokenizer(PreTrainedTokenizer):
         self.cache[token] = word
         return word
 
-    def _tokenize(self, text):
-        """ Tokenize a string. """
+    def _tokenize(self, text, **extra_kwargs):
+        """ Tokenize a string. The extra_kwargs variable is a placeholder to prevent the code from breaking. This is needed because I enabled stochastic tokenization and the GPT2 tokenizer is best not messed with because it does its own thing."""
         bpe_tokens = []
         for token in re.findall(self.pat, text):
             token = "".join(
