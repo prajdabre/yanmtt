@@ -501,8 +501,8 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
             
             if args.batch_size_indicates_lines: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
                 if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                    encoder_input_batch.append(src_sent)
-                    decoder_input_batch.append(tgt_sent)
+                    encoder_input_batch.append(masked_sentence)
+                    decoder_input_batch.append(sentence)
                 else:
                     encoder_input_batch.append(masked_sentence + " </s> " + lang)
                     decoder_input_batch.append(lang + " " + sentence)
@@ -520,8 +520,8 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     max_tgt_sent_len = prev_max_tgt_sent_len
                     break
                 if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                    encoder_input_batch.append(src_sent)
-                    decoder_input_batch.append(tgt_sent)
+                    encoder_input_batch.append(masked_sentence)
+                    decoder_input_batch.append(sentence)
                 else:
                     encoder_input_batch.append(masked_sentence + " </s> " + lang)
                     decoder_input_batch.append(lang + " " + sentence)
