@@ -64,10 +64,10 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 2. Create a virtual environment with python3.6 via and activate it via: "virtualenv -p /usr/bin/python3.6 py36 && source py36/bin/activate"
 3. Update pip via "pip install pip --upgrade" and then install the required packages via: "pip install -r requirements.txt"
 4. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
-5. Move out of this folder with "cd .." and install sentencepiece v0.1.95 with "git clone --branch v0.1.95 https://github.com/google/sentencepiece.git"
-5.1 Go to the URL - "https://github.com/google/sentencepiece/tree/v0.1.95" and follow the install instructions for your OS.
-5.2 After installing sentnencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder.
-5.3 Move back to yanmtt folder i.e., "cd ../yanmtt" (from the sentencepiece folder).
+5. Move out of this folder with "cd .." and install sentencepiece v0.1.95 with "git clone --branch v0.1.95 https://github.com/google/sentencepiece.git"<br>
+5.1 Go to the URL - "https://github.com/google/sentencepiece/tree/v0.1.95" and follow the install instructions for your OS.<br>
+5.2 After installing sentnencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder.<br>
+5.3 Move back to yanmtt folder i.e., "cd ../yanmtt" (from the sentencepiece folder).<br>
 6. Modify the "create_autotokenizer.sh" file by specifying the correct path to sentencepiece trainer ("spm_train") in line 8
 7. Set the python path to the local transformers repo by: PYTHONPATH=$PYTHONPATH:/path/to/this/toolkit/transformers
 8. Make sure that the PATH and LD_LIBRARY_PATH variables point to the appropriate CUDA folders (bin and lib64/lib respectively) 
