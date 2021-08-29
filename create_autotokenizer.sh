@@ -31,7 +31,7 @@ num_train_sentences=$6
 character_coverage=$7
 mkdir -p $tgt_folder
 
-SPM_TRAIN=/share03/draj/softwares_and_scripts/sentencepiece/build/src/spm_train ## Change this to your spm_train path
+SPM_TRAIN=../sentencepiece/build/src/spm_train ## Change this to your spm_train path
 
 if [[ $type == "albert" ]]
 then
