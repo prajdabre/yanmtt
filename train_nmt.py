@@ -117,7 +117,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
         model.attention_dropout = args.attention_dropout ## We should set dropouts manually
         model.activation_dropout = args.activation_dropout ## We should set dropouts manually
     else:
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings) ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
         model = MBartForConditionalGeneration(config)
     model.train()
     
@@ -384,6 +384,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
             input_masks=input_masks[0]
             input_masks_parent = input_masks_parent.to(gpu) ## Move to gpu
         
+        if args.num_domains_for_domain_classifier > 1: ## The label will contain the label as well as the domain indicator
+            domain_classifier_labels=labels[1] ## This is not a tensor yet
+            domain_classifier_labels = torch.tensor(domain_classifier_labels, dtype=torch.int64).to(gpu) ## Move to gpu
+            labels=labels[0]
+            label_mask = labels.eq(tok.pad_token_id).unsqueeze(-1).to(gpu)
         input_ids=input_ids.to(gpu) ## Move to gpu
         input_masks=input_masks.to(gpu) ## Move to gpu
         decoder_input_ids=decoder_input_ids.to(gpu) ## Move to gpu
@@ -398,7 +403,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
 
         if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
             with torch.cuda.amp.autocast():
-                mod_compute = model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, additional_input_ids=input_ids_parent if args.multi_source else None, additional_input_ids_mask=input_masks_parent if args.multi_source else None) ## Run the model and get logits.
+                mod_compute = model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, additional_input_ids=input_ids_parent if args.multi_source else None, additional_input_ids_mask=input_masks_parent if args.multi_source else None, label_mask=label_mask if args.num_domains_for_domain_classifier > 1 else None) ## Run the model and get logits.
                 logits = mod_compute.logits
                 lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
                 loss = label_smoothed_nll_loss(
@@ -412,6 +417,16 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                     if rank == 0:
                         writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
                         writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
+                if args.num_domains_for_domain_classifier > 1: ## We augment the main loss with the domain classifier loss
+                    domain_classifier_logits = mod_compute.domain_classifier_logits
+                    domain_classifier_lprobs = torch.nn.functional.log_softmax(domain_classifier_logits, dim=-1) ## Softmax tempering of logits if needed.
+                    domain_classifier_loss = label_smoothed_nll_loss(
+                        domain_classifier_lprobs.view(-1,args.num_domains_for_domain_classifier), domain_classifier_labels.view(-1,1), args.label_smoothing
+                    ) ## Label smoothed cross entropy loss. We are not going to do any temperature related stuff to this.
+                    loss = domain_classifier_loss*args.domain_classifier_loss_weight + loss * (1.0-args.domain_classifier_loss_weight)
+                    if rank == 0:
+                        writer.add_scalar("domain classifier loss", domain_classifier_loss.detach().cpu().numpy(), ctr)
+                        writer.add_scalar("loss with domain classifier loss", loss.detach().cpu().numpy(), ctr)
                 ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
                 if mod_compute.additional_lm_logits is not None:
                     for additional_logits in mod_compute.additional_lm_logits:
@@ -425,12 +440,18 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                         loss += loss_extra ## Up scale loss in case of non unitary temperatures. TODO: Perhaps log this too.
                 if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
                     assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
+                    logits = logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
+                    if args.temperature_calibration: 
+                        logits = logits*mod_compute.softmax_temperature
                     lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                     entropy = -(torch.exp(lprobs)*lprobs).mean()
                     if rank == 0:
                         writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
                     if mod_compute.additional_lm_logits is not None:
                         for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
+                            additional_logits = additional_logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
+                            if args.temperature_calibration: 
+                                additional_logits = additional_logits*mod_compute.softmax_temperature
                             lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## No tempering here
                             entropy_extra = -(torch.exp(lprobs)*lprobs).mean()
                             entropy += entropy_extra
@@ -444,13 +465,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                     with torch.no_grad(): ## No gradient to avoid memory allocation.
                         parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
                     distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
-                    if rank == 0:
-                        writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                     loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
                     if rank == 0:
+                        writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                         writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
         else:
-            mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, additional_input_ids=input_ids_parent if args.multi_source else None, additional_input_ids_mask=input_masks_parent if args.multi_source else None) ## Run the model and get logits.
+            mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, additional_input_ids=input_ids_parent if args.multi_source else None, additional_input_ids_mask=input_masks_parent if args.multi_source else None, label_mask=label_mask if args.num_domains_for_domain_classifier > 1 else None) ## Run the model and get logits.
             logits = mod_compute.logits
             lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
             loss = label_smoothed_nll_loss(
@@ -464,7 +484,17 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                 if rank == 0:
                     writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
                     writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
-            ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
+            if args.num_domains_for_domain_classifier > 1: ## We augment the main loss with the domain classifier loss
+                domain_classifier_logits = mod_compute.domain_classifier_logits
+                domain_classifier_lprobs = torch.nn.functional.log_softmax(domain_classifier_logits, dim=-1) ## Softmax tempering of logits if needed.
+                domain_classifier_loss = label_smoothed_nll_loss(
+                    domain_classifier_lprobs.view(-1,args.num_domains_for_domain_classifier), domain_classifier_labels.view(-1,1), args.label_smoothing
+                ) ## Label smoothed cross entropy loss. We are not going to do any temperature related stuff to this.
+                loss = domain_classifier_loss*args.domain_classifier_loss_weight + loss * (1.0-args.domain_classifier_loss_weight)
+                if rank == 0:
+                    writer.add_scalar("domain classifier loss", domain_classifier_loss.detach().cpu().numpy(), ctr)
+                    writer.add_scalar("loss with domain classifier loss", loss.detach().cpu().numpy(), ctr)
+            ## We will do multilayer softmaxing without any consideration for distillation or domain classification.
             if mod_compute.additional_lm_logits is not None:
                 for additional_logits in mod_compute.additional_lm_logits:
                     lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## Softmax tempering of logits if needed.
@@ -477,12 +507,18 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                     loss += loss_extra ## Up scale loss in case of non unitary temperatures. TODO: Perhaps log this too.
             if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
                 assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
+                logits = logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
+                if args.temperature_calibration: 
+                    logits = logits*mod_compute.softmax_temperature
                 lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
                 entropy = -(torch.exp(lprobs)*lprobs).mean()
                 if rank == 0:
                     writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
                 if mod_compute.additional_lm_logits is not None:
                     for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
+                        additional_logits = additional_logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
+                        if args.temperature_calibration: 
+                            additional_logits = additional_logits*mod_compute.softmax_temperature
                         lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## No tempering here
                         entropy_extra = -(torch.exp(lprobs)*lprobs).mean()
                         entropy += entropy_extra
@@ -496,10 +532,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                 with torch.no_grad(): ## No gradient to avoid memory allocation.
                     parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
                 distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
-                if rank == 0:
-                    writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                 loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
                 if rank == 0:
+                    writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                     writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
 
         input_ids=input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
@@ -590,8 +625,6 @@ def run_demo():
                         help='Should we scale embeddings?')
     parser.add_argument('--no_scale_attention_embedding', action='store_true', 
                         help='Should we scale attention embeddings?')
-    parser.add_argument('--mnmt', action='store_true', 
-                        help='Are we training MNMT models? If so then the datagen will be slightly tweaked. We will also expect that training and development files will be comma separated when passed as arguments. The slang and tlang markers will also be comma separated and will follow the order of these files.')
     parser.add_argument('--multistep_optimizer_steps', default=1, type=int, help="In case you want to simulate a larger batch you should set this to a higher value.")
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
@@ -675,8 +708,6 @@ def run_demo():
                         help='This multiplied by the source sentence length will be the maximum decoding length. If you want to directly specify a particular value then set this to the negative of that value.')
     parser.add_argument('--min_decode_length_multiplier', default=0.1, type=float, 
                         help='This multiplied by the source sentence length will be the minimum decoding length. If you want to directly specify a particular value then set this to the negative of that value.')
-    parser.add_argument('--train_slang', default='en', type=str, 
-                        help='Source language(s) for training')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
@@ -689,6 +720,8 @@ def run_demo():
                         help='The size of the nbest list when doing stochastic tokenization.')
     parser.add_argument('--tokenization_alpha_or_dropout', type=float, default=0.1, 
                         help='The value of sentence piece regularization amount controlled via alpha or the amount of BPE dropout controlled by dropout.')
+    parser.add_argument('--train_slang', default='en', type=str, 
+                        help='Source language(s) for training. If you want to specify the domain of the language pair then specify it as language-domain (hyphen in the middle) and make sure to set --num_domains_for_domain_classifier to a value > 1. If you want to specify an additional source then you need to do the same thing but note that you can do multi-source domain classification as its just too much.')
     parser.add_argument('--train_tlang', default='hi', type=str, 
                         help='Target language(s) for training')
     parser.add_argument('--train_src', default='', type=str, 
@@ -717,6 +750,12 @@ def run_demo():
                         help='Should we use ROUGE for evaluation?')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
+    parser.add_argument('--num_domains_for_domain_classifier', type=int, default=1, 
+                        help='If we have multiple domains then we should set this to a value higher than one.')
+    parser.add_argument('--gradient_reversal_for_domain_classifier', action='store_true', 
+                        help='Should we do gradient reversal for the domain classifier? If true then all gradients below the softmax layer (meaning linear projection plus softmax activation) for the classifier will be reversed. Essentially, the representations for two domains will be forced to become more similar. This may in turn be used for style transfer.')
+    parser.add_argument('--domain_classifier_loss_weight', type=float, default=0.1, 
+                        help='What weight should we give to the domain classifier? 1 minus this weight will be given to the main loss.')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
     parser.add_argument('--multi_source', action='store_true', 
@@ -771,26 +810,30 @@ def run_demo():
     args.world_size = args.gpus * args.nodes                #
     
     train_files = {}
-    if args.mnmt:
-        slangs = args.train_slang.strip().split(",")
-        tlangs = args.train_tlang.strip().split(",")
-        train_srcs = args.train_src.strip().split(",")
-        train_tgts = args.train_tgt.strip().split(",")
-        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+    slangs = args.train_slang.strip().split(",")
+    tlangs = args.train_tlang.strip().split(",")
+    train_srcs = args.train_src.strip().split(",")
+    train_tgts = args.train_tgt.strip().split(",")
+    if args.num_domains_for_domain_classifier > 1: ## In case we have to do domain classification
+        train_domains = args.train_domains.strip().split(",") ## Should not be empty
+        args.train_domains = {} ## We can index the domain indicator this way
+        domain_idx = 0
+        for train_domain in train_domains:
+            if train_domain not in args.train_domains:
+                args.train_domains[train_domain] = domain_idx
+                domain_idx += 1
+        train_files = {slang+"-"+tlang+"-"+train_domain: (train_src, train_tgt, args.train_domains[train_domain]) for slang, tlang, train_src, train_tgt, train_domain in zip(slangs, tlangs, train_srcs, train_tgts, train_domains)}
     else:
-        train_files = {args.train_slang+"-"+args.train_tlang : (args.train_src, args.train_tgt)}
+        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
     print("Training files are:", train_files)
     
     dev_files = {}
     if not args.no_eval:
-        if args.mnmt:
-            slangs = args.dev_slang.strip().split(",")
-            tlangs = args.dev_tlang.strip().split(",")
-            dev_srcs = args.dev_src.strip().split(",")
-            dev_tgts = args.dev_tgt.strip().split(",")
-            dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
-        else:
-            dev_files = {args.dev_slang+"-"+args.dev_tlang : (args.dev_src, args.dev_tgt)}
+        slangs = args.dev_slang.strip().split(",")
+        tlangs = args.dev_tlang.strip().split(",")
+        dev_srcs = args.dev_src.strip().split(",")
+        dev_tgts = args.dev_tgt.strip().split(",")
+        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
     print("Development files are:", dev_files)
     
     os.environ['MASTER_ADDR'] = args.ipaddr              #

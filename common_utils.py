@@ -293,16 +293,16 @@ def init_weights(module, in_features, out_features):
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
             
-def shard_files_mono(files, world_size):
+def shard_files_mono(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
-    print("Sharding files into", world_size, "parts")
+    print("Sharding files into", args.world_size, "parts")
     for lang in files:
-        infile = open(files[lang]).readlines()
+        infile = open(files[lang][0]).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[lang][0]).readlines()
         num_lines = len(infile)
-        lines_per_shard = math.ceil(num_lines/world_size)
+        lines_per_shard = math.ceil(num_lines/args.world_size)
         print("For language:",lang," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
-        for shard_id in range(world_size):
-            outfile = open(files[lang]+"."+"%02d" % shard_id, "w")
+        for shard_id in range(args.world_size):
+            outfile = open(files[lang][0]+"."+"%02d" % shard_id, "w") if args.num_domains_for_domain_classifier > 1 else open(files[lang]+"."+"%02d" % shard_id, "w")
             for line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
                 outfile.write(line)
             outfile.flush()
@@ -310,15 +310,15 @@ def shard_files_mono(files, world_size):
         print("File for language", lang, "has been sharded.")
         sys.stdout.flush()
 
-def shard_files_bi(files, world_size):
+def shard_files_bi(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
-    print("Sharding files into", world_size, "parts")
+    print("Sharding files into", args.world_size, "parts")
     for pair in files:
         infile = list(zip(open(files[pair][0]).readlines(), open(files[pair][1]).readlines()))
         num_lines = len(infile)
-        lines_per_shard = math.ceil(num_lines/world_size)
+        lines_per_shard = math.ceil(num_lines/args.world_size)
         print("For language pair:",pair," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
-        for shard_id in range(world_size):
+        for shard_id in range(args.world_size):
             srcoutfile = open(files[pair][0]+"."+"%02d" % shard_id, "w")
             tgtoutfile = open(files[pair][1]+"."+"%02d" % shard_id, "w")
             for src_line, tgt_line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
@@ -413,7 +413,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
     language_file_dict = {}
     probs = {}
     for l in language_list:
-        file_content = open(files[l]+"."+"%02d" % rank).readlines()
+        file_content = open(files[l][0]+"."+"%02d" % rank).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[l]+"."+"%02d" % rank).readlines()
         probs[l] = len(file_content)
         language_file_dict[l] = yield_corpus_indefinitely_mono(file_content, l)
     probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
@@ -422,8 +422,6 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
     probs = probs_temp
     probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
     probs = [probs_temp[lang] for lang in language_list]
-    num_langs = len(language_list)
-    language_indices = list(range(num_langs))
     while batch_count != args.num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -437,14 +435,20 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         start = time.time()
         sents_in_batch = 0
         dropped_sentence = "" ## We will save the sentence to be dropped this batch and add it to the next batch.
+        if args.num_domains_for_domain_classifier > 1:
+            domain_classifier_labels = []
         while True:
             if dropped_sentence != "":
                 sentence = dropped_sentence # Reuse the previous sentence
                 dropped_sentence = ""
             else:
-                language_idx = random.choices(language_indices, probs)[0]
-                sentence = next(language_file_dict[language_list[language_idx]]).strip()
-            lang = language_list[language_idx] if args.use_official_pretrained else "<2"+language_list[language_idx]+">"
+                language = random.choices(language_list, probs)[0]
+                sentence = next(language_file_dict[language]).strip()
+            if args.num_domains_for_domain_classifier > 1: ## Careful when handling domains for monolingual corpora.
+                lang = language.strip().split("-")[0]
+                lang = lang if args.use_official_pretrained else "<2"+lang+">"
+            else:
+                lang = language if args.use_official_pretrained else "<2"+language+">"
             if type(mp_val_or_range) is float:
                 mask_percent = mp_val_or_range
             else:
@@ -510,6 +514,8 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     if args.tokenization_sampling:
                         decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
                 sents_in_batch += 1
+                if args.num_domains_for_domain_classifier > 1:
+                    domain_classifier_labels.append(files[language][1])
                 if sents_in_batch == args.batch_size:
                     break
             else:
@@ -528,6 +534,8 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     decoder_label_batch.append(sentence + " </s>")
                     if args.tokenization_sampling:
                         decoder_input_batch[-1] += " </s>" ## In case of stochastic subword segmentation we have to generate the decoder label ids from the decoder input ids. This will make the model behavior sliiiiiightly different from how it was when stochastic decoding is not done. However it should have no major difference. In the non stochastic case, the </s> or EOS token is never fed as the input but in the stochastic case that token is fed as the input. So this means in the non stochastic case, the end of decoder and labels will be something like: "a good person <pad> <pad> <pad>" and "good person </s> <pad <pad> <pad>". In the stochastic case, the end of decoder and labels will be something like: "a good person </s> <pad> <pad>" and "good person </s> <pad> <pad <pad>". Now think about how we compute loss. When the label is a pad, the loss is never propagated through it. So the model will never learn anything when </s> or <pad> will be the input. Furthermore, the generation of </s> is what dictates the end of generation. When the model generates a </s> the sequence is taken out of the computation process and therefore whatever it generates after that will not be considered at all towards its final score. In conclusion, there should be no practical difference in outcomes between the two batching approaches.
+                if args.num_domains_for_domain_classifier > 1:
+                    domain_classifier_labels.append(files[language][1])
                 sents_in_batch += 1
         
         if len(encoder_input_batch) == 0:
@@ -556,7 +564,10 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         end = time.time()
 #         if rank == 0:
 #             print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
-        yield input_ids, input_masks, decoder_input_ids, labels
+        if args.num_domains_for_domain_classifier > 1:
+            yield input_ids, input_masks, decoder_input_ids, [labels, domain_classifier_labels] ## We are going to pass the domain indicator batch along with the labels
+        else:
+            yield input_ids, input_masks, decoder_input_ids, labels
     
 
 def generate_batches_lm(tok, args, files, rank): ## Address compatibilities of the meta tokens when using official models
@@ -779,8 +790,6 @@ def generate_batches_bilingual(tok, args, files, rank):
     probs = probs_temp
     probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
     probs = [probs_temp[lang] for lang in language_list]
-    num_langs = len(language_list)
-    language_indices = list(range(num_langs))
     while batch_count != args.num_batches:
         curr_batch_count = 0
         encoder_input_batch = []
@@ -800,6 +809,8 @@ def generate_batches_bilingual(tok, args, files, rank):
             prev_max_src_sent_len_parent = 0
             encoder_input_batch_parent = []
             dropped_source_sentence_parent = "" ## We will save the source sentence to be dropped this batch and add it to the next batch.
+        if args.num_domains_for_domain_classifier > 1:
+            domain_classifier_labels = []
         while True:
             if dropped_source_sentence != "":
                 src_sent = dropped_source_sentence # Reuse the previous source sentence
@@ -810,15 +821,15 @@ def generate_batches_bilingual(tok, args, files, rank):
                     src_sent_parent = dropped_source_sentence_parent # Reuse the previous source sentence
                     dropped_source_sentence_parent = ""
             else:
-                language_idx = random.choices(language_indices, probs)[0]
-                src_sent, tgt_sent = next(language_file_dict[language_list[language_idx]])
+                language = random.choices(language_list, probs)[0]
+                src_sent, tgt_sent = next(language_file_dict[language])
                 if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
                     src_sent = src_sent.split("\t")
                     src_sent_parent = src_sent[0].strip() ## This is the sentence for Y
                     src_sent = src_sent[1] ## This is the sentence for X
                 src_sent = src_sent.strip()
                 tgt_sent = tgt_sent.strip()
-            slangtlang = language_list[language_idx].strip().split("-")
+            slangtlang = language.strip().split("-")
             if args.cross_distillation or args.multi_source: ## In this case only we provide a hyphen separated triplet to represent languages X, Y and Z.
                 slang_parent = slangtlang[0] if args.use_official_pretrained else "<2"+slangtlang[0]+">"
                 slang = slangtlang[1] if args.use_official_pretrained else "<2"+slangtlang[1]+">"
@@ -928,6 +939,8 @@ def generate_batches_bilingual(tok, args, files, rank):
                         encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
 
                 sents_in_batch += 1
+                if args.num_domains_for_domain_classifier > 1:
+                    domain_classifier_labels.append(files[language][2])
                 if sents_in_batch == args.batch_size:
                     break
             else:
@@ -962,6 +975,8 @@ def generate_batches_bilingual(tok, args, files, rank):
                         encoder_input_batch_parent.append(src_sent_parent + " </s> " + slang_parent)
 
                 sents_in_batch += 1
+                if args.num_domains_for_domain_classifier > 1:
+                    domain_classifier_labels.append(files[language][2])
                 
         if len(encoder_input_batch) == 0:
             print("Zero size batch due to an abnormal example. Skipping empty batch.")
@@ -998,7 +1013,10 @@ def generate_batches_bilingual(tok, args, files, rank):
         else:
             end = time.time()
             #print(input_ids.size(), input_masks.size(), decoder_input_ids.size(), labels.size())
-            yield input_ids, input_masks, decoder_input_ids, labels
+            if args.num_domains_for_domain_classifier > 1:
+                yield input_ids, input_masks, decoder_input_ids, [labels, domain_classifier_labels]
+            else:
+                yield input_ids, input_masks, decoder_input_ids, labels
 
             
 def generate_batches_pair(tok, args):
