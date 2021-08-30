@@ -72,7 +72,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
-        shard_files_bi(train_files, args.world_size)
+        shard_files_bi(train_files, args)
     
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
