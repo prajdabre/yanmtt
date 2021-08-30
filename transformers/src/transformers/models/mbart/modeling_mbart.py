@@ -1604,7 +1604,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             self.register_parameter("softmax_temperature", torch.ones(1))
             print("Initial temperature is: ", self.softmax_temperature)
             
-        if config.num_domains_for_domain_classifier != -1:
+        if config.num_domains_for_domain_classifier > 1:
+            print("Domain classifier will be used.")
             self.domain_classifer_head = nn.Linear(config.d_model, config.num_domains_for_domain_classifier, bias=False)
             if config.gradient_reversal_for_domain_classifier:
                 self.gradient_reversal_layer = GradientReversal()
@@ -1759,11 +1760,13 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 if self.config.temperature_calibration:
                     additional_lm_logits = additional_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
         
-        if self.config.num_domains_for_domain_classifier != -1: ## Pool the output layer representations by taking a mean and then generate logits for them.
+        if self.config.num_domains_for_domain_classifier > 1: ## Pool the output layer representations by taking a mean and then generate logits for them.
+#             print(outputs[0].size(), label_mask.size())
             dom_pooled_outputs = outputs[0].masked_fill(label_mask, 0.0).mean(dim=1)
-            domain_classifier_logits = self.domain_classifer_head(dom_pooled_outputs)
             if self.config.gradient_reversal_for_domain_classifier: ## If we want to do gradient reversal then thats going ot be done here.
-                domain_classifier_logits = self.gradient_reversal_layer(domain_classifier_logits) 
+                dom_pooled_outputs = self.gradient_reversal_layer(dom_pooled_outputs) 
+            domain_classifier_logits = self.domain_classifer_head(dom_pooled_outputs)
+            
             
         masked_lm_loss = None
         if labels is not None:
@@ -1793,7 +1796,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             additional_source_lm_logits=additional_source_lm_logits if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
             context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None,
             softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
-            domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier != -1 else None,
+            domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier > 1 else None,
         )
 
     def prepare_inputs_for_generation(
