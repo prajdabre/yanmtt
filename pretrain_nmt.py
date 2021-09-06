@@ -234,9 +234,9 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
                 torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
                 if ctr % args.no_eval_save_every == 0: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
-                    torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
-                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
-
+                    if args.save_intermediate_checkpoints:
+                        torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
+                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
@@ -491,6 +491,8 @@ def run_demo():
                         help='IP address of the main node')
     parser.add_argument('-m', '--model_path', default='ddpdefault', type=str, 
                         help='Name of the model')
+    parser.add_argument('--save_intermediate_checkpoints', action='store_true', 
+                        help='Use this flag if you want intermediate checkpoints to be saved. If so then numbers will be attached to the checkpoints.')
     parser.add_argument('--use_official_pretrained', action='store_true', 
                         help='Use this flag if you want the argument "pretrained_model" to specify a pretrained model created by someone else.')
     parser.add_argument('--pretrained_model', default='', type=str, 

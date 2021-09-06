@@ -312,9 +312,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                             max_individual_sbleu[dev_pair] = sbleu
                             max_individual_sbleu_step[dev_pair] = curr_eval_step
                             print("New peak reached for", dev_pair,". Saving.")
-                            torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr))
-                            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
-
+                            if args.save_intermediate_checkpoints:
+                                torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr))
+                                torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                            else:
+                                torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair)
+                                torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+".pure_model") ## Pure model without any ddp markers or optimizer info.
                     ## Global stats
                     sbleu = sum(sbleus.values())/len(sbleus) ## The global score.
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
@@ -324,8 +327,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                         max_global_sbleu = sbleu
                         max_global_sbleu_step = curr_eval_step
                         print("New peak reached. Saving.")
-                        torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr))
-                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                        if args.save_intermediate_checkpoints:
+                            torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr))
+                            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu.global."+str(ctr)+".pure_model") ## Pure model without any ddp markers or optimizer info.
+                        else:
+                            torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu.global")
+                            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu.global.pure_model") ## Pure model without any ddp markers or optimizer info.
                     if curr_eval_step - max_global_sbleu_step > (args.early_stop_checkpoints + annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step): ## If the global scores have not improved for more than early_stop_checkpoints + some additional checkpoints to wait for till annealing is done then we stop training.
                         if annealing_attempt < args.max_annealing_attempts: ## We will only downscale the LR a fixed number of times. Each time we downscale the number of checkpoints to wait for declaring convergence will increase by a fixed value.
                             annealing_attempt += 1
@@ -349,8 +356,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                     if ctr % args.no_eval_save_every == 0:
                         print("No evaluation based early stopping so saving every", args.no_eval_save_every, "checkpoints.")
                         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-                        torch.save(checkpoint_dict, CHECKPOINT_PATH+"."+str(ctr))
-                        torch.save(model.state_dict(), CHECKPOINT_PATH+"."+str(ctr)+".pure_model")
+                        if args.save_intermediate_checkpoints:
+                            torch.save(checkpoint_dict, CHECKPOINT_PATH+"."+str(ctr))
+                            torch.save(model.state_dict(), CHECKPOINT_PATH+"."+str(ctr)+".pure_model")
+                        else:
+                            torch.save(checkpoint_dict, CHECKPOINT_PATH)
+                            torch.save(model.state_dict(), CHECKPOINT_PATH+".pure_model")
                 print("Saving the model")
                 sys.stdout.flush()
                 # All processes should see same parameters as they all start from same
@@ -680,6 +691,8 @@ def run_demo():
                         help='Should we reload the optimizer, counter and secheduler? By default we always reload these. Set this to False if we only want to reload the model params and optimize from scratch.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
                         help='Path to save the fine tuned model')
+    parser.add_argument('--save_intermediate_checkpoints', action='store_true', 
+                        help='Use this flag if you want intermediate best checkpoints to be saved. If so then numbers will be attached to the checkpoints.')
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
     parser.add_argument('--batch_size', default=2048, type=int, 
