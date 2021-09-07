@@ -297,7 +297,7 @@ def shard_files_mono(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
     for lang in files:
-        infile = open(files[lang][0]).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[lang][0]).readlines()
+        infile = open(files[lang][0]).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[lang]).readlines()
         num_lines = len(infile)
         lines_per_shard = math.ceil(num_lines/args.world_size)
         print("For language:",lang," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
