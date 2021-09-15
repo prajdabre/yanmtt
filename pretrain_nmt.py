@@ -109,7 +109,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model:
-            config = MBartConfig.from_pretained(args.pretrained_model)
+            config = MBartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
@@ -117,7 +117,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
         elif "bart" in args.pretrained_model:
-            config = BartConfig.from_pretained(args.pretrained_model)
+            config = BartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
@@ -136,7 +136,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
             if "mbart" in args.parent_pretrained_model:
-                parent_config = MBartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
@@ -144,7 +144,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
-                parent_config = BartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config = BartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually

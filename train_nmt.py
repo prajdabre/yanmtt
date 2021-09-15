@@ -111,16 +111,20 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model:
-            config = MBartConfig.from_pretained(args.pretrained_model)
+            config = MBartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
+            config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
         elif "bart" in args.pretrained_model:
-            config = BartConfig.from_pretained(args.pretrained_model)
+            config = BartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
+            config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
             model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
     else:
         config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
@@ -131,16 +135,20 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
             if "mbart" in args.parent_pretrained_model:
-                parent_config = MBartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
+                parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
-                parent_config = BartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config = BartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
+                parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
         else:
             parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings)
