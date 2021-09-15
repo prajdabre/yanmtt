@@ -134,7 +134,7 @@ class MBartConfig(PretrainedConfig):
         encoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
         features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         features_embed_dims=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
-        multilayer_softmaxing=False, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
+        multilayer_softmaxing=None, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper. You have to specify the indices of the intermediate layers which you want to softmax. These go from 0 for the embedding layer to L-2 for the penultimate layer. 
         wait_k=-1, ## Argument to control whether we will be doing SNMT or not.
         unidirectional_encoder=False, ## Argument to indicate whether we will train a unidirectional encoder or not.
         multi_source=False, ## Argument to control whether we do multi source or not.

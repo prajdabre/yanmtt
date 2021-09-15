@@ -877,9 +877,9 @@ class MBartEncoder(MBartPreTrainedModel):
         ## Modified by Raj Dabre. Start.
         if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
-            unique_idxs = set(layer_idxs)
-            unique_layers = {idx: MBartEncoderLayer(config) for idx in unique_idxs}
-            self.layers = nn.ModuleList([unique_layers[idx] for idx in layer_idxs])
+            unique_idxs = sorted(set(layer_idxs))
+            self.unique_layers = nn.ModuleList([MBartEncoderLayer(config) for idx in unique_idxs])
+            self.layers = [self.unique_layers[int(idx)-1] for idx in layer_idxs]
         else:
             self.layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.encoder_layers)])
         if config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only": ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
@@ -1081,9 +1081,9 @@ class MBartDecoder(MBartPreTrainedModel):
         ## Modified by Raj Dabre. Start.
         if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")
-            unique_idxs = set(layer_idxs)
-            unique_layers = {idx: MBartDecoderLayer(config) for idx in unique_idxs}
-            self.layers = nn.ModuleList([unique_layers[idx] for idx in layer_idxs])
+            unique_idxs = sorted(set(layer_idxs))
+            self.unique_layers = nn.ModuleList([MBartDecoderLayer(config) for idx in unique_idxs])
+            self.layers = [self.unique_layers[int(idx)-1] for idx in layer_idxs]
         else:
             self.layers = nn.ModuleList([MBartDecoderLayer(config) for _ in range(config.decoder_layers)])
         ## Modified by Raj Dabre. End.
@@ -1388,6 +1388,9 @@ class MBartModel(MBartPreTrainedModel):
             self.context_attention = MBartDecoderLayer(config)
         ## Modified by Raj Dabre. End.
         
+        if config.multilayer_softmaxing is not None:
+            config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
+        
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -1522,7 +1525,7 @@ class MBartModel(MBartPreTrainedModel):
             inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
+            output_hidden_states=output_hidden_states or self.config.multilayer_softmaxing is not None, ## In case of multilayer softmaxing we need the hidden states ONLY FROM THE DECODER.
             return_dict=return_dict,
             additional_encoder_hidden_states=additional_encoder_outputs[0],
             additional_encoder_attention_mask=additional_input_ids_mask,
@@ -1754,11 +1757,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 lm_logits = lm_logits/self.softmax_temperature
         
         additional_lm_logits = []
-        if self.config.multilayer_softmaxing:
-            for lm_representation in outputs.decoder_hidden_states[1:-1]: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
+        if self.config.multilayer_softmaxing is not None:
+            for layer_id in self.config.multilayer_softmaxing: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
+                lm_representation = outputs.decoder_hidden_states[layer_id]
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
                 if self.config.temperature_calibration:
-                    additional_lm_logits = additional_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
+                    additional_lm_logits[-1] = additional_lm_logits[-1]/self.softmax_temperature ## The softmax_temperature config param should be 1.0
         
         if self.config.num_domains_for_domain_classifier > 1: ## Pool the output layer representations by taking a mean and then generate logits for them.
 #             print(outputs[0].size(), label_mask.size())

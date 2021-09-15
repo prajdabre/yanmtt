@@ -50,6 +50,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 ## Our imports
 from common_utils import *
+from prefetch_generator import BackgroundGenerator
 ##
 
 ## Other imports
@@ -77,8 +78,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
-        if "mbart" in args.model_path:
-            if "50" in args.model_path:
+        if "mbart" in args.pretrained_model:
+            if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
             else:
                 tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path)
@@ -108,14 +109,23 @@ def model_create_load_run_save(gpu, args, files, train_files):
     
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model:
-            model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model) ## We may use FBs official model and fine-tune it for our purposes.
+            config = MBartConfig.from_pretained(args.pretrained_model)
+            config.dropout = args.dropout ## We should set dropouts manually
+            config.attention_dropout = args.attention_dropout ## We should set dropouts manually
+            config.activation_dropout = args.activation_dropout ## We should set dropouts manually
+            config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
         elif "bart" in args.pretrained_model:
-            model = BartForConditionalGeneration.from_pretrained(args.pretrained_model) ## We may use FBs official model and fine-tune it for our purposes.
-        model.config.dropout = args.dropout ## We should set dropouts manually
-        model.attention_dropout = args.attention_dropout ## We should set dropouts manually
-        model.activation_dropout = args.activation_dropout ## We should set dropouts manually
+            config = BartConfig.from_pretained(args.pretrained_model)
+            config.dropout = args.dropout ## We should set dropouts manually
+            config.attention_dropout = args.attention_dropout ## We should set dropouts manually
+            config.activation_dropout = args.activation_dropout ## We should set dropouts manually
+            config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
     else:
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
         model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
 
@@ -126,14 +136,23 @@ def model_create_load_run_save(gpu, args, files, train_files):
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
             if "mbart" in args.parent_pretrained_model:
-                parent_model = MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_config = MBartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config.dropout = args.parent_dropout ## We should set dropouts manually
+                parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
+                parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
+                parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_model = MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
-                parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model) ## We may use FBs official model and fine-tune it for our purposes.
-            parent_model.config.dropout = args.dropout ## We should set dropouts manually
-            parent_model.attention_dropout = args.attention_dropout ## We should set dropouts manually
-            parent_model.activation_dropout = args.activation_dropout ## We should set dropouts manually
+                parent_config = BartConfig.from_pretained(args.parent_pretrained_model)
+                parent_config.dropout = args.parent_dropout ## We should set dropouts manually
+                parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
+                parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
+                parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
+                parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
         else:
-            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings)
+            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings)
             parent_model = MBartForConditionalGeneration(config)
         parent_model.cuda(gpu)
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
@@ -193,7 +212,10 @@ def model_create_load_run_save(gpu, args, files, train_files):
             model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
             ctr = 0
     else:
-        print("Training from scratch")
+        if args.use_official_pretrained:
+            print("Training from official pretrained model")
+        else:
+            print("Training from scratch")
         CHECKPOINT_PATH = args.model_path
         if rank == 0:
             checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
@@ -429,7 +451,9 @@ def model_create_load_run_save(gpu, args, files, train_files):
         input_masks=input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         decoder_input_ids=decoder_input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
         labels=labels.to('cpu') ## Move to CPU. May not be needed but its a safety net.
-        
+        if args.num_domains_for_domain_classifier > 1:
+            domain_classifier_labels = domain_classifier_labels.to('cpu')
+            label_mask = label_mask.to('cpu')
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation.
             loss = loss/args.multistep_optimizer_steps
             scaler.scale(loss).backward()
@@ -601,8 +625,8 @@ def run_demo():
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
-    parser.add_argument('--multilayer_softmaxing', action='store_true', 
-                        help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
+    parser.add_argument('--multilayer_softmaxing', default=None, 
+                        help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training. You have to specify a comma separated list of indices of the intermediate layers which you want to softmax. These go from 0 for the embedding layer to L-2 for the penultimate layer.')
     parser.add_argument('--remap_encoder', default='', type=str, 
                         help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. IMPORTANT NOTE: Ensure that you specify ALL child layer indices you wish mapped. For example if you want 1-2,2-1,3-3 you MUST NOT skip the 3-3 part else it will be deleted from the model dictionary and will be randomly initialized. The loading mechanism is not strict so it will ignore missing or non matching keys. ADDITIONAL NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     parser.add_argument('--remap_decoder', default='', type=str, 
