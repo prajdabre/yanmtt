@@ -107,7 +107,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
-    writer = SummaryWriter(args.model_path+".tflogs")
+    if rank == 0:
+        writer = SummaryWriter(args.model_path+".tflogs")
     
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model:

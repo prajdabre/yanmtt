@@ -105,7 +105,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
-    writer = SummaryWriter(args.model_path+".tflogs")
+    if rank == 0:
+        writer = SummaryWriter(args.model_path+".tflogs")
     
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model:
@@ -244,7 +245,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         start = time.time()
         optimizer.zero_grad() ## Empty the gradients before any computation.
         
-        if ctr % args.eval_every == 0: ## We have to evaluate our model every eval_every steps. Since there is no evaluation data this means our model is saved every eval_every steps.
+        if ctr % args.eval_every == 0 and num_batches_this_optimizer_step == 0: ## We have to evaluate our model every eval_every steps. Since there is no evaluation data this means our model is saved every eval_every steps.
             CHECKPOINT_PATH = args.model_path
             if rank == 0:
                 print("Saving the model")
@@ -257,6 +258,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
                 if ctr % args.no_eval_save_every == 0: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
                     if args.save_intermediate_checkpoints:
+                        print("Saving an intermediate checkpoint")
                         torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
                         torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
             # Use a barrier() to make sure that process 1 loads the model after process
@@ -417,7 +419,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         loss_extra = loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
                         if args.temperature_calibration: 
                             loss_extra = loss_extra*mod_compute.softmax_temperature
-                        loss += loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
+                        loss += loss_extra ## Up scale loss in case of non unitary temperatures. TODO: Perhaps log this too.
                 if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
                     assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
                     logits = logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
