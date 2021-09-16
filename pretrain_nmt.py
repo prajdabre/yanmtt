@@ -456,16 +456,15 @@ def model_create_load_run_save(gpu, args, files, train_files):
         if args.num_domains_for_domain_classifier > 1:
             domain_classifier_labels = domain_classifier_labels.to('cpu')
             label_mask = label_mask.to('cpu')
-        if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation.
+        
+        ## Optimization part of the model from this point forward.
+        if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation. ## With FP16/AMP computation we need to unscale gradients before clipping them. We then optimize and update the scaler.
             loss = loss/args.multistep_optimizer_steps
             scaler.scale(loss).backward()
             num_batches_this_optimizer_step += 1
             losses += loss
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
-        else:
-            pass
-        if args.fp16: ## With FP16/AMP computation we need to unscale gradients before clipping them. We then optimize and update the scaler.
             if args.max_gradient_clip_value != 0.0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
