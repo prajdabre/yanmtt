@@ -71,6 +71,7 @@ torch==1.7.1
 tqdm==4.57.0
 typing-extensions==3.7.4.3
 urllib3==1.26.3
+web.py==0.61
 Werkzeug==1.0.1
 wrapt==1.12.1
 zipp==3.4.0
