@@ -124,7 +124,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-            model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
+            model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
     else:
         config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
         model = MBartForConditionalGeneration(config)
@@ -151,7 +151,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-                parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
         else:
             parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings)
             parent_model = MBartForConditionalGeneration(config)
@@ -241,7 +241,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     num_batches_this_optimizer_step = 0
     losses = 0
     
-    for input_ids, input_masks, decoder_input_ids, labels in generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files, ctr): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked. Since this is pretraining we do not do any evaluations even if we train on parallel corpora.
+    for (input_ids, input_masks, decoder_input_ids, labels), is_bilingual in generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked. Since this is pretraining we do not do any evaluations even if we train on parallel corpora.
         start = time.time()
         optimizer.zero_grad() ## Empty the gradients before any computation.
         
@@ -290,7 +290,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         
         if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
             with torch.cuda.amp.autocast():
-                if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0 and args.unify_encoder:
+                if is_bilingual and args.unify_encoder:
                     source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
                     decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
                     target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -369,7 +369,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                             writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                             writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
         else:
-            if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0 and args.unify_encoder:
+            if is_bilingual and args.unify_encoder:
                 source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
                 decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
                 target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -544,8 +544,8 @@ def run_demo():
                             help='Source language training sentences')
     parser.add_argument('--train_tgt', default='', type=str, 
                             help='Target language training sentences')
-    parser.add_argument('--bilingual_train_frequency', default=-1, type=int, 
-                        help='If this is -1 then we assume no bilingual corpora. If this is set to a value say 5 then every 5th batch will be a bilingual batch and all others will be monolingual batches.')
+    parser.add_argument('--bilingual_train_frequency', default=0.0, type=float, 
+                        help='If this is 0 then we assume no bilingual corpora. If this is set to a value say 0.8 then bilingual data is sampled for 4 out of every 5 batches.')
     parser.add_argument('--unify_encoder', action='store_true', 
                         help='Should we minimize the encoder representation distances instead of regular cross entropy minimization on the parallel corpus?')
     parser.add_argument('--mono_src', default='', type=str, 
@@ -671,6 +671,10 @@ def run_demo():
                         help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
     parser.add_argument('--cross_distillation', action='store_true', 
                         help='Should we perform cross distillation from a parent model which has been trained on another source language but the same target language? If so then you must specify the model using "parent_pretrained_model". Additionally you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence" There are several distillation options check the flag called "distillation_styles".')
+    parser.add_argument('--source_masking_for_bilingual', action='store_true', 
+                        help='Should we use masking on source sentences when training on parallel corpora?')
+    parser.add_argument('--is_summarization', action='store_true', 
+                        help='Should we use masking on source sentences when training on parallel corpora?')
     ###
     args = parser.parse_args()
     assert len(args.token_masking_probs_range) <= 2
@@ -696,7 +700,7 @@ def run_demo():
     
     
     train_files = {}
-    if args.bilingual_train_frequency != -1:
+    if args.bilingual_train_frequency != 0.0:
         slangs = args.train_slang.strip().split(",")
         tlangs = args.train_tlang.strip().split(",")
         train_srcs = args.train_src.strip().split(",")

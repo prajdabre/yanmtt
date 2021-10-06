@@ -1,0 +1,26 @@
+$def with (form, translation)
+<html>
+<head>
+<title>YANMTT</title>
+</head>
+<body>
+<h1 style="text-align:center">YANMTT</h1>
+<table>
+    <tr>
+        <td style="vertical-align:top; align:left">
+        <form id="yanmtt" name="main" method="post"> 
+        $:form.render()
+        <button id="sub" type="submit" />  Generate </button>  </form>
+        </td>
+        <td>
+            &nbsp;
+        </td>
+        <td style="vertical-align:top; align:left">
+            <div>
+                translation: $:translation
+            </div>
+        </td>
+    </tr>
+</table>
+</body>
+</html>

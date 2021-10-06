@@ -102,7 +102,7 @@ def model_create_load_decode(gpu, args):
         if "mbart" in args.model_path:
             model = MBartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
         elif "bart" in args.model_path:
-            model = BartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+            model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
     else:
         config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings) ## Configuration.
         model = MBartForConditionalGeneration(config)
@@ -118,7 +118,7 @@ def model_create_load_decode(gpu, args):
     else:
         if args.use_official_pretrained and args.locally_fine_tuned_model_path is not None: ## If we want to decode a locally fine-tuned version of an official model.
             args.model_path = args.locally_fine_tuned_model_path
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
@@ -143,9 +143,12 @@ def model_create_load_decode(gpu, args):
             with torch.no_grad():
                 translations = model.module.generate(input_ids.to(gpu), use_cache=True, num_beams=args.beam_size, max_length=int((len(input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=input_masks.to(gpu), pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([args.tlang if args.use_official_pretrained else "<2"+args.tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, num_return_sequences=args.beam_size if args.return_all_sequences else 1, additional_input_ids=input_ids_parent.to(gpu) if args.multi_source else None, additional_input_ids_mask=input_masks_parent.to(gpu) if args.multi_source else None) ## We translate the batch.
             print(len(input_ids), "in and", len(translations), "out")
+            if args.return_all_sequences:
+                input_ids = input_ids.repeat(args.beam_size,1)
             for input_id, translation in zip(input_ids, translations):
                 translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) 
                 input_id  = tok.decode(input_id, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
+#                 print(input_id, " ### ", translation)
                 outf.write(translation+"\n")
                 outf.flush()
                 hyp.append(translation)
@@ -425,8 +428,8 @@ def run_demo():
                         help='Should we return all beam sequences?')
     parser.add_argument('--no_skip_special_tokens', action='store_false', 
                         help='Should we return outputs without special tokens? We may need this to deal with situations where the user specified control tokens must be in the output.')
-    parser.add_argument('--multilayer_softmaxing', action='store_true', 
-                        help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training.')
+    parser.add_argument('--multilayer_softmaxing', default=None, 
+                        help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training. You have to specify a comma separated list of the intermediate layers which you want to softmax. These go from 0 for the embedding layer to L-2 for the penultimate layer.')
     parser.add_argument('--remap_encoder', default='', type=str, 
                         help='This indicates the remappings for the layer. Example: 1-2,2-4,3-6. The plan is to use these remappings to cut down the model prior to decoding or training. Suppose we have a 6 layer model but we only want to utilize the 2nd, 4th and 6th layer then we will copy the content of the 2nd, 4th and 6th layers to the 1st, 2nd and 3rd layer and delete the former layers from the parameter dictionary. This counts as layer pruning. IMPORTANT NOTE: Ensure that you specify ALL child layer indices you wish mapped. For example if you want 1-2,2-1,3-3 you MUST NOT skip the 3-3 part else it will be deleted from the model dictionary and will be randomly initialized. The loading mechanism is not strict so it will ignore missing or non matching keys. ADDITIONAL NOTE: Load a checkpoint with only the model and not the optimizer to prevent failure as we are not sure if remapping optimizers and learning rate schedulers make sense or not.')
     parser.add_argument('--remap_decoder', default='', type=str, 

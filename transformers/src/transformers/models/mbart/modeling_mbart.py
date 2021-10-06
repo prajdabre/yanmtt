@@ -863,12 +863,14 @@ class MBartEncoder(MBartPreTrainedModel):
         ## Modified by Raj Dabre. End.
         
         if config.positional_encodings:
+            print("Using positional encodings")
             self.embed_positions = MBartSinusoidalPositionalEmbedding(
                 config.max_position_embeddings,
                 embed_dim,
                 self.padding_idx,
             )
         else:
+            print("Using positional embeddings")
             self.embed_positions = MBartLearnedPositionalEmbedding(
                 config.max_position_embeddings,
                 embed_dim,
@@ -1388,9 +1390,6 @@ class MBartModel(MBartPreTrainedModel):
             self.context_attention = MBartDecoderLayer(config)
         ## Modified by Raj Dabre. End.
         
-        if config.multilayer_softmaxing is not None:
-            config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
-        
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -1599,6 +1598,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         self.model = MBartModel(config)
         self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
         self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+        
+        if config.multilayer_softmaxing is not None:
+            config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
         
         self.init_weights()
         if config.temperature_calibration:

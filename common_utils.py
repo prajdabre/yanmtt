@@ -310,6 +310,23 @@ def shard_files_mono(files, args):
         print("File for language", lang, "has been sharded.")
         sys.stdout.flush()
 
+def shard_files_mono_lm(files, args):
+    """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
+    print("Sharding files into", args.world_size, "parts")
+    for lang in files:
+        infile = open(files[lang]).readlines()
+        num_lines = len(infile)
+        lines_per_shard = math.ceil(num_lines/args.world_size)
+        print("For language:",lang," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
+        for shard_id in range(args.world_size):
+            outfile = open(files[lang]+"."+"%02d" % shard_id, "w")
+            for line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
+                outfile.write(line)
+            outfile.flush()
+            outfile.close()
+        print("File for language", lang, "has been sharded.")
+        sys.stdout.flush()
+        
 def shard_files_bi(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
@@ -570,7 +587,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
             yield input_ids, input_masks, decoder_input_ids, labels
     
 
-def generate_batches_lm(tok, args, files, rank): ## Address compatibilities of the meta tokens when using official models
+def generate_batches_lm(tok, args, rank, files): ## Address compatibilities of the meta tokens when using official models
     """Generates the source, target and source attention masks for denoising. Long sequences are truncated and short sequences are ignored."""
     
     batch_count = 0
@@ -590,50 +607,61 @@ def generate_batches_lm(tok, args, files, rank): ## Address compatibilities of t
     probs = [probs_temp[lang] for lang in language_list]
     num_langs = len(language_list)
     language_indices = list(range(num_langs))
+    has_rem=False
     while batch_count != args.num_batches:
         curr_batch_count = 0
         input_batch = []
-        label_batch = []
         batch_count += 1
         max_sent_len = 0
         prev_max_sent_len = 0
         start = time.time()
         sents_in_batch = 0
         while True:
-            language_idx = random.choices(language_indices, probs)[0]
-            sentence = next(language_file_dict[language_list[language_idx]]).strip()
-            lang = "<2"+language_list[language_idx]+">"
-            sentence_split = sentence.split(" ")
-            sent_len = len(sentence_split)
-            if sent_len < 1: 
-                continue
-            if sent_len > args.max_length: ## Initial truncation
-                sentence_split = sentence_split[:args.max_length]
-                sentence = " ".join(sentence_split)
-                sent_len = args.max_length
-            iids = tok(lang + " " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
-            curr_sent_len = len(iids[0])
-            if curr_sent_len > max_sent_len:
-                prev_max_sent_len = max_sent_len
-                max_sent_len = curr_sent_len
+            if not has_rem:
+                language_idx = random.choices(language_indices, probs)[0]
+                sentence = next(language_file_dict[language_list[language_idx]]).strip()
+                lang = "<2"+language_list[language_idx]+">"
+                sentence_split = sentence.split(" ")
+                sent_len = len(sentence_split)
+                if sent_len < 1: 
+                    continue
+            if args.train_with_meta and not has_rem and random.random() <= 0.2: ## Use the first part of the document only 20% of the time.
+                randidx = 0
+                sentence_split_curr = sentence_split[randidx:randidx+args.max_length]
+                sentence_curr=" ".join(sentence_split)
+
+                if args.use_official_pretrained:
+                    input_batch.append(sentence_curr)
+                else:
+                    input_batch.append(lang + " " + sentence_curr)
+
+                sents_in_batch += 1
+                if sents_in_batch == args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                    has_rem=True
+                    break
+                    
+            has_rem=False
+            randidx = random.randint(0,max(sent_len-args.max_length,0))
+            sentence_split = sentence_split[randidx:randidx+args.max_length]
+            sentence=" ".join(sentence_split)
             
-            potential_batch_count = max_sent_len*(sents_in_batch+1)
-            if potential_batch_count > args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
-                max_sent_len = prev_max_sent_len
-                break
-            input_batch.append(lang + " " + sentence)
-            label_batch.append(sentence + " </s>")
+            if args.use_official_pretrained:
+                input_batch.append(sentence)
+            else:
+                input_batch.append(lang + " " + sentence)
+
             sents_in_batch += 1
+            if sents_in_batch == args.batch_size: ## We will drop this sentence for now. It may be used in a future iteration.
+                break
         
-        if len(encoder_input_batch) == 0:
-            print("Zero size batch due to an abnormal example. Skipping empty batch.")
-            continue
-        input_ids = tok(input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_sent_len).input_ids
+        if args.use_official_pretrained:
+            input_ids = tok(input_batch, return_tensors="pt", padding=True).input_ids
+        else:
+            input_ids = tok(input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
         if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             input_ids = input_ids[:,:args.hard_truncate_length]
-        labels = tok(label_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:args.hard_truncate_length]
+        labels = input_ids[:,1:]
+        input_ids = input_ids[:,:-1]
         end = time.time()
         yield input_ids, labels
     
@@ -1283,48 +1311,21 @@ def generate_batches_for_decoding_lm(tok, args):
     """Generates the source sentences for the test set."""
     src_file = open(args.test_src)
     lang = args.lang
-    curr_batch_count = 0
-    input_batch = []
-    max_sent_len = 0
-    lang = slang if args.use_official_pretrained else "<2"+slang+">"
+    lang = lang if args.use_official_pretrained else "<2"+lang+">"
     
     for line in src_file:
         start = time.time()
         sent = line.strip()
-        sent_split = sent.split(" ")
-        sent_len = len(sent_split)
-        if sent_len > args.max_length: ## Initial truncation
-            sent_split = sent_split[:args.max_length]
-            sent = " ".join(sent_split)
-            sent_len = args.max_length
         
-        iids = tok(lang + " " + src_sent, add_special_tokens=False, return_tensors="pt").input_ids
-        curr_sent_len = len(iids[0])
+        if args.use_official_pretrained:
+            input_ids = tok([sent], return_tensors="pt", padding=True).input_ids
+        else:
+            input_ids = tok([lang + " " + sent], add_special_tokens=False, return_tensors="pt", padding=True).input_ids
 
-        if curr_sent_len > max_sent_len:
-            max_sent_len = curr_sent_len
-
-        input_batch.append(lang + " " + src_sent)
+        end = time.time()
         
-        curr_batch_count += 1
-        if curr_batch_count == args.batch_size:
-            input_ids = tok(input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_sent_len).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
-            end = time.time()
-            
-            yield input_ids, input_masks
-            
-            curr_batch_count = 0
-            input_batch = []
-            max_sent_len = 0
-            
-    if len(input_batch) != 0:
-        input_ids = tok(input_batch, add_special_tokens=False, return_tensors="pt", padding=True, max_length=max_sent_len).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
-        yield input_ids, input_masks
-
+        yield input_ids
+        
 
 def plot_attention(data, X_label=None, Y_label=None, num_layers=None, num_heads=None, file_name=None, plot_title=None):
     '''
@@ -1369,9 +1370,12 @@ def plot_attention(data, X_label=None, Y_label=None, num_layers=None, num_heads=
     plt.close(fig)  # close the figure
 
 
-def generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files, ctr):
+def generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files):
     """This will return masked monolingual or bilingual batches according to a fixed ratio."""
-    if args.bilingual_train_frequency != -1 and ctr % args.bilingual_train_frequency == 0:
-        return generate_batches_bilingual(tok, args, train_files, rank)
-    else:
-        return generate_batches_monolingual_masked(tok, args, files, rank)
+    bilingual_generator = generate_batches_bilingual(tok, args, train_files, rank)
+    monolingual_generator = generate_batches_monolingual_masked(tok, args, files, rank)
+    while True:
+        if args.bilingual_train_frequency != 0.0 and random.random() <= args.bilingual_train_frequency:
+            yield next(bilingual_generator), True
+        else:
+            yield next(monolingual_generator), False
