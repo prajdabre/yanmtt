@@ -119,6 +119,42 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
 
     return inverted_mask.masked_fill(inverted_mask.bool(), -1e10) # torch.finfo(dtype).min
 
+def cast_tuple(el):
+    return el if isinstance(el, tuple) else (el,)
+
+class GELU_(nn.Module):
+    def forward(self, x):
+        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+
+class Experts(nn.Module):
+    def __init__(self,
+        dim,
+        num_experts = 8,
+        hidden_dim = 128,
+        activation = ACT2FN['gelu'],
+        activation_dropout = 0.0,
+        std = 0.2):
+        super().__init__()
+
+        num_experts = cast_tuple(num_experts)
+
+        w1 = torch.zeros(*num_experts, dim, hidden_dim)
+        w2 = torch.zeros(*num_experts, hidden_dim, dim)
+
+        w1.normal_(mean=0.0, std=std)
+        w2.normal_(mean=0.0, std=std)
+
+        self.w1 = nn.Parameter(w1)
+        self.w2 = nn.Parameter(w2)
+        self.act = activation
+        self.act_drop = activation_dropout
+
+    def forward(self, x):
+        hidden = torch.einsum('...nd,...dh->...nh', x, self.w1)
+        hidden = F.dropout(self.act(hidden), p=self.act_drop, training=self.training)
+        out    = torch.einsum('...nh,...hd->...nd', hidden, self.w2)
+        return out
+
 
 class MBartSinusoidalPositionalEmbedding(nn.Embedding):
     """This module produces sinusoidal positional embeddings of any length."""
@@ -430,6 +466,12 @@ class MBartEncoderLayer(nn.Module):
         self.activation_dropout = config.activation_dropout
         if config.use_moe:
             print("Using Mixtures of Experts")
+            experts = Experts(dim = self.embed_dim,
+                              num_experts = config.num_experts,
+                              hidden_dim = config.expert_ffn_size,
+                              activation = ACT2FN[config.activation_function],
+                              activation_dropout = self.activation_dropout,
+                              std = config.init_std)
             self.moe = MoE(
                         dim = self.embed_dim,
                         num_experts = config.num_experts,
@@ -440,7 +482,8 @@ class MBartEncoderLayer(nn.Module):
                         second_threshold_eval = 0.2,
                         capacity_factor_train = 1.25,
                         capacity_factor_eval = 2.,
-                        loss_coef = 1e-2
+                        loss_coef = 1e-2,
+                        experts = experts
                     )
         else:
             self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
@@ -530,6 +573,12 @@ class MBartDecoderLayer(nn.Module):
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         if config.use_moe:
             print("Using Mixtures of Experts")
+            experts = Experts(dim = self.embed_dim,
+                              num_experts = config.num_experts,
+                              hidden_dim = config.expert_ffn_size,
+                              activation = ACT2FN[config.activation_function],
+                              activation_dropout = self.activation_dropout,
+                              std = config.init_std)
             self.moe = MoE(
                         dim = self.embed_dim,
                         num_experts = config.num_experts,
@@ -540,7 +589,8 @@ class MBartDecoderLayer(nn.Module):
                         second_threshold_eval = 0.2,
                         capacity_factor_train = 1.25,
                         capacity_factor_eval = 2.,
-                        loss_coef = 1e-2
+                        loss_coef = 1e-2,
+                        experts = experts
                     )
         else:
             self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
