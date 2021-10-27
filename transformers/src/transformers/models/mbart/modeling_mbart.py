@@ -28,6 +28,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 ## Modified by Raj Dabre. Start.
 from torch.autograd import Function
+from mixture_of_experts import MoE
 ## Modified by Raj Dabre. End.
 
 from ...activations import ACT2FN
@@ -415,6 +416,8 @@ class MBartEncoderLayer(nn.Module):
     def __init__(self, config: MBartConfig):
         super().__init__()
         self.embed_dim = config.d_model
+        self.config = config
+        moe_loss = () if self.config.use_moe else None
         self.self_attn = MBartAttention(
             embed_dim=self.embed_dim,
             num_heads=config.encoder_attention_heads,
@@ -425,8 +428,23 @@ class MBartEncoderLayer(nn.Module):
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
         self.activation_dropout = config.activation_dropout
-        self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
-        self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
+        if config.use_moe:
+            print("Using Mixtures of Experts")
+            self.moe = MoE(
+                        dim = self.embed_dim,
+                        num_experts = config.num_experts,
+                        hidden_dim = config.expert_ffn_size,
+                        second_policy_train = 'random',
+                        second_policy_eval = 'random',
+                        second_threshold_train = 0.2,
+                        second_threshold_eval = 0.2,
+                        capacity_factor_train = 1.25,
+                        capacity_factor_eval = 2.,
+                        loss_coef = 1e-2
+                    )
+        else:
+            self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
+            self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
     def forward(
@@ -460,17 +478,23 @@ class MBartEncoderLayer(nn.Module):
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
-        hidden_states = self.activation_fn(self.fc1(hidden_states))
-        hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
-        hidden_states = self.fc2(hidden_states)
+        if self.config.use_moe:
+            hidden_states, moe_loss = self.moe(hidden_states)
+        else:
+            hidden_states = self.activation_fn(self.fc1(hidden_states))
+            hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
+            hidden_states = self.fc2(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
         if torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any():
             clamp_value = torch.finfo(hidden_states.dtype).max - 1000
             hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
-
-        outputs = (hidden_states,)
+        
+        if self.config.use_moe:
+            outputs = ([hidden_states, moe_loss],)
+        else:
+            outputs = (hidden_states,)
 
         if output_attentions:
             outputs += (attn_weights,)
@@ -504,10 +528,25 @@ class MBartDecoderLayer(nn.Module):
             no_scale_attention_embedding=config.no_scale_attention_embedding,
         )
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
-        self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
-        self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
+        if config.use_moe:
+            print("Using Mixtures of Experts")
+            self.moe = MoE(
+                        dim = self.embed_dim,
+                        num_experts = config.num_experts,
+                        hidden_dim = config.expert_ffn_size,
+                        second_policy_train = 'random',
+                        second_policy_eval = 'random',
+                        second_threshold_train = 0.2,
+                        second_threshold_eval = 0.2,
+                        capacity_factor_train = 1.25,
+                        capacity_factor_eval = 2.,
+                        loss_coef = 1e-2
+                    )
+        else:
+            self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
+            self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
-
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -612,13 +651,19 @@ class MBartDecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
-        hidden_states = self.activation_fn(self.fc1(hidden_states))
-        hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
-        hidden_states = self.fc2(hidden_states)
+        if self.config.use_moe:
+            hidden_states, moe_loss = self.moe(hidden_states)
+        else:
+            hidden_states = self.activation_fn(self.fc1(hidden_states))
+            hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
+            hidden_states = self.fc2(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
+        
+        if self.config.use_moe:
+            outputs = ([hidden_states, moe_loss],)
+        else:
+            outputs = (hidden_states,)
 
         if output_attentions:
             outputs += (self_attn_weights, cross_attn_weights)
@@ -862,20 +907,24 @@ class MBartEncoder(MBartPreTrainedModel):
             self.features_final_project = None
         ## Modified by Raj Dabre. End.
         
-        if config.positional_encodings:
-            print("Using positional encodings")
-            self.embed_positions = MBartSinusoidalPositionalEmbedding(
-                config.max_position_embeddings,
-                embed_dim,
-                self.padding_idx,
-            )
+        if config.no_positional_encoding_encoder:
+            print("Using no positional encodings for encoder")
+            self.embed_positions = 0
         else:
-            print("Using positional embeddings")
-            self.embed_positions = MBartLearnedPositionalEmbedding(
-                config.max_position_embeddings,
-                embed_dim,
-                self.padding_idx,
-            )
+            if config.positional_encodings:
+                print("Using positional encodings")
+                self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                    config.max_position_embeddings,
+                    embed_dim,
+                    self.padding_idx,
+                )
+            else:
+                print("Using positional embeddings")
+                self.embed_positions = MBartLearnedPositionalEmbedding(
+                    config.max_position_embeddings,
+                    embed_dim,
+                    self.padding_idx,
+                )
         ## Modified by Raj Dabre. Start.
         if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
@@ -969,8 +1018,10 @@ class MBartEncoder(MBartPreTrainedModel):
                 input_embeds = self.features_final_project(torch.cat(all_embeds, dim=-1))## Basic feature based model. Add relevance model here.
             ## Modified by Raj Dabre. End.
             
-
-        embed_pos = self.embed_positions(input_shape)
+        if self.config.no_positional_encoding_encoder:
+            embed_pos = self.embed_positions
+        else:
+            embed_pos = self.embed_positions(input_shape)
 
         hidden_states = inputs_embeds + embed_pos
         if not self.config.no_embed_norm:
@@ -986,6 +1037,7 @@ class MBartEncoder(MBartPreTrainedModel):
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
+        moe_losses = () if self.config.use_moe else None
 
         # check if head_mask has a correct number of layers specified if desired
         if head_mask is not None:
@@ -1021,8 +1073,12 @@ class MBartEncoder(MBartPreTrainedModel):
                         layer_head_mask=(head_mask[idx] if head_mask is not None else None),
                         output_attentions=output_attentions,
                     )
-
-                hidden_states = layer_outputs[0]
+                
+                if self.config.use_moe:
+                    hidden_states, moe_loss = layer_outputs[0]
+                    moe_losses += (moe_loss,)
+                else:
+                    hidden_states = layer_outputs[0]
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
@@ -1038,9 +1094,9 @@ class MBartEncoder(MBartPreTrainedModel):
             encoder_states = encoder_states + (hidden_states,)
 
         if not return_dict:
-            return tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
+            return tuple(v for v in [hidden_states, encoder_states, all_attentions, moe_losses] if v is not None)
         return BaseModelOutput(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
+            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions, moe_losses=moe_losses
         )
 
 
@@ -1065,21 +1121,25 @@ class MBartDecoder(MBartPreTrainedModel):
             self.embed_tokens = embed_tokens
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
-
-        if config.positional_encodings:
-            print("Using positional encodings")
-            self.embed_positions = MBartSinusoidalPositionalEmbedding(
-                config.max_position_embeddings,
-                config.d_model,
-                self.padding_idx,
-            )
+        
+        if config.no_positional_encoding_decoder:
+            print("Using no positional encodings for decoder")
+            self.embed_positions = 0
         else:
-            print("Using positional embeddings")
-            self.embed_positions = MBartLearnedPositionalEmbedding(
-                config.max_position_embeddings,
-                config.d_model,
-                self.padding_idx,
-            )
+            if config.positional_encodings:
+                print("Using positional encodings")
+                self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                    config.max_position_embeddings,
+                    config.d_model,
+                    self.padding_idx,
+                )
+            else:
+                print("Using positional embeddings")
+                self.embed_positions = MBartLearnedPositionalEmbedding(
+                    config.max_position_embeddings,
+                    config.d_model,
+                    self.padding_idx,
+                )
         ## Modified by Raj Dabre. Start.
         if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")
@@ -1240,7 +1300,10 @@ class MBartDecoder(MBartPreTrainedModel):
         # embed positions
         #print(encoder_attention_mask.size() if encoder_attention_mask is not None else 1, additional_encoder_attention_mask.size() if additional_encoder_attention_mask is not None else 1)
         ## Modified by Raj Dabre. End.
-        positions = self.embed_positions(input_shape, past_key_values_length)
+        if self.config.no_positional_encoding_decoder:
+            positions = self.embed_positions
+        else:
+            positions = self.embed_positions(input_shape, past_key_values_length)
 
         hidden_states = inputs_embeds + positions
         if not self.config.no_embed_norm:
@@ -1252,9 +1315,9 @@ class MBartDecoder(MBartPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
+        moe_losses = () if self.config.use_moe else None
         ## Modified by Raj Dabre. Start.
-        if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
-            additional_all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
+        additional_all_cross_attentions = () if (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") and output_attentions and encoder_hidden_states is not None else None
         next_decoder_cache = () if use_cache else None
         if self.config.multi_source_method == "merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention":
             encoder_hidden_states = torch.cat([encoder_hidden_states, additional_encoder_hidden_states], 1) ## Concatenate sequences blindly along the sequence axis. 
@@ -1319,7 +1382,11 @@ class MBartDecoder(MBartPreTrainedModel):
                     additional_encoder_hidden_states=additional_encoder_hidden_states,
                     additional_encoder_attention_mask=additional_encoder_attention_mask,
                 )
-            hidden_states = layer_outputs[0]
+            if self.config.use_moe:
+                hidden_states, moe_loss = layer_outputs[0]
+                moe_losses += (moe_loss,)
+            else:
+                hidden_states = layer_outputs[0]
             
             ## Modified by Raj Dabre. Start.
             if use_cache:
@@ -1351,13 +1418,13 @@ class MBartDecoder(MBartPreTrainedModel):
             if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
                 return tuple(
                     v
-                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, additional_all_cross_attentions]
+                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, additional_all_cross_attentions, moe_losses]
                     if v is not None
                 )
             else:
                 return tuple(
                     v
-                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions]
+                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, moe_losses]
                     if v is not None
                 )
         return BaseModelOutputWithPastAndCrossAttentions(
@@ -1366,7 +1433,8 @@ class MBartDecoder(MBartPreTrainedModel):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
             cross_attentions=all_cross_attentions,
-            additional_cross_attentions=additional_all_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") else (),
+            additional_cross_attentions=additional_all_cross_attentions, 
+            moe_losses = moe_losses,
         )
         ## Modified by Raj Dabre. End.
 
@@ -1547,6 +1615,8 @@ class MBartModel(MBartPreTrainedModel):
             additional_encoder_attentions=additional_encoder_outputs.attentions if self.config.multi_source else None,
             additional_cross_attentions=decoder_outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") else (),
             context_encoder_representations = context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None, ## Find a way to return all contents of context_encoder_representations in the future.
+            encoder_moe_losses = encoder_outputs.moe_losses, 
+            decoder_moe_losses = decoder_outputs.moe_losses, 
         )
         ## Modified by Raj Dabre. End.
 
@@ -1803,6 +1873,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None,
             softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
             domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier > 1 else None,
+            encoder_moe_losses = outputs.encoder_moe_losses, 
+            decoder_moe_losses = outputs.decoder_moe_losses, 
         )
 
     def prepare_inputs_for_generation(
