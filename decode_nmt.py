@@ -101,10 +101,27 @@ def model_create_load_decode(gpu, args):
     if args.use_official_pretrained:
         if "mbart" in args.model_path:
             model = MBartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
+            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
+            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
+            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
+            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
+            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
         elif "bart" in args.model_path:
             model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
+            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
+            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
+            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
+            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
+            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
     else:
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size) ## Configuration.
+        if args.manual_config: ## In case we have a config file but we want to provide some manual hyperparameterd
+            config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
+        else:
+            config = MBartConfig.from_pretrained(args.model_path+".config.json")
         model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -121,9 +138,9 @@ def model_create_load_decode(gpu, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -134,6 +151,10 @@ def model_create_load_decode(gpu, args):
             refs = [[refline.strip() for refline in open(args.test_ref)]]
         for input_ids, input_masks in generate_batches_for_decoding(tok, args): #infinite_same_sentence(10000):
             start = time.time()
+            if args.prompt_tuning:
+                input_shape = input_masks.size()
+                encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+                input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             print("Processing batch:", ctr)
             if args.multi_source:
                 input_ids_parent = input_ids[1]
@@ -334,6 +355,8 @@ def run_demo():
                         help='Port main node')
     parser.add_argument('--use_official_pretrained', action='store_true', 
                         help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
+    parser.add_argument('--manual_config', action='store_true', 
+                        help='Use this flag if you want to specify the configuration manually instead of relying on a config file that we saved for the model during training.')
     parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
                         help='In case you fine-tuned an official model and have a local checkpoint then specifiy it here. If you did not fine-tune an official model but did your own thing then specify it using model_path.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
@@ -450,6 +473,20 @@ def run_demo():
                         help='Should we use mixtures of experts instead of regular FFNs?".')
     parser.add_argument('--num_experts', default=8, type=int, help="How many MOE experts should we use?")
     parser.add_argument('--expert_ffn_size', default=128, type=int, help="What is the hidden size of the MOE?")
+    parser.add_argument('--prompt_tuning', action='store_true', 
+                        help='Should we use continuous prompts and tune them?')
+    parser.add_argument('--initialize_prompts_with_random_embeddings', action='store_true', 
+                        help='Should we use initialize the prompts with random embeddings?')
+    parser.add_argument('--num_prompts', default=100, type=int, help="How many prompts should we use?")
+    parser.add_argument('--adaptor_tuning', action='store_true', 
+                        help='Should we use lightweight adaptors? (Only applied to the final layer)')
+    parser.add_argument('--deep_adaptor_tuning', action='store_true', 
+                        help='Should we use deep lightweight adaptors? (Applied to each layer)')
+    parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
+    parser.add_argument('--hypercomplex', action='store_true', 
+                        help='Should we use hypercomplex adaptors?')
+    parser.add_argument('--hypercomplex_n', default=2, type=int, help="What is the scaling factor for hypercomplex params?")
+    parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     
     args = parser.parse_args()
     assert len(args.token_masking_probs_range) <= 2

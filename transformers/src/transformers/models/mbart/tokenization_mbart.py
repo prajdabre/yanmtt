@@ -20,6 +20,7 @@ from ...tokenization_utils import BatchEncoding
 from ...utils import logging
 from ..xlm_roberta.tokenization_xlm_roberta import XLMRobertaTokenizer
 
+import os
 
 logger = logging.get_logger(__name__)
 
@@ -94,19 +95,28 @@ class MBartTokenizer(XLMRobertaTokenizer):
 
     def __init__(self, *args, tokenizer_file=None, **kwargs):
         super().__init__(*args, tokenizer_file=tokenizer_file, **kwargs)
-
+        
+        if os.path.exists(os.path.join(self.name_or_path, "specially_added_tokens"))):
+            print("Loading special language codes and other tokens from " + os.path.join(self.name_or_path, "specially_added_tokens"))
+            FAIRSEQ_LANGUAGE_CODES = open(os.path.join(self.name_or_path, "specially_added_tokens"), "r").read().split("\n")
+            external_codes_used = True
+        else:
+            print("Using official MBART codes")
+            external_codes_used = False
         self.sp_model_size = len(self.sp_model)
         self.lang_code_to_id = {
             code: self.sp_model_size + i + self.fairseq_offset for i, code in enumerate(FAIRSEQ_LANGUAGE_CODES)
         }
         self.id_to_lang_code = {v: k for k, v in self.lang_code_to_id.items()}
-        self.cur_lang_code = self.lang_code_to_id["en_XX"]
+        if not external_codes_used:
+            self.cur_lang_code = self.lang_code_to_id["en_XX"]
         self.fairseq_tokens_to_ids["<mask>"] = len(self.sp_model) + len(self.lang_code_to_id) + self.fairseq_offset
 
         self.fairseq_tokens_to_ids.update(self.lang_code_to_id)
         self.fairseq_ids_to_tokens = {v: k for k, v in self.fairseq_tokens_to_ids.items()}
         self._additional_special_tokens = list(self.lang_code_to_id.keys())
-        self.set_src_lang_special_tokens(kwargs.get("src_lang", "en_XX"))
+        if not external_codes_used:
+            self.set_src_lang_special_tokens(kwargs.get("src_lang", "en_XX"))
 
     @property
     def vocab_size(self):

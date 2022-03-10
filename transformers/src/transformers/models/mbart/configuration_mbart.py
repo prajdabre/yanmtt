@@ -152,6 +152,12 @@ class MBartConfig(PretrainedConfig):
         use_moe=False, ## Argument to indicate whether we use mixtures of experts instead of FFNs.
         num_experts=8, ## Argument to indicate how many experts we want. The FFN hidden size will be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         expert_ffn_size=128, ## Argument to indicate the hidden size of the expert.
+        prompt_tuning=False, ## Argument to indicate whether we should do prompt tuning or not.
+        num_prompts=10, ## Argument to indicate how many prompts we should use.
+        adaptor_tuning=False, ## Argument to indicate whether we should do adaptor tuning or not.
+        deep_adaptor_tuning=False, ## Argument to indicate whether we should do deep adaptor tuning or not.
+        adaptor_hidden_size=128, ## Argument to indicate the hidden size of the adaptor.
+        softmax_bias_tuning=False, ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -207,6 +213,12 @@ class MBartConfig(PretrainedConfig):
         self.use_moe = use_moe ## Argument to indicate whether we use mixtures of experts instead of FFNs.
         self.num_experts = num_experts ## Argument to indicate how many experts we want. The FFN hidden size will be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         self.expert_ffn_size = expert_ffn_size ## Argument to indicate the hidden size of the expert.
+        self.prompt_tuning = prompt_tuning ## Argument to indicate whether we should do prompt tuning or not.
+        self.num_prompts = num_prompts ## Argument to indicate how many prompts we should use.
+        self.adaptor_tuning = adaptor_tuning ## Argument to indicate whether we should do adaptor tuning or not.
+        self.deep_adaptor_tuning = deep_adaptor_tuning ## Argument to indicate whether we should do deep adaptor tuning or not.
+        self.adaptor_hidden_size = adaptor_hidden_size ## Argument to indicate the hidden size of the adaptor.
+        self.softmax_bias_tuning = softmax_bias_tuning ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         
     @property

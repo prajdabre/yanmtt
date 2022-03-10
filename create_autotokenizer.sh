@@ -31,16 +31,16 @@ num_train_sentences=$6
 character_coverage=$7
 mkdir -p $tgt_folder
 
-SPM_TRAIN=../sentencepiece/build/src/spm_train ## Change this to your spm_train path
+SPM_TRAIN=/share03/draj/softwares_and_scripts/sentencepiece/build/src/spm_train ## Change this to your spm_train path
 
 if [[ $type == "albert" ]]
 then
 echo "ALBERT tokenizer"
-$SPM_TRAIN  --max_sentence_length 20000 --input $src_files   --model_prefix=$tgt_folder/spiece --vocab_size=$vocab_size   --pad_id=0 --unk_id=1 --eos_id=-1 --bos_id=-1   --user_defined_symbols="[CLS],[SEP],[MASK]"   --shuffle_input_sentence=true   --character_coverage=$character_coverage --model_type=unigram --input_sentence_size=$num_train_sentences #Apart from the CLS, SEP and MASK tokens, I was unable to add other user defined tokens here for some reason so I used the create_autoconfig.py to do the same.
+$SPM_TRAIN  --max_sentence_length 20000 --input $src_files   --model_prefix=$tgt_folder/spiece --vocab_size=$vocab_size   --pad_id=0 --unk_id=1 --eos_id=-1 --bos_id=-1   --user_defined_symbols="[CLS],[SEP],[MASK]"   --shuffle_input_sentence=true   --character_coverage=$character_coverage --model_type=unigram --input_sentence_size=$num_train_sentences --hard_vocab_limit=false #Apart from the CLS, SEP and MASK tokens, I was unable to add other user defined tokens here for some reason so I used the create_autoconfig.py to do the same.
 elif [[ $type == "mbart" ]]
 then
 echo "MBART tokenizer."
-$SPM_TRAIN  --max_sentence_length 20000 --input $src_files   --model_prefix=$tgt_folder/sentencepiece.bpe --vocab_size=$vocab_size   --pad_id=0 --unk_id=1 --eos_id=-1 --bos_id=-1   --user_defined_symbols="[CLS],[SEP],[MASK]"   --shuffle_input_sentence=true   --character_coverage=$character_coverage --model_type=bpe --input_sentence_size=$num_train_sentences #Apart from the CLS, SEP and MASK tokens, I was unable to add other user defined tokens here for some reason so I used the create_autoconfig.py to do the same.
+$SPM_TRAIN  --max_sentence_length 20000 --input $src_files   --model_prefix=$tgt_folder/sentencepiece.bpe --vocab_size=$vocab_size   --pad_id=0 --unk_id=1 --eos_id=-1 --bos_id=-1   --shuffle_input_sentence=true   --character_coverage=$character_coverage --model_type=bpe --input_sentence_size=$num_train_sentences #Apart from the CLS, SEP and MASK tokens, I was unable to add other user defined tokens here for some reason so I used the create_autoconfig.py to do the same.
 else
 echo "Unknown tokenizer."
 exit
