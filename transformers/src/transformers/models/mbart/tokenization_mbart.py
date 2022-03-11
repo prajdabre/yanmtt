@@ -96,7 +96,7 @@ class MBartTokenizer(XLMRobertaTokenizer):
     def __init__(self, *args, tokenizer_file=None, **kwargs):
         super().__init__(*args, tokenizer_file=tokenizer_file, **kwargs)
         
-        if os.path.exists(os.path.join(self.name_or_path, "specially_added_tokens"))):
+        if os.path.exists(os.path.join(self.name_or_path, "specially_added_tokens")):
             print("Loading special language codes and other tokens from " + os.path.join(self.name_or_path, "specially_added_tokens"))
             FAIRSEQ_LANGUAGE_CODES = open(os.path.join(self.name_or_path, "specially_added_tokens"), "r").read().split("\n")
             external_codes_used = True

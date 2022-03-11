@@ -78,7 +78,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model:
+        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
             if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
             else:
@@ -87,6 +87,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
     else:
         tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True) ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
+    tok.save_pretrained(args.model_path) ## Save the tokenizer for future use.
     print("Tokenizer is:", tok)
     
     print(f"Running DDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
@@ -109,7 +110,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         writer = SummaryWriter(args.model_path+".tflogs")
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model:
+        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
             config = MBartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
@@ -124,6 +125,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
+            config.save_pretrained(args.model_path) ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         elif "bart" in args.pretrained_model:
             config = BartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
@@ -139,12 +141,14 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
+            config.save_pretrained(args.model_path) ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else:
         if args.pretrained_model != "" and not args.manual_config:
-            config = MBartConfig.from_pretrained(args.pretrained_model+".config.json")
+            config = MBartConfig.from_pretrained(args.pretrained_model)
+            config.save_pretrained(args.model_path) ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         else:
             config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration. TODO: Save this configuration somehow.
-            config.save_pretrained(args.model_path+".config.json") ## Save the config as a json file to ensure easy loading during future fine tuning 
+            config.save_pretrained(args.model_path) ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
 
@@ -154,7 +158,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
-            if "mbart" in args.parent_pretrained_model:
+            if "mbart" in args.parent_pretrained_model or "IndicBART" in args.model_path:
                 parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
@@ -171,8 +175,10 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
         else:
-            ## Enable the manual config override here too. Ditto for fine tuning.
-            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
+            if args.parent_pretrained_model != "" and not args.manual_config:
+                parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
+            else:
+                parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
             parent_model = MBartForConditionalGeneration(config)
         parent_model.cuda(gpu)
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
