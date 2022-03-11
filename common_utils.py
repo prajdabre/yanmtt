@@ -519,7 +519,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
             
             masked_sentence = " ".join(sentence_split)
-            if args.span_prediction or args.span_to_sentence_prediction ## We only predict the masked spans and not other tokens.
+            if args.span_prediction or args.span_to_sentence_prediction: ## We only predict the masked spans and not other tokens.
                 masked_sentence_split = masked_sentence.split(mask_tok)
                 final_sentence = ""
                 prev_idx = 0

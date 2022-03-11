@@ -31,7 +31,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 
 ## Huggingface imports
 import transformers
-from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer
+from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
 from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
@@ -84,7 +84,11 @@ def model_create_load_decode(gpu, args):
         else:
             tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
     else:
-        tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        if "albert" in args.tokenizer_name_or_path:
+            tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        elif "mbart" in args.tokenizer_name_or_path:
+            tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
 
     print("Tokenizer is:", tok)
 
@@ -355,8 +359,6 @@ def run_demo():
                         help='Port main node')
     parser.add_argument('--use_official_pretrained', action='store_true', 
                         help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
-    parser.add_argument('--manual_config', action='store_true', 
-                        help='Use this flag if you want to specify the configuration manually instead of relying on a config file that we saved for the model during training.')
     parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
                         help='In case you fine-tuned an official model and have a local checkpoint then specifiy it here. If you did not fine-tune an official model but did your own thing then specify it using model_path.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 
