@@ -1,1 +1,1 @@
-MODELS_PATH = './models'
+MODELS_PATH = './models/'

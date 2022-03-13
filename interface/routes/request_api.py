@@ -35,7 +35,8 @@ def index():
 @REQUEST_API.route('/models', methods=['GET'])
 def models():
     # return render_template("index.html")
-    list_of_models = os.listdir(MODELS_PATH) 
+    # list_of_models = os.listdir(MODELS_PATH)
+    list_of_models = [ name for name in os.listdir(MODELS_PATH) if os.path.isdir(os.path.join(MODELS_PATH, name)) ]
     json_response = {"models": list_of_models}
     return jsonify(json_response)
 
