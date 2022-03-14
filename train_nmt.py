@@ -53,7 +53,8 @@ from common_utils import *
 ## Other imports
 import math
 import random
-import numpy as np
+import 
+ as np
 import sacrebleu
 from rouge_score import rouge_scorer
 import gc
@@ -94,6 +95,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=False) ## In case we do summarization.
     tok.save_pretrained(args.model_path+"_deploy") ## Save the tokenizer for future use.
     print("Tokenizer is:", tok)
+
+    if args.supported_languages is not None:
+        args.supported_languages = args.supported_languages.split(",")
+        with open(args.model_path+"_deploy/supported_languages.txt", "w") as f:
+            for supported_pair in args.supported_languages:
+                f.write(supported_pair.replace("-", " ")+"\n")
     
     print(f"Running DDP checkpoint example on rank {rank}.")
     
@@ -835,6 +842,8 @@ def run_demo():
                         help='Source language(s) for training. If you want to specify the domain of the language pair then specify it as language-domain (hyphen in the middle) and make sure to set --num_domains_for_domain_classifier to a value > 1. If you want to specify an additional source then you need to do the same thing but note that you can do multi-source domain classification as its just too much.')
     parser.add_argument('--train_tlang', default='hi', type=str, 
                         help='Target language(s) for training')
+    parser.add_argument('--supported_languages', default=None, type=str, 
+                        help='Supported languages or language pairs. This will only be used if you plan to use the interface to the model. If you want to use the model directly then you can ignore this. The format will be a comma separated list of src_language-src_language_token-tgt_language-tgt_language_token. So in the case of IndicBART fine tuned for Hindi-English you would specify Hindi-<2hi>-English-<2en>. In the case of mBART50 for Hindi-English you would specify Hindi-hi_IN-English-en_XX.')
     parser.add_argument('--activation_function', default='gelu', type=str, 
                             help='Activation function. gelu is default. We can use relu or others.')
     parser.add_argument('--train_src', default='', type=str, 
