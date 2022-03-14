@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-        <title>YANMTT-NMT</title>
+        <title>YANMTT NMT</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         
         <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous" />
@@ -18,62 +18,21 @@
         <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.2.1/js/bootstrap.min.js" integrity="sha384-B0UglyR+jN6CkvvICOB2joaf5I4l3gm9GU6Hc1og6Ls7i6U/mkkaduKaBhlAXv9k" crossorigin="anonymous"></script>
         <script src="{{ url_for('static', filename='semantic.js') }}"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.7.0/d3.min.js"></script>
-        <script src="{{ url_for('static', filename='langid-model-full.js') }}"></script>
-        <script src="{{ url_for('static', filename='langid.js') }}"></script>
         <script>
-            $(document).on('click','#yesLang',function(){
-                $("#lang0").html('');
-                $("#lang0").hide();
-                return false;
-            });
-            $(document).on('click','#noLang',function(){
-                $('input[class=sourcelang]').val("").change();
-                $("#lang0").html('Select a source language on your own, stop bothering me! I was just trying to help!');
-                setTimeout(function() { 
-                    $('#lang0').fadeOut();
-                }, 2000);
-                return false;
-            });
-            $(document).ready(function() {
-                langs_dictionary={ 
-                    "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az": "Azerbaijani", "be": "Belarusian", "bg": "Bulgarian", "bn": "Bengali", "br": "Breton", "bs": "Bosnian", "ca": "Valencian", "cs": "Czech", "cy": "Welsh", "da": "Danish", "de": "German", "el": "Greeek", "en": "English", "es": "Spanish", "et": "Estonian", "fa": "Persian", "fi": "Finnish", "fr": "French", "ga": "Irish", "gl": "Galician", "gu": "Gujarati", "he": "Hebrew", "hi": "Hindi", "hr": "Croatian", "ht": "Haitian Creole", "hu": "Hungarian", "hy": "Armenian", "id": "Indonesian", "is": "Icelandic", "it": "Italian", "ja": "Japanese", "jv": "Javanese", "ka": "Georgian", "kk": "Kazakh", "km": "Central Khmer", "kn": "Kannada", "ko": "Korean", "lb": "Letzeburgesch", "lo": "Lao", "lt": "Lithuanian", "lv": "Latvian", "mg": "Malagasy", "mk": "Macedonian", "ml": "Malayalam", "mn": "Mongolian", "mr": "Marathi", "ms": "Malay", "ne": "Nepali", "nl": "Flemish", "no": "Norwegian", "oc": "Occitan", "or": "Oriya", "pa": "Punjabi", "pl": "Polish", "ps": "Pashto", "pt": "Portuguese", "ro": "Moldovan", "ru": "Russian", "si": "Sinhalese", "sk": "Slovak", "sl": "Slovenian", "sq": "Albanian", "sr": "Serbian", "sv": "Swedish", "sw": "Swahili", "ta": "Tamil", "th": "Thai", "tl": "Tagalog", "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu", "vi": "Vietnamese", "xh": "Xhosa", "zh": "Chinese", "zu": "Zulu"
-                };
-                $("#textareasource").keyup(displayType);
-            
-                function displayType(){
-                    var contents = $("#textareasource").val();
-                        if (contents.length == 0) {
-                            $("#detLangText").hide();
-                            $("#lang0").hide();
-                        }
-                        else{
-                            var rank = langid.rank(contents);
-                            for (var i=0;i<1;i++){
-                                $("#lang0").html("Source Language: " + langs_dictionary[rank[i]["lang"]] + "?  " + "<button id='yesLang' class='btn btn-sm btn-primary' type='button' >Yes</button>&nbsp;&nbsp;&nbsp;" + "<button id='noLang' class='btn btn-sm btn-danger' type='button' >No</button>");
-                                $('input[class=sourcelang]').val(langs_dictionary[rank[i]["lang"]]).change();
-                            }
-                            if (contents != "The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.")
-                            {
-                                $("#detLangText").show();
-                                $("#lang0").show();
-                            }
-                        }
-                    }
-            });
             $(document).ready(function(){
                 $('.ui.dropdown')
                 .dropdown();
             });
 
             $(document).ready(function(){
-                // var hf_models = ['facebook/m2m100_418M', 'facebook/m2m100_1.2B']
+                var hf_models = ['facebook/m2m100_418M', 'facebook/m2m100_1.2B']
                 $.ajax({
                     url: "{{ url_for('request_api.models') }}",
                     type: 'GET',
                     dataType: 'json',
                     success: function(data){
                         var models = data['models'];
-                        // models = models.concat(hf_models);
+                        models = models.concat(hf_models);
                         for( var i = 0; i< models.length; i++){
                                 $('#models').append("<div class='item'>"+ models[i] + "</div>");
                         }
@@ -85,23 +44,9 @@
             });
 
             $(document).ready(function(){
-                sentence_dict = {
-                    // "afrikaans": "Ek is 'n machine en ek probeer om te vertaal.", "amharic": "እኔ አንድ ማሽን ነው እና እኔ መተግበሪያ ይፈልጋሉ.", "arabic": "أنا آلة وأحاول الترجمة.", "asturian": "Ye una maquinaria y trate de traducir.", "azerbaijani": "Mən bir makineyəm və çevirmək istəyirəm.", "bashkir": "Яны машинаһы, яны переводим, яны перевод.", "belarusian": "Я працую на тэлебачанні і працую на тэлебачанні.", "bulgarian": "Аз съм машина и се опитвам да превеждам.", "bengali": "আমি একটি মেশিন এবং আমি অনুবাদ করার চেষ্টা করি।", "breton": "Ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma", "bosnian": "Ja sam stroj i pokušavam prevesti.", "valencian": "Sóc una màquina i intento traduir-la.", "cebuano": "Ako mao ang usa ka machine ug ako nagpasok sa translation.", "czech": "Jsem stroj a snažím se přeložit.", "welsh": "Mae'n cael eu cwsmeriaid a mae'n cael eu cwsmeriaid.", "danish": "Jeg er en maskin og jeg forsøger at oversætte.", "german": "Ich bin eine Maschine und versuche zu übersetzen.", "greeek": "Είμαι μηχανή και προσπαθώ να μεταφράσω.", "english": "I am a machine and I try to translate.", "spanish": "Soy una máquina y trato de traducir.", "estonian": "Ma olen masin ja püüan tõlkida.", "persian": "من یک ماشین هستم و سعی می کنم ترجمه کنم.", "fulah": "«I am a machine and I try to translate. »", "finnish": "Olen kone ja yritän kääntää.", "french": "Je suis une machine et j’essaie de traduire.", "irish": "Brazzers físeán catagóir Inexperienced, Déagóir Inexperienced, Déagóir Inexperienced", "scottish gaelic": "Tha mi a dèanamh, tha mi a dèanamh.", "galician": "Eu son unha máquina e trato de traducir.", "gujarati": "I'm a machine, I'm a machine, I'm a machine, I'm a machine, I'm a machine.", "hausa": "Yana da wani masana'antu da kuma za a iya sauke.", "hebrew": "אני מכונה ואני מנסה לתרגם.", "hindi": "मैं एक मशीन हूँ और मैं अनुवाद करने की कोशिश कर रहा हूँ।", "croatian": "Ja sam stroj i pokušavam prevesti.", "haitian creole": "Mwen se yon machin ak mwen eksperyans nan tradiksyon.", "hungarian": "Én gép vagyok, és megpróbálom lefordítani.", "armenian": "Ես մեքենա եմ եւ փորձում եմ արտասանել.", "indonesian": "Saya adalah mesin dan saya mencoba menerjemahkan.", "igbo": "M bụ a machine na m na-eji na-atụnye.", "iloko": "Maanadantayo dagiti kabaketan a pagsasaotayo.", "icelandic": "Ég er vél og reyni að þýða.", "italian": "Io sono una macchina e sto cercando di tradurre.", "japanese": "私は機械で、翻訳しようとしている。", "javanese": "Aku minangka mesin lan aku njupuk diterjemahake.", "georgian": "მე მობილური ვარ და მობილური მობილური ვიყავი.", "kazakh": "«Менің машинасы бар, менің қоңызы бар.", "central khmer": "ខ្ញុំជាម៉ាស៊ីននិងខ្ញុំកំពុងស្វែងរកការបណ្តាញ។", "kannada": "ಕಲಬುರಗಿ ಸ 11:ಬರುವ ವರ್ಷದ ಅಕ್ಟೋಬರ್ 2 ರೊಳಗೆ ದೇಶವನ್ನು ಬಯಲು ಶೌಚ ಮುಕ್ತ ರಾಷ್ಟ್ರವನ್ನಾಗಿ ಘೋಷಿಸುವ ಉದ್ದೇಶವನ್ನು ಕೇಂದ್ರ.", "korean": "나는 기계이고 나는 번역을 시도한다.", "letzeburgesch": "Mir sinn eng Maschinn an mir versuchen ze übersetzen.", "ganda": "Mako Mako Mako Mako Mako", "lingala": "Moko Moko Moko Moko Moko Moko Moko", "lao": "ພວກເຮົາມີເຄື່ອງມືແລະພວກເຮົາມີການທົດສອບ.", "lithuanian": "Aš esu mašina ir stengiuosi išversti.", "latvian": "Es esmu mašīna un mēģinu tulkot.", "malagasy": "Izaho no fitaovana ary nanandratra aho.", "macedonian": "Јас сум машина и се обидувам да го преведам.", "malayalam": "ഞാൻ ഒരു മെഷീൻ ആണ്, ഞാൻ翻译 ചെയ്യുന്നു.", "mongolian": "Би машин юм, би түүнчлэн түүнчлэн түүнчлэн түүнчлэн хэлж байна.", "marathi": "मी मशीन आहे आणि मी अनुवाद करण्यास प्रयत्न करतो.", "malay": "Saya seorang penyanyi dan saya cuba menerjemahkan.", "burmese": "I am a machine နှင့်ကျွန်တော်တို့ကိုပြန်လည်သုံးသပ်ပါတယ်.", "nepali": "म जहाँ पुगे पनि, जहाँ रहे पनि सर्लाही मेरो मनमा रहिरहनेछ ।", "flemish": "Ik ben een machine en probeer te vertalen.", "norwegian": "Jeg er en maskin og prøver å oversette.", "northern sotho": "Moka moka moka moka moka", "occitan": "Es un òme e me'n pòdi traduire.", "oriya": "କିନ୍ତୁ ସେ କହିଲେ yemiti huye 1st 1st.", "punjabi": "ਮੈਨੂੰ ਇੱਕ ਮਸ਼ੀਨ ਹੈ ਅਤੇ ਮੈਨੂੰ ਤਜਰਬੇ ਕਰਨ ਲਈ ਚਾਹੁੰਦੇ ਹਨ.", "polish": "Jestem maszyną i staram się tłumaczyć.", "pashto": "زه د ماشين دی او زه د ترجمه کولو لپاره هڅه وکړم.", "portuguese": "Sou uma máquina e estou tentando traduzir.", "moldovan": "Sunt o mașină și încerc să traduc.", "russian": "Я машина и стараюсь переводить.", "sindhi": "آءٌ آئرلندي آھيان ۽ آءٌ ترجمو ڪرڻ جي ڪوشش ڪريان ٿو.", "sinhalese": "මම පරිගණකයක්, මම පරිගණකයක්.", "slovak": "Som stroj a snažím sa prekladať.", "slovenian": "Jaz sem stroj in poskušam prevesti.", "somali": "Waxaan waa mashiinka iyo waxaan ka mid ka mid ka mid ka mid.", "albanian": "Unë jam një makinë dhe përpiqem të përkthehem.", "serbian": "Ја сам машина и покушавам да преведем.", "swati": "Ngena ngemvume nge-intanethi", "sundanese": "Kuring mangrupakeun mesin jeung aku coba ngabalukarkeun.", "swedish": "Jag är en maskin och jag försöker översätta.", "swahili": "Mimi ni mtumiaji na nataka kutafsiri.", "tamil": "I am a machine நான் மொழிபெயர்க்க முயற்சிக்கிறேன்", "thai": "ฉันเป็นเครื่องและพยายามแปล", "tagalog": "I'm a machine and I'm trying to translate.", "tswana": "O nama, o nama, o nama, o nama.", "turkish": "Ben bir makineyim ve tercüme etmeye çalışıyorum.", "ukrainian": "Я машинка, і я намагаюся перекласти.", "urdu": "میں ایک مشین ہوں اور میں ترجمہ کرنے کی کوشش کرتا ہوں.", "uzbek": "Bir makina ko‘yim, tulgan ko‘yim.", "vietnamese": "Tôi là một máy móc và tôi cố gắng dịch.", "wolof": "Ma bi bi bi bi bi bi bi bi bi bi bi bi", "xhosa": "Ngaba umatshini kwaye nceda ukuba nceda.", "yiddish": "עס איז עס, און א מעשה מעשה.", "yoruba": "Mo ti wa ni a ẹrọ ati ki o ba tẹsiwaju.", "chinese": "我是一台机器,我试着翻译。", "zulu": "Ngaba umatshini, ngaba usayizi."
-                    "Afrikaans": "Ek is 'n machine en ek prober om te vertaal.", "Amharic": "እኔ አንድ ማሽን ነው እና እኔ መተግበሪያ ይፈልጋሉ.", "Arabic": "أنا آلة وأحاول الترجمة.", "Asturian": "Ye una maquinaria y trate de traducir.", "Azerbaijani": "Mən bir makineyəm və çevirmək istəyirəm.", "Bashkir": "Яны машинаһы, яны переводим, яны перевод.", "Belarusian": "Я працую на тэлебачанні і працую на тэлебачанні.", "Bulgarian": "Аз съм машина и се опитвам да превеждам.", "Bengali": "আমি একটি মেশিন এবং আমি অনুবাদ করার চেষ্টা করি।", "Breton": "Ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma' e ma", "Bosnian": "Ja sam stroj i pokušavam prevesti.", "Valencian": "Sóc una màquina i intento traduir-la.", "Cebuano": "Ako mao ang usa ka machine ug ako nagpasok sa translation.", "Czech": "Jsem stroj a snažím se přeložit.", "Welsh": "Mae'n cael eu cwsmeriaid a mae'n cael eu cwsmeriaid.", "Danish": "Jeg er en maskin og jeg forsøger at oversætte.", "German": "Ich bin eine Maschine und versuche zu übersetzen.", "Greeek": "Είμαι μηχανή και προσπαθώ να μεταφράσω.", "English": "The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.", "Spanish": "Soy una máquina y trato de traducir.", "Estonian": "Ma olen masin ja püüan tõlkida.", "Persian": "من یک ماشین هستم و سعی می کنم ترجمه کنم.", "Fulah": "«I am a machine and I try to translate. »", "Finnish": "Olen kone ja yritän kääntää.", "French": "Je suis une machine et j’essaie de traduire.", "Irish": "Brazzers físeán catagóir Inexperienced, Déagóir Inexperienced, Déagóir Inexperienced", "Scottish Gaelic": "Tha mi a dèanamh, tha mi a dèanamh.", "Galician": "Eu son unha máquina e trato de traducir.", "Gujarati": "I'm a machine, I'm a machine, I'm a machine, I'm a machine, I'm a machine.", "Hausa": "Yana da wani masana'antu da kuma za a iya sauke.", "Hebrew": "אני מכונה ואני מנסה לתרגם.", "Hindi": "मैं एक मशीन हूँ और मैं अनुवाद करने की कोशिश कर रहा हूँ।", "Croatian": "Ja sam stroj i pokušavam prevesti.", "Haitian Creole": "Mwen se yon machin ak mwen eksperyans nan tradiksyon.", "Hungarian": "Én gép vagyok, és megpróbálom lefordítani.", "Armenian": "Ես մեքենա եմ եւ փորձում եմ արտասանել.", "Indonesian": "Saya adalah mesin dan saya mencoba menerjemahkan.", "Igbo": "M bụ a machine na m na-eji na-atụnye.", "Iloko": "Maanadantayo dagiti kabaketan a pagsasaotayo.", "Icelandic": "Ég er vél og reyni að þýða.", "Italian": "Io sono una macchina e sto cercando di tradurre.", "Japanese": "私は機械で、翻訳しようとしている。", "Javanese": "Aku minangka mesin lan aku njupuk diterjemahake.", "Georgian": "მე მობილური ვარ და მობილური მობილური ვიყავი.", "Kazakh": "«Менің машинасы бар, менің қоңызы бар.", "Central Khmer": "ខ្ញុំជាម៉ាស៊ីននិងខ្ញុំកំពុងស្វែងរកការបណ្តាញ។", "Kannada": "ಕಲಬುರಗಿ ಸ 11:ಬರುವ ವರ್ಷದ ಅಕ್ಟೋಬರ್ 2 ರೊಳಗೆ ದೇಶವನ್ನು ಬಯಲು ಶೌಚ ಮುಕ್ತ ರಾಷ್ಟ್ರವನ್ನಾಗಿ ಘೋಷಿಸುವ ಉದ್ದೇಶವನ್ನು ಕೇಂದ್ರ.", "Korean": "나는 기계이고 나는 번역을 시도한다.", "Letzeburgesch": "Mir sinn eng Maschinn an mir versuchen ze übersetzen.", "Ganda": "Mako Mako Mako Mako Mako", "Lingala": "Moko Moko Moko Moko Moko Moko Moko", "Lao": "ພວກເຮົາມີເຄື່ອງມືແລະພວກເຮົາມີການທົດສອບ.", "Lithuanian": "Aš esu mašina ir stengiuosi išversti.", "Latvian": "Es esmu mašīna un mēģinu tulkot.", "Malagasy": "Izaho no fitaovana ary nanandratra aho.", "Macedonian": "Јас сум машина и се обидувам да го преведам.", "Malayalam": "ഞാൻ ഒരു മെഷീൻ ആണ്, ഞാൻ翻译 ചെയ്യുന്നു.", "Mongolian": "Би машин юм, би түүнчлэн түүнчлэн түүнчлэн түүнчлэн хэлж байна.", "Marathi": "मी मशीन आहे आणि मी अनुवाद करण्यास प्रयत्न करतो.", "Malay": "Saya seorang penyanyi dan saya cuba menerjemahkan.", "Burmese": "I am a machine နှင့်ကျွန်တော်တို့ကိုပြန်လည်သုံးသပ်ပါတယ်.", "Nepali": "म जहाँ पुगे पनि, जहाँ रहे पनि सर्लाही मेरो मनमा रहिरहनेछ ।", "Flemish": "Ik ben een machine en probeer te vertalen.", "Norwegian": "Jeg er en maskin og prøver å oversette.", "Northern Sotho": "Moka moka moka moka moka", "Occitan": "Es un òme e me'n pòdi traduire.", "Oriya": "କିନ୍ତୁ ସେ କହିଲେ yemiti huye 1st 1st.", "Punjabi": "ਮੈਨੂੰ ਇੱਕ ਮਸ਼ੀਨ ਹੈ ਅਤੇ ਮੈਨੂੰ ਤਜਰਬੇ ਕਰਨ ਲਈ ਚਾਹੁੰਦੇ ਹਨ.", "Polish": "Jestem maszyną i staram się tłumaczyć.", "Pashto": "زه د ماشين دی او زه د ترجمه کولو لپاره هڅه وکړم.", "Portuguese": "Sou uma máquina e estou tentando traduzir.", "Moldovan": "Sunt o mașină și încerc să traduc.", "Russian": "Я машина и стараюсь переводить.", "Sindhi": "آءٌ آئرلندي آھيان ۽ آءٌ ترجمو ڪرڻ جي ڪوشش ڪريان ٿو.", "Sinhalese": "මම පරිගණකයක්, මම පරිගණකයක්.", "Slovak": "Som stroj a snažím sa prekladať.", "Slovenian": "Jaz sem stroj in poskušam prevesti.", "Somali": "Waxaan waa mashiinka iyo waxaan ka mid ka mid ka mid ka mid.", "Albanian": "Unë jam një makinë dhe përpiqem të përkthehem.", "Serbian": "Ја сам машина и покушавам да преведем.", "Swati": "Ngena ngemvume nge-intanethi", "Sundanese": "Kuring mangrupakeun mesin jeung aku coba ngabalukarkeun.", "Swedish": "Jag är en maskin och jag försöker översätta.", "Swahili": "Mimi ni mtumiaji na nataka kutafsiri.", "Tamil": "I am a machine நான் மொழிபெயர்க்க முயற்சிக்கிறேன்", "Thai": "ฉันเป็นเครื่องและพยายามแปล", "Tagalog": "I'm a machine and I'm trying to translate.", "Tswana": "O nama, o nama, o nama, o nama.", "Turkish": "Ben bir makineyim ve tercüme etmeye çalışıyorum.", "Ukrainian": "Я машинка, і я намагаюся перекласти.", "Urdu": "میں ایک مشین ہوں اور میں ترجمہ کرنے کی کوشش کرتا ہوں.", "Uzbek": "Bir makina ko‘yim, tulgan ko‘yim.", "Vietnamese": "Tôi là một máy móc và tôi cố gắng dịch.", "Wolof": "Ma bi bi bi bi bi bi bi bi bi bi bi bi", "Xhosa": "Ngaba umatshini kwaye nceda ukuba nceda.", "Yiddish": "עס איז עס, און א מעשה מעשה.", "Yoruba": "Mo ti wa ni a ẹrọ ati ki o ba tẹsiwaju.", "Chinese": "我是一台机器,我试着翻译。", "Zulu": "Ngaba umatshini, ngaba usayizi."
-                }
-                lang_realcasing = {
-                    'afrikaans': 'Afrikaans', 'amharic': 'Amharic', 'arabic': 'Arabic', 'asturian': 'Asturian', 'azerbaijani': 'Azerbaijani', 'bashkir': 'Bashkir', 'belarusian': 'Belarusian', 'bulgarian': 'Bulgarian', 'bengali': 'Bengali', 'breton': 'Breton', 'bosnian': 'Bosnian', 'valencian': 'Valencian', 'cebuano': 'Cebuano', 'czech': 'Czech', 'welsh': 'Welsh', 'danish': 'Danish', 'german': 'German', 'greeek': 'Greeek', 'english': 'English', 'spanish': 'Spanish', 'estonian': 'Estonian', 'persian': 'Persian', 'fulah': 'Fulah', 'finnish': 'Finnish', 'french': 'French', 'irish': 'Irish', 'scottish gaelic': 'Scottish Gaelic', 'galician': 'Galician', 'gujarati': 'Gujarati', 'hausa': 'Hausa', 'hebrew': 'Hebrew', 'hindi': 'Hindi', 'croatian': 'Croatian', 'haitian creole': 'Haitian Creole', 'hungarian': 'Hungarian', 'armenian': 'Armenian', 'indonesian': 'Indonesian', 'igbo': 'Igbo', 'iloko': 'Iloko', 'icelandic': 'Icelandic', 'italian': 'Italian', 'japanese': 'Japanese', 'javanese': 'Javanese', 'georgian': 'Georgian', 'kazakh': 'Kazakh', 'central khmer': 'Central Khmer', 'kannada': 'Kannada', 'korean': 'Korean', 'letzeburgesch': 'Letzeburgesch', 'ganda': 'Ganda', 'lingala': 'Lingala', 'lao': 'Lao', 'lithuanian': 'Lithuanian', 'latvian': 'Latvian', 'malagasy': 'Malagasy', 'macedonian': 'Macedonian', 'malayalam': 'Malayalam', 'mongolian': 'Mongolian', 'marathi': 'Marathi', 'malay': 'Malay', 'burmese': 'Burmese', 'nepali': 'Nepali', 'flemish': 'Flemish', 'norwegian': 'Norwegian', 'northern sotho': 'Northern Sotho', 'occitan': 'Occitan', 'oriya': 'Oriya', 'punjabi': 'Punjabi', 'polish': 'Polish', 'pashto': 'Pashto', 'portuguese': 'Portuguese', 'moldovan': 'Moldovan', 'russian': 'Russian', 'sindhi': 'Sindhi', 'sinhalese': 'Sinhalese', 'slovak': 'Slovak', 'slovenian': 'Slovenian', 'somali': 'Somali', 'albanian': 'Albanian', 'serbian': 'Serbian', 'swati': 'Swati', 'sundanese': 'Sundanese', 'swedish': 'Swedish', 'swahili': 'Swahili', 'tamil': 'Tamil', 'thai': 'Thai', 'tagalog': 'Tagalog', 'tswana': 'Tswana', 'turkish': 'Turkish', 'ukrainian': 'Ukrainian', 'urdu': 'Urdu', 'uzbek': 'Uzbek', 'vietnamese': 'Vietnamese', 'wolof': 'Wolof', 'xhosa': 'Xhosa', 'yiddish': 'Yiddish', 'yoruba': 'Yoruba', 'chinese': 'Chinese', 'zulu': 'Zulu'
-                }
+                var textContent = "The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.";
                 $("#copybutton").click(function(){
-                    if($('input[class=sourcelang]').val() == ""){
-                        $("#sourceAlert").show()
-                        return false;
-                    }
-                    langValLower = $('input[class=sourcelang]').val();
-                    langVal = lang_realcasing[langValLower];
-                    var textContent = sentence_dict[langVal]
                     $("#textareasource").val(textContent);
-                    // $('input[class=sourcelang]').val(langVal).change();
                 });
             });
 
@@ -132,23 +77,19 @@
                         },
                         success: function(data){
                             if (data["message"] == "success"){
-                                // console.log(data);
+                                console.log(data);
 
-                                if("sourceLangDict" in data && "targetLangDict" in data){
-                                    var lang = data['sourceLangDict'];
-                                    console.log(lang)
+                                if("source_lang" in data && "target_lang" in data){
+                                    var lang = data['source_lang'];
                                     var divs = '';
-                                    for (let k in lang) {
-                                        console.log('source ' + k + ' is ' + lang[k])
-                                        divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
+                                    for( var i = 0; i< lang.length; i++){
+                                        divs = divs + "<div class='item' data-id=" + lang[i]["id"] +">"+ lang[i]["name"] + "</div>"
                                     }
                                     $('#sourcel').html(divs);
-                                    var lang = data['targetLangDict'];
-                                    console.log(lang)
+                                    var lang = data['target_lang'];
                                     var divs = '';
-                                    for (let k in lang) {
-                                        console.log('target ' + k + ' is ' + lang[k])
-                                        divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
+                                    for( var i = 0; i< lang.length; i++){
+                                        divs = divs + "<div class='item' data-id=" + lang[i]["id"] +">"+ lang[i]["name"] + "</div>"
                                     }
                                     $('#targetl').html(divs);
                                 }
@@ -655,8 +596,9 @@
         <br /><br /><br /><br />
         <div class="container">
             <form method="POST" action="">
-				<!-- <p id="textsample">A sample sentence: The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.</p> -->
-                <br />
+				<p id="textsample">A sample sentence: The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.</p>
+                <button id ="copybutton" type="button" class="btn btn-sm btn-info" ><i class="fa fa-clone"></i> Copy to Text Area</button> <button id ="clearbutton" type="button" class="btn btn-sm btn-info" ><i class="fa fa-refresh"></i> Clear Text Area</button>
+                <br /><br />
                 <div class="container ui stackable equal width grid">
                     <div class="ui fluid alert alert-warning column" style="display: none" id="sourceAlert"> 
                         <a class="close" onclick="$('#sourceAlert').hide()">×</a>  
@@ -708,16 +650,12 @@
                                 <div class="item" data-id="af">Afrikaans</div><div class="item" data-id="sq">Albanian</div><div class="item" data-id="am">Amharic</div><div class="item" data-id="ar">Arabic</div><div class="item" data-id="hy">Armenian</div><div class="item" data-id="ast">Asturian</div><div class="item" data-id="az">Azerbaijani</div><div class="item" data-id="ba">Bashkir</div><div class="item" data-id="be">Belarusian</div><div class="item" data-id="bg">Bulgarian</div><div class="item" data-id="bn">Bengali</div><div class="item" data-id="br">Breton</div><div class="item" data-id="bs">Bosnian</div><div class="item" data-id="ceb">Cebuano</div><div class="item" data-id="zh">Chinese</div><div class="item" data-id="cs">Czech</div><div class="item" data-id="da">Danish</div><div class="item" data-id="en">English</div><div class="item" data-id="et">Estonian</div><div class="item" data-id="fi">Finnish</div><div class="item" data-id="nl">Flemish</div><div class="item" data-id="fr">French</div><div class="item" data-id="ff">Fulah</div><div class="item" data-id="de">German</div><div class="item" data-id="el">Greeek</div><div class="item" data-id="fa">Persian</div><div class="item" data-id="ga">Irish</div><div class="item" data-id="gd">Scottish Gaelic</div><div class="item" data-id="gl">Galician</div><div class="item" data-id="lg">Ganda</div><div class="item" data-id="gu">Gujarati</div><div class="item" data-id="ha">Hausa</div><div class="item" data-id="he">Hebrew</div><div class="item" data-id="hi">Hindi</div><div class="item" data-id="hr">Croatian</div><div class="item" data-id="ht">Haitian Creole</div><div class="item" data-id="hu">Hungarian</div><div class="item" data-id="id">Indonesian</div><div class="item" data-id="ig">Igbo</div><div class="item" data-id="ilo">Iloko</div><div class="item" data-id="is">Icelandic</div><div class="item" data-id="it">Italian</div><div class="item" data-id="ja">Japanese</div><div class="item" data-id="jv">Javanese</div><div class="item" data-id="ka">Georgian</div><div class="item" data-id="kk">Kazakh</div><div class="item" data-id="km">Central Khmer</div><div class="item" data-id="kn">Kannada</div><div class="item" data-id="ko">Korean</div><div class="item" data-id="lb">Letzeburgesch</div><div class="item" data-id="ln">Lingala</div><div class="item" data-id="lo">Lao</div><div class="item" data-id="lt">Lithuanian</div><div class="item" data-id="lv">Latvian</div><div class="item" data-id="mk">Macedonian</div><div class="item" data-id="mg">Malagasy</div><div class="item" data-id="ml">Malayalam</div><div class="item" data-id="mr">Marathi</div><div class="item" data-id="mn">Mongolian</div><div class="item" data-id="ro">Moldovan</div><div class="item" data-id="ms">Malay</div><div class="item" data-id="my">Burmese</div><div class="item" data-id="ne">Nepali</div><div class="item" data-id="no">Norwegian</div><div class="item" data-id="ns">Northern Sotho</div><div class="item" data-id="oc">Occitan</div><div class="item" data-id="or">Oriya</div><div class="item" data-id="pa">Punjabi</div><div class="item" data-id="pl">Polish</div><div class="item" data-id="ps">Pashto</div><div class="item" data-id="pt">Portuguese</div><div class="item" data-id="ru">Russian</div><div class="item" data-id="sr">Serbian</div><div class="item" data-id="sd">Sindhi</div><div class="item" data-id="si">Sinhalese</div><div class="item" data-id="sk">Slovak</div><div class="item" data-id="sl">Slovenian</div><div class="item" data-id="so">Somali</div><div class="item" data-id="es">Spanish</div><div class="item" data-id="ss">Swati</div><div class="item" data-id="su">Sundanese</div><div class="item" data-id="sv">Swedish</div><div class="item" data-id="sw">Swahili</div><div class="item" data-id="ta">Tamil</div><div class="item" data-id="th">Thai</div><div class="item" data-id="tl">Tagalog</div><div class="item" data-id="tn">Tswana</div><div class="item" data-id="tr">Turkish</div><div class="item" data-id="uk">Ukrainian</div><div class="item" data-id="ur">Urdu</div><div class="item" data-id="uz">Uzbek</div><div class="item" data-id="ca">Valencian</div><div class="item" data-id="vi">Vietnamese</div><div class="item" data-id="cy">Welsh</div><div class="item" data-id="wo">Wolof</div><div class="item" data-id="xh">Xhosa</div><div class="item" data-id="yi">Yiddish</div><div class="item" data-id="yo">Yoruba</div><div class="item" data-id="zu">Zulu</div>
                             </div>
                         </div>
-                    </div>
-                    
-					<br />
-                    <p id="lang0" style="display: none"></p>
-                    <hr />
-                    <button id ="copybutton" type="button" class="btn btn-sm btn-info" ><i class="fa fa-clone"></i> Generate Sentence in Selected Source Langauge</button> <button id ="clearbutton" type="button" class="btn btn-sm btn-info" ><i class="fa fa-refresh"></i> Clear Text Area</button>
-                    <hr/>
+                      </div>
+					
+					<br /><br />
                     <textarea rows="5" cols="5" class="form-control" id="textareasource" placeholder="Enter text (preferably one sentence)" name="rawtext" required>{{ source_text }}</textarea>
                     <br />
-                    <button id ="translate" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp;Translate</button>
+                    <button id ="translate" type="button" class="btn btn-info" ><i class="fa fa-database"></i> Translate</button>
                 </div>
             </form>
         </div>
@@ -754,7 +692,7 @@
         <footer class="footer">
           <div class="container">
             <span class="text-muted">
-                V. 1.0 - Being developed by Chinmay Sawant, Diptesh Kanojia, and Raj Dabre</a>; Translation model at <a href="https://huggingface.co/docs/transformers/model_doc/m2m_100">HuggingFace FB-M2M Model</a>.
+                V. 0.2 - Being developed by Raj Dabre, Chinmay Sawant, and Diptesh Kanojia</a>; Translation model at <a href="https://huggingface.co/docs/transformers/model_doc/m2m_100">HuggingFace FB-M2M Model</a>.
             </span>
           </div>
         </footer>
