@@ -5,7 +5,7 @@ from flask import jsonify, abort, request, Blueprint, render_template
 from bertviz.bertviz import model_view
 from config import MODELS_PATH
 from transformers import  MBartForConditionalGeneration, AutoModelForSeq2SeqLM
-from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
+# from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 from transformers import AlbertTokenizer, AutoTokenizer
 import json
 import torch
@@ -17,6 +17,7 @@ REQUEST_API = Blueprint('request_api', __name__)
 tokenizer = ''
 model = ''
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
+langidLangs = ["af", "am", "ar", "az", "be", "bg", "bn", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "ga", "gl", "gu", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jv", "ka", "kk", "km", "kn", "ko", "lb", "lo", "lt", "lv", "mg", "mk", "ml", "mn", "mr", "ms", "ne", "nl", "no", "oc", "or", "pa", "pl", "ps", "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "th", "tl", "tr", "uk", "ur", "vi", "xh", "zh", "zu"]
 
 languages = ["Afrikaans", "Amharic", "Arabic", "Asturian", "Azerbaijani", "Bashkir", "Belarusian", "Bulgarian", "Bengali", "Breton", "Bosnian", "Valencian", "Cebuano", "Czech", "Welsh", "Danish", "German", "Greeek", "English", "Spanish", "Estonian", "Persian", "Fulah", "Finnish", "French", "Irish", "Scottish Gaelic", "Galician", "Gujarati", "Hausa", "Hebrew", "Hindi", "Croatian", "Haitian Creole", "Hungarian", "Armenian", "Indonesian", "Igbo", "Iloko", "Icelandic", "Italian", "Japanese", "Javanese", "Georgian", "Kazakh", "Central Khmer", "Kannada", "Korean", "Letzeburgesch", "Ganda", "Lingala", "Lao", "Lithuanian", "Latvian", "Malagasy", "Macedonian", "Malayalam", "Mongolian", "Marathi", "Malay", "Burmese", "Nepali", "Flemish", "Norwegian", "Northern Sotho", "Occitan", "Oriya", "Punjabi", "Polish", "Pashto", "Portuguese", "Moldovan", "Russian", "Sindhi", "Sinhalese", "Slovak", "Slovenian", "Somali", "Albanian", "Serbian", "Swati", "Sundanese", "Swedish", "Swahili", "Tamil", "Thai", "Tagalog", "Tswana", "Turkish", "Ukrainian", "Urdu", "Uzbek", "Vietnamese", "Wolof", "Xhosa", "Yiddish", "Yoruba", "Chinese", "Zulu"]
 langslow = (map(lambda x: x.lower(), languages))

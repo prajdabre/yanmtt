@@ -58,15 +58,19 @@ if __name__ == '__main__':
 
     PARSER.add_argument('--debug', action='store_true',
                         help="Use flask debug/dev mode with file change reloading")
+    PARSER.add_argument('--port', type=int,
+                        help="specify port for the application.")
     ARGS = PARSER.parse_args()
-    if len(sys.argv) > 1:
-        PORT = int(os.environ.get('PORT', sys.argv[1]))
+    if(ARGS.port):
+        PORT = int(os.environ.get('PORT', ARGS.port))
     else:
         print("\n==================================================================")
         print("Please always specify a port, for now I am defaulting to port 5000")
         print("Try executing something like: python app.py <PORT>")
         print("==================================================================\n")
         PORT = int(os.environ.get('PORT', 5000))
+
+    
 
     if ARGS.debug:
         print("Running in debug mode")
