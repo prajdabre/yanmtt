@@ -5,7 +5,7 @@ from flask import jsonify, abort, request, Blueprint, render_template
 from bertviz.bertviz import model_view
 from config import MODELS_PATH
 from transformers import  MBartForConditionalGeneration, AutoModelForSeq2SeqLM
-# from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
+from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 from transformers import AlbertTokenizer, AutoTokenizer
 import json
 import torch
@@ -17,7 +17,6 @@ REQUEST_API = Blueprint('request_api', __name__)
 tokenizer = ''
 model = ''
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-langidLangs = ["af", "am", "ar", "az", "be", "bg", "bn", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "ga", "gl", "gu", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jv", "ka", "kk", "km", "kn", "ko", "lb", "lo", "lt", "lv", "mg", "mk", "ml", "mn", "mr", "ms", "ne", "nl", "no", "oc", "or", "pa", "pl", "ps", "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "th", "tl", "tr", "uk", "ur", "vi", "xh", "zh", "zu"]
 
 languages = ["Afrikaans", "Amharic", "Arabic", "Asturian", "Azerbaijani", "Bashkir", "Belarusian", "Bulgarian", "Bengali", "Breton", "Bosnian", "Valencian", "Cebuano", "Czech", "Welsh", "Danish", "German", "Greeek", "English", "Spanish", "Estonian", "Persian", "Fulah", "Finnish", "French", "Irish", "Scottish Gaelic", "Galician", "Gujarati", "Hausa", "Hebrew", "Hindi", "Croatian", "Haitian Creole", "Hungarian", "Armenian", "Indonesian", "Igbo", "Iloko", "Icelandic", "Italian", "Japanese", "Javanese", "Georgian", "Kazakh", "Central Khmer", "Kannada", "Korean", "Letzeburgesch", "Ganda", "Lingala", "Lao", "Lithuanian", "Latvian", "Malagasy", "Macedonian", "Malayalam", "Mongolian", "Marathi", "Malay", "Burmese", "Nepali", "Flemish", "Norwegian", "Northern Sotho", "Occitan", "Oriya", "Punjabi", "Polish", "Pashto", "Portuguese", "Moldovan", "Russian", "Sindhi", "Sinhalese", "Slovak", "Slovenian", "Somali", "Albanian", "Serbian", "Swati", "Sundanese", "Swedish", "Swahili", "Tamil", "Thai", "Tagalog", "Tswana", "Turkish", "Ukrainian", "Urdu", "Uzbek", "Vietnamese", "Wolof", "Xhosa", "Yiddish", "Yoruba", "Chinese", "Zulu"]
 langslow = (map(lambda x: x.lower(), languages))
@@ -61,18 +60,12 @@ def load_model():
             path = MODELS_PATH + "/" + model_name
             tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, do_lower_case=False, use_fast=False, keep_accents=True)
             model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=True).to(device)
-            ## Hindi <2hi> English <2en> format parsing
-            lang_path = MODELS_PATH + "/" + model_name + "/supported_languages.txt"
-            file1 = open(lang_path, 'r')
-            Lines = file1.readlines()
-            sourceLangDict = {}
-            targetLangDict = {}
-            for line in Lines:
-                lineSplit = line.split()
-                sourceLangDict[lineSplit[0]] = lineSplit[1].replace('2', '')
-                targetLangDict[lineSplit[2]] = lineSplit[3].replace('2', '')
-            return jsonify({"message": "success", "sourceLangDict": sourceLangDict, "targetLangDict": targetLangDict})
-
+            # model.eval()
+            lang_path = MODELS_PATH + "/" + model_name + "/lang.json"
+            data = json.load(open(lang_path))
+            return jsonify({"message": "success",
+                            "source_lang": data["source_lang"],
+                            "target_lang": data["target_lang"]})
         except:
             return jsonify({"message": "fail"})
 
@@ -112,12 +105,16 @@ def translate():
         output_prefix = "<2"+target_l+"> "
         
         inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
+        # print(next(model.parameters()).device)
         model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=20, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix)).to(device)
         decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
         result = {
             "translated_text": decoded_output
         }
         return jsonify(result), 200
+        # print(model_output)
+        # print(decoded_output)
+        # out = tokenizer("<2hi> मैं  एक लड़का हूँ </s>", add_special_tokens=False, return_tensors="pt", padding=True).input_ids # tensor([[64006,   942,    43, 32720,  8384, 64001]])
     else:
         abort(400)
     
@@ -130,6 +127,7 @@ def visualize():
         abort(400)
     
     source_text = request.form['rawtext']
+    # print(langDict)
     source_l = langDict[request.form['sourcelang'].lower()]
     if(source_l == ''):
         tokenizer.src_lang = "en"
@@ -137,6 +135,7 @@ def visualize():
         tokenizer.src_lang = source_l
     
     target_l = langDict[request.form['targetlang'].lower()]
+    # print(target_l)
     if(target_l == ''):
         target_l = "de"
     else:
@@ -169,6 +168,7 @@ def visualize():
         output_prefix = "<2"+target_l+"> "
         
         inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
+        # print(next(model.parameters()).device)
         model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=20, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc("<2en>")).to(device)
         decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
         outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)
