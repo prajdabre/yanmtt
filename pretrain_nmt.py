@@ -313,7 +313,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
                     torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
                     torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
                     ## Copy the long saved model deploy folder.
-                    os.system("cp "+CHECKPOINT_PATH+"."+str(ctr)+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin
+                    os.system("cp "+CHECKPOINT_PATH+"."+str(ctr)+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()

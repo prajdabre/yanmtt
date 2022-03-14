@@ -53,8 +53,7 @@ from common_utils import *
 ## Other imports
 import math
 import random
-import 
- as np
+import numpy as np
 import sacrebleu
 from rouge_score import rouge_scorer
 import gc
