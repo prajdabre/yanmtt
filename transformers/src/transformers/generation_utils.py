@@ -390,6 +390,14 @@ class GenerationMixin:
         encoder_kwargs = {
             argument: value for argument, value in model_kwargs.items() if not argument.startswith("decoder_")
         }
+
+        if self.config.prompt_tuning:
+            encoder_kwargs["prompt_params"] = self.prompt_params(0)[0]
+
+        if self.config.adaptor_tuning:
+            encoder_kwargs["adaptor_layers"] = self.adaptor_layers
+            encoder_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
+            
         model_kwargs["encoder_outputs"]: ModelOutput = encoder(input_ids, return_dict=True, **encoder_kwargs)
         ## Modified by Raj Dabre. Start.
         if self._get_name() == "MBartForConditionalGeneration" and self.config.multi_source:
@@ -870,7 +878,6 @@ class GenerationMixin:
         return_dict_in_generate = (
             return_dict_in_generate if return_dict_in_generate is not None else self.config.return_dict_in_generate
         )
-
         model_kwargs["output_attentions"] = output_attentions
         model_kwargs["output_hidden_states"] = output_hidden_states
 
@@ -1251,7 +1258,9 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if self._get_name() == "MBartForConditionalGeneration":
                 model_inputs["curr_decode_length"] = cur_len
+
             # forward pass to get next token
+            # print(model_inputs)
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -1474,6 +1483,7 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if self._get_name() == "MBartForConditionalGeneration":
                 model_inputs["curr_decode_length"] = cur_len
+                
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -1715,6 +1725,8 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if self._get_name() == "MBartForConditionalGeneration":
                 model_inputs["curr_decode_length"] = cur_len
+                
+
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -1989,6 +2001,7 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if self._get_name() == "MBartForConditionalGeneration":
                 model_inputs["curr_decode_length"] = cur_len
+                
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -2273,6 +2286,8 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if self._get_name() == "MBartForConditionalGeneration":
                 model_inputs["curr_decode_length"] = cur_len
+                
+                    
             outputs = self(
                 **model_inputs,
                 return_dict=True,

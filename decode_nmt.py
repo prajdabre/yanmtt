@@ -31,7 +31,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 
 ## Huggingface imports
 import transformers
-from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer
+from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
 from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
@@ -76,7 +76,7 @@ def model_create_load_decode(gpu, args):
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     if args.use_official_pretrained:
-        if "mbart" in args.model_path:
+        if "mbart" in args.model_path or "IndicBART" in args.model_path:
             if "50" in args.model_path:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
             else:
@@ -84,7 +84,11 @@ def model_create_load_decode(gpu, args):
         else:
             tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
     else:
-        tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        if "albert" in args.tokenizer_name_or_path:
+            tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        elif "mbart" in args.tokenizer_name_or_path:
+            tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+        ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
 
     print("Tokenizer is:", tok)
 
@@ -99,12 +103,29 @@ def model_create_load_decode(gpu, args):
         print("Using unidirectional encoder.")
     
     if args.use_official_pretrained:
-        if "mbart" in args.model_path:
-            model = MBartForConditionalGeneration.from_pretrained(args.model_path) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+        if "mbart" in args.model_path or "IndicBART" in args.model_path:
+            config = MBartConfig.from_pretrained(args.model_path)
+            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
+            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
+            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
+            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
+            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
+            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
+            model = MBartForConditionalGeneration.from_pretrained(args.model_path, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+            
         elif "bart" in args.model_path:
-            model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
-    else:
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings) ## Configuration.
+            config = BartConfig.from_pretrained(args.model_path)
+            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
+            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
+            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
+            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
+            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
+            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
+            model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
+    else: ## Its a locally trained model. You should know the config.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
         model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -121,9 +142,9 @@ def model_create_load_decode(gpu, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -134,6 +155,10 @@ def model_create_load_decode(gpu, args):
             refs = [[refline.strip() for refline in open(args.test_ref)]]
         for input_ids, input_masks in generate_batches_for_decoding(tok, args): #infinite_same_sentence(10000):
             start = time.time()
+            if args.prompt_tuning:
+                input_shape = input_masks.size()
+                encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+                input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             print("Processing batch:", ctr)
             if args.multi_source:
                 input_ids_parent = input_ids[1]
@@ -369,6 +394,10 @@ def run_demo():
                         help='This assumes that we dont mask token sequences randomly but only after the latter half of the sentence. We do this to make the model more robust towards missing future information. Granted we can achieve this using wait-k but methinks this may be a better way of training.')
     parser.add_argument('--unidirectional_encoder', action='store_true', 
                         help='This assumes that we use a unidirectional encoder. This is simulated via a lower-triangular matrix mask in the encoder. Easy peasy lemon squeazy.')
+    parser.add_argument('--no_positional_encoding_encoder', action='store_true', 
+                        help='This assumes that we dont use positional encodings for encoder')
+    parser.add_argument('--no_positional_encoding_decoder', action='store_true', 
+                        help='This assumes that we dont use positional encodings for decoder')
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
@@ -412,6 +441,8 @@ def run_demo():
                         help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
     parser.add_argument('--tlang', default='hi', type=str, 
                         help='Target language')
+    parser.add_argument('--activation_function', default='gelu', type=str, 
+                            help='Activation function. gelu is default. We can use relu or others.')
     parser.add_argument('--test_src', default='', type=str, 
                         help='Source language test sentences')
     parser.add_argument('--test_tgt', default='', type=str, 
@@ -440,6 +471,24 @@ def run_demo():
                         help='Lets wipe out the decoder params from the pretrained model before we use it to initialize the current model. This means we have random decoder initialization.')
     parser.add_argument('--eliminate_embeddings_before_initialization', action='store_true', 
                         help='Lets wipe out the embedding params from the pretrained model before we use it to initialize the current model. This means we have random embedding initialization.')
+    parser.add_argument('--use_moe', action='store_true', 
+                        help='Should we use mixtures of experts instead of regular FFNs?".')
+    parser.add_argument('--num_experts', default=8, type=int, help="How many MOE experts should we use?")
+    parser.add_argument('--expert_ffn_size', default=128, type=int, help="What is the hidden size of the MOE?")
+    parser.add_argument('--prompt_tuning', action='store_true', 
+                        help='Should we use continuous prompts and tune them?')
+    parser.add_argument('--initialize_prompts_with_random_embeddings', action='store_true', 
+                        help='Should we use initialize the prompts with random embeddings?')
+    parser.add_argument('--num_prompts', default=100, type=int, help="How many prompts should we use?")
+    parser.add_argument('--adaptor_tuning', action='store_true', 
+                        help='Should we use lightweight adaptors? (Only applied to the final layer)')
+    parser.add_argument('--deep_adaptor_tuning', action='store_true', 
+                        help='Should we use deep lightweight adaptors? (Applied to each layer)')
+    parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
+    parser.add_argument('--hypercomplex', action='store_true', 
+                        help='Should we use hypercomplex adaptors?')
+    parser.add_argument('--hypercomplex_n', default=2, type=int, help="What is the scaling factor for hypercomplex params?")
+    parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     
     args = parser.parse_args()
     assert len(args.token_masking_probs_range) <= 2

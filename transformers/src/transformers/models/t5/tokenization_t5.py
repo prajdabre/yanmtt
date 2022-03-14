@@ -247,7 +247,7 @@ class T5Tokenizer(PreTrainedTokenizer):
         self.sp_model = spm.SentencePieceProcessor()
         self.sp_model.Load(self.vocab_file)
 
-    def _tokenize(self, text, sample=False):
+    def _tokenize(self, text, sample=False, nbest=-1, dropout=0.1):
         """Take as input a string and return a list of strings (tokens) for words/sub-words"""
         if not sample:
             pieces = self.sp_model.EncodeAsPieces(text)
