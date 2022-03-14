@@ -60,12 +60,18 @@ def load_model():
             path = MODELS_PATH + "/" + model_name
             tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, do_lower_case=False, use_fast=False, keep_accents=True)
             model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=True).to(device)
-            # model.eval()
-            lang_path = MODELS_PATH + "/" + model_name + "/lang.json"
-            data = json.load(open(lang_path))
-            return jsonify({"message": "success",
-                            "source_lang": data["source_lang"],
-                            "target_lang": data["target_lang"]})
+            ## Hindi <2hi> English <2en> format parsing
+            lang_path = MODELS_PATH + "/" + model_name + "/supported_languages.txt"
+            file1 = open(lang_path, 'r')
+            Lines = file1.readlines()
+            sourceLangDict = {}
+            targetLangDict = {}
+            for line in Lines:
+                lineSplit = line.split()
+                sourceLangDict[lineSplit[0]] = lineSplit[1].replace('2', '')
+                targetLangDict[lineSplit[2]] = lineSplit[3].replace('2', '')
+            return jsonify({"message": "success", "sourceLangDict": sourceLangDict, "targetLangDict": targetLangDict})
+
         except:
             return jsonify({"message": "fail"})
 
@@ -105,16 +111,12 @@ def translate():
         output_prefix = "<2"+target_l+"> "
         
         inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
-        # print(next(model.parameters()).device)
         model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=20, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix)).to(device)
         decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
         result = {
             "translated_text": decoded_output
         }
         return jsonify(result), 200
-        # print(model_output)
-        # print(decoded_output)
-        # out = tokenizer("<2hi> मैं  एक लड़का हूँ </s>", add_special_tokens=False, return_tensors="pt", padding=True).input_ids # tensor([[64006,   942,    43, 32720,  8384, 64001]])
     else:
         abort(400)
     
@@ -127,7 +129,6 @@ def visualize():
         abort(400)
     
     source_text = request.form['rawtext']
-    # print(langDict)
     source_l = langDict[request.form['sourcelang'].lower()]
     if(source_l == ''):
         tokenizer.src_lang = "en"
@@ -135,7 +136,6 @@ def visualize():
         tokenizer.src_lang = source_l
     
     target_l = langDict[request.form['targetlang'].lower()]
-    # print(target_l)
     if(target_l == ''):
         target_l = "de"
     else:
@@ -168,7 +168,6 @@ def visualize():
         output_prefix = "<2"+target_l+"> "
         
         inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
-        # print(next(model.parameters()).device)
         model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=20, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc("<2en>")).to(device)
         decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
         outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)

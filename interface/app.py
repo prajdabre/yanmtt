@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import sys
 from flask import Flask, jsonify, make_response
 from flask_cors import CORS
 from flask_swagger_ui import get_swaggerui_blueprint
@@ -58,8 +59,14 @@ if __name__ == '__main__':
     PARSER.add_argument('--debug', action='store_true',
                         help="Use flask debug/dev mode with file change reloading")
     ARGS = PARSER.parse_args()
-
-    PORT = int(os.environ.get('PORT', 5000))
+    if len(sys.argv) > 1:
+        PORT = int(os.environ.get('PORT', sys.argv[1]))
+    else:
+        print("\n==================================================================")
+        print("Please always specify a port, for now I am defaulting to port 5000")
+        print("Try executing something like: python app.py <PORT>")
+        print("==================================================================\n")
+        PORT = int(os.environ.get('PORT', 5000))
 
     if ARGS.debug:
         print("Running in debug mode")

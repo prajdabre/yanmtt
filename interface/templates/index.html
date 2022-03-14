@@ -18,21 +18,62 @@
         <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.2.1/js/bootstrap.min.js" integrity="sha384-B0UglyR+jN6CkvvICOB2joaf5I4l3gm9GU6Hc1og6Ls7i6U/mkkaduKaBhlAXv9k" crossorigin="anonymous"></script>
         <script src="{{ url_for('static', filename='semantic.js') }}"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.7.0/d3.min.js"></script>
+        <script src="{{ url_for('static', filename='langid-model-full.js') }}"></script>
+        <script src="{{ url_for('static', filename='langid.js') }}"></script>
         <script>
+            $(document).on('click','#yesLang',function(){
+                $("#lang0").html('');
+                $("#lang0").hide();
+                return false;
+            });
+            $(document).on('click','#noLang',function(){
+                $('input[class=sourcelang]').val("").change();
+                $("#lang0").html('Select a source language on your own, stop bothering me! I was just trying to help!');
+                setTimeout(function() { 
+                    $('#lang0').fadeOut();
+                }, 2000);
+                return false;
+            });
+            $(document).ready(function() {
+                langs_dictionary={ 
+                    "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az": "Azerbaijani", "be": "Belarusian", "bg": "Bulgarian", "bn": "Bengali", "br": "Breton", "bs": "Bosnian", "ca": "Valencian", "cs": "Czech", "cy": "Welsh", "da": "Danish", "de": "German", "el": "Greeek", "en": "English", "es": "Spanish", "et": "Estonian", "fa": "Persian", "fi": "Finnish", "fr": "French", "ga": "Irish", "gl": "Galician", "gu": "Gujarati", "he": "Hebrew", "hi": "Hindi", "hr": "Croatian", "ht": "Haitian Creole", "hu": "Hungarian", "hy": "Armenian", "id": "Indonesian", "is": "Icelandic", "it": "Italian", "ja": "Japanese", "jv": "Javanese", "ka": "Georgian", "kk": "Kazakh", "km": "Central Khmer", "kn": "Kannada", "ko": "Korean", "lb": "Letzeburgesch", "lo": "Lao", "lt": "Lithuanian", "lv": "Latvian", "mg": "Malagasy", "mk": "Macedonian", "ml": "Malayalam", "mn": "Mongolian", "mr": "Marathi", "ms": "Malay", "ne": "Nepali", "nl": "Flemish", "no": "Norwegian", "oc": "Occitan", "or": "Oriya", "pa": "Punjabi", "pl": "Polish", "ps": "Pashto", "pt": "Portuguese", "ro": "Moldovan", "ru": "Russian", "si": "Sinhalese", "sk": "Slovak", "sl": "Slovenian", "sq": "Albanian", "sr": "Serbian", "sv": "Swedish", "sw": "Swahili", "ta": "Tamil", "th": "Thai", "tl": "Tagalog", "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu", "vi": "Vietnamese", "xh": "Xhosa", "zh": "Chinese", "zu": "Zulu"
+                };
+                $("#textareasource").keyup(displayType);
+            
+                function displayType(){
+                    var contents = $("#textareasource").val();
+                        if (contents.length == 0) {
+                            $("#detLangText").hide();
+                            $("#lang0").hide();
+                        }
+                        else{
+                            var rank = langid.rank(contents);
+                            for (var i=0;i<1;i++){
+                                $("#lang0").html("Source Language: " + langs_dictionary[rank[i]["lang"]] + "?  " + "<button id='yesLang' class='btn btn-sm btn-primary' type='button' >Yes</button>&nbsp;&nbsp;&nbsp;" + "<button id='noLang' class='btn btn-sm btn-danger' type='button' >No</button>");
+                                $('input[class=sourcelang]').val(langs_dictionary[rank[i]["lang"]]).change();
+                            }
+                            if (contents != "The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.")
+                            {
+                                $("#detLangText").show();
+                                $("#lang0").show();
+                            }
+                        }
+                    }
+            });
             $(document).ready(function(){
                 $('.ui.dropdown')
                 .dropdown();
             });
 
             $(document).ready(function(){
-                var hf_models = ['facebook/m2m100_418M', 'facebook/m2m100_1.2B']
+                // var hf_models = ['facebook/m2m100_418M', 'facebook/m2m100_1.2B']
                 $.ajax({
                     url: "{{ url_for('request_api.models') }}",
                     type: 'GET',
                     dataType: 'json',
                     success: function(data){
                         var models = data['models'];
-                        models = models.concat(hf_models);
+                        // models = models.concat(hf_models);
                         for( var i = 0; i< models.length; i++){
                                 $('#models').append("<div class='item'>"+ models[i] + "</div>");
                         }
@@ -77,19 +118,23 @@
                         },
                         success: function(data){
                             if (data["message"] == "success"){
-                                console.log(data);
+                                // console.log(data);
 
-                                if("source_lang" in data && "target_lang" in data){
-                                    var lang = data['source_lang'];
+                                if("sourceLangDict" in data && "targetLangDict" in data){
+                                    var lang = data['sourceLangDict'];
+                                    console.log(lang)
                                     var divs = '';
-                                    for( var i = 0; i< lang.length; i++){
-                                        divs = divs + "<div class='item' data-id=" + lang[i]["id"] +">"+ lang[i]["name"] + "</div>"
+                                    for (let k in lang) {
+                                        console.log('source ' + k + ' is ' + lang[k])
+                                        divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
                                     }
                                     $('#sourcel').html(divs);
-                                    var lang = data['target_lang'];
+                                    var lang = data['targetLangDict'];
+                                    console.log(lang)
                                     var divs = '';
-                                    for( var i = 0; i< lang.length; i++){
-                                        divs = divs + "<div class='item' data-id=" + lang[i]["id"] +">"+ lang[i]["name"] + "</div>"
+                                    for (let k in lang) {
+                                        console.log('target ' + k + ' is ' + lang[k])
+                                        divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
                                     }
                                     $('#targetl').html(divs);
                                 }
@@ -650,9 +695,11 @@
                                 <div class="item" data-id="af">Afrikaans</div><div class="item" data-id="sq">Albanian</div><div class="item" data-id="am">Amharic</div><div class="item" data-id="ar">Arabic</div><div class="item" data-id="hy">Armenian</div><div class="item" data-id="ast">Asturian</div><div class="item" data-id="az">Azerbaijani</div><div class="item" data-id="ba">Bashkir</div><div class="item" data-id="be">Belarusian</div><div class="item" data-id="bg">Bulgarian</div><div class="item" data-id="bn">Bengali</div><div class="item" data-id="br">Breton</div><div class="item" data-id="bs">Bosnian</div><div class="item" data-id="ceb">Cebuano</div><div class="item" data-id="zh">Chinese</div><div class="item" data-id="cs">Czech</div><div class="item" data-id="da">Danish</div><div class="item" data-id="en">English</div><div class="item" data-id="et">Estonian</div><div class="item" data-id="fi">Finnish</div><div class="item" data-id="nl">Flemish</div><div class="item" data-id="fr">French</div><div class="item" data-id="ff">Fulah</div><div class="item" data-id="de">German</div><div class="item" data-id="el">Greeek</div><div class="item" data-id="fa">Persian</div><div class="item" data-id="ga">Irish</div><div class="item" data-id="gd">Scottish Gaelic</div><div class="item" data-id="gl">Galician</div><div class="item" data-id="lg">Ganda</div><div class="item" data-id="gu">Gujarati</div><div class="item" data-id="ha">Hausa</div><div class="item" data-id="he">Hebrew</div><div class="item" data-id="hi">Hindi</div><div class="item" data-id="hr">Croatian</div><div class="item" data-id="ht">Haitian Creole</div><div class="item" data-id="hu">Hungarian</div><div class="item" data-id="id">Indonesian</div><div class="item" data-id="ig">Igbo</div><div class="item" data-id="ilo">Iloko</div><div class="item" data-id="is">Icelandic</div><div class="item" data-id="it">Italian</div><div class="item" data-id="ja">Japanese</div><div class="item" data-id="jv">Javanese</div><div class="item" data-id="ka">Georgian</div><div class="item" data-id="kk">Kazakh</div><div class="item" data-id="km">Central Khmer</div><div class="item" data-id="kn">Kannada</div><div class="item" data-id="ko">Korean</div><div class="item" data-id="lb">Letzeburgesch</div><div class="item" data-id="ln">Lingala</div><div class="item" data-id="lo">Lao</div><div class="item" data-id="lt">Lithuanian</div><div class="item" data-id="lv">Latvian</div><div class="item" data-id="mk">Macedonian</div><div class="item" data-id="mg">Malagasy</div><div class="item" data-id="ml">Malayalam</div><div class="item" data-id="mr">Marathi</div><div class="item" data-id="mn">Mongolian</div><div class="item" data-id="ro">Moldovan</div><div class="item" data-id="ms">Malay</div><div class="item" data-id="my">Burmese</div><div class="item" data-id="ne">Nepali</div><div class="item" data-id="no">Norwegian</div><div class="item" data-id="ns">Northern Sotho</div><div class="item" data-id="oc">Occitan</div><div class="item" data-id="or">Oriya</div><div class="item" data-id="pa">Punjabi</div><div class="item" data-id="pl">Polish</div><div class="item" data-id="ps">Pashto</div><div class="item" data-id="pt">Portuguese</div><div class="item" data-id="ru">Russian</div><div class="item" data-id="sr">Serbian</div><div class="item" data-id="sd">Sindhi</div><div class="item" data-id="si">Sinhalese</div><div class="item" data-id="sk">Slovak</div><div class="item" data-id="sl">Slovenian</div><div class="item" data-id="so">Somali</div><div class="item" data-id="es">Spanish</div><div class="item" data-id="ss">Swati</div><div class="item" data-id="su">Sundanese</div><div class="item" data-id="sv">Swedish</div><div class="item" data-id="sw">Swahili</div><div class="item" data-id="ta">Tamil</div><div class="item" data-id="th">Thai</div><div class="item" data-id="tl">Tagalog</div><div class="item" data-id="tn">Tswana</div><div class="item" data-id="tr">Turkish</div><div class="item" data-id="uk">Ukrainian</div><div class="item" data-id="ur">Urdu</div><div class="item" data-id="uz">Uzbek</div><div class="item" data-id="ca">Valencian</div><div class="item" data-id="vi">Vietnamese</div><div class="item" data-id="cy">Welsh</div><div class="item" data-id="wo">Wolof</div><div class="item" data-id="xh">Xhosa</div><div class="item" data-id="yi">Yiddish</div><div class="item" data-id="yo">Yoruba</div><div class="item" data-id="zu">Zulu</div>
                             </div>
                         </div>
-                      </div>
-					
-					<br /><br />
+                    </div>
+					<br />
+                    <p id="lang0" style="display: none"></p>
+                    <hr/>
+                    <br />
                     <textarea rows="5" cols="5" class="form-control" id="textareasource" placeholder="Enter text (preferably one sentence)" name="rawtext" required>{{ source_text }}</textarea>
                     <br />
                     <button id ="translate" type="button" class="btn btn-info" ><i class="fa fa-database"></i> Translate</button>
@@ -692,7 +739,7 @@
         <footer class="footer">
           <div class="container">
             <span class="text-muted">
-                V. 0.2 - Being developed by Raj Dabre, Chinmay Sawant, and Diptesh Kanojia</a>; Translation model at <a href="https://huggingface.co/docs/transformers/model_doc/m2m_100">HuggingFace FB-M2M Model</a>.
+                V. 1.0 - Being developed by Chinmay Sawant, Diptesh Kanojia, and Raj Dabre</a>; Translation model at <a href="https://huggingface.co/docs/transformers/model_doc/m2m_100">HuggingFace FB-M2M Model</a>.
             </span>
           </div>
         </footer>
