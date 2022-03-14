@@ -46,7 +46,6 @@ class BaseModelOutput(ModelOutput):
     last_hidden_state: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
-    moe_losses: Optional[Tuple[torch.FloatTensor]] = None
 
 
 @dataclass
@@ -245,7 +244,6 @@ class BaseModelOutputWithPastAndCrossAttentions(ModelOutput):
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
-    moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
 
 
 @dataclass
@@ -313,8 +311,6 @@ class Seq2SeqModelOutput(ModelOutput):
     additional_encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     additional_encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     context_encoder_representations: torch.FloatTensor = None
-    encoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
-    decoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     ## Modified by Raj Dabre. End.
 
 
@@ -563,8 +559,6 @@ class Seq2SeqLMOutput(ModelOutput):
     context_encoder_representations: torch.FloatTensor = None
     softmax_temperature: Optional[torch.FloatTensor] = None
     domain_classifier_logits: Optional[torch.FloatTensor] = None
-    encoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
-    decoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     ## Modified by Raj Dabre. End.
 
 @dataclass

@@ -31,7 +31,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 
 ## Huggingface imports
 import transformers
-from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
+from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer
 from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
@@ -78,7 +78,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
+        if "mbart" in args.pretrained_model:
             if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
             else:
@@ -86,20 +86,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
         else:
             tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
     else:
-        if "albert" in args.tokenizer_name_or_path:
-            tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
-        elif "mbart" in args.tokenizer_name_or_path:
-            tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
-        ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
-    tok.save_pretrained(args.model_path+"_deploy") ## Save the tokenizer for future use.
+        tok = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True) ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
     print("Tokenizer is:", tok)
-
-    if args.supported_languages is not None:
-        args.supported_languages = args.supported_languages.split(",")
-        with open(args.model_path+"_deploy/supported_languages.txt", "w") as f:
-            for supported_pair in args.supported_languages:
-                f.write(supported_pair.replace("-", " ")+"\n")
-    
     
     print(f"Running DDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
 
@@ -121,22 +109,14 @@ def model_create_load_run_save(gpu, args, files, train_files):
         writer = SummaryWriter(args.model_path+".tflogs")
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
+        if "mbart" in args.pretrained_model:
             config = MBartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
             config.attention_dropout = args.attention_dropout ## We should set dropouts manually
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
-            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
-            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
-            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
-            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
-            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
-            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
-            config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         elif "bart" in args.pretrained_model:
             config = BartConfig.from_pretrained(args.pretrained_model)
             config.dropout = args.dropout ## We should set dropouts manually
@@ -144,18 +124,9 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
-            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
-            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
-            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
-            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
-            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
-            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
-            config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
-    else: ## We are going to manually specify our own model config.
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration. TODO: Save this configuration somehow.
-        config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
+    else:
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier) ## Configuration. TODO: Save this configuration somehow.
         model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
 
@@ -165,7 +136,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
-            if "mbart" in args.parent_pretrained_model or "IndicBART" in args.model_path:
+            if "mbart" in args.parent_pretrained_model:
                 parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually
@@ -181,8 +152,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
-        else: ## We are going to manually specify our own parent model config.
-            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
+        else:
+            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings)
             parent_model = MBartForConditionalGeneration(config)
         parent_model.cuda(gpu)
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
@@ -198,36 +169,19 @@ def model_create_load_run_save(gpu, args, files, train_files):
             else:
                 parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
 
-    freeze_params(model, args.freeze_exception_list)
-
-    ### NOTE: Please freeze params before wrapping the model in DDP. Mandem almost had a stoke trying to figure this out.
-
-    model.cuda(gpu) ## Move the model to the GPU.
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
-
+    
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad],
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
     ] ## We suppose that weight decay will be used except for biases and layer norm weights.
-
-    print("Optimizing", [n for n, p in model.named_parameters() if p.requires_grad])
-    num_params_to_optimize = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    num_model_params = sum(p.numel() for p in model.parameters())
-    print("Number of model parameters:", num_model_params)
-    print("Total number of params to be optimized are: ", num_params_to_optimize)
-
-    print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
-
-    if args.prompt_tuning:
-        print("Although the percentage of parameters to be optimized is high, during training the number of actual params during decoding are way way lower.")
-    
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09) ## Our glorious optimizer.
     
     model.train()
@@ -236,15 +190,13 @@ def model_create_load_run_save(gpu, args, files, train_files):
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
     if args.pretrained_model != "" and not args.use_official_pretrained: ## Here we load a previous checkpoint in case training crashed.
-        print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys or if we use prompt or adaptor tuning, they will be ignored when layer remapping or component selection is done. In case of prompt and adaptor tuning, new params are added to the model and hence strict matching of keys is not possible.")
+        print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys, they will be ignored when layer remapping or component selection is done.")
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         sys.stdout.flush()
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
             if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
                 if 'optimizer' in checkpoint_dict:
                     print("Reloading optimizer")
@@ -258,22 +210,18 @@ def model_create_load_run_save(gpu, args, files, train_files):
             else:
                 ctr = 0
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization) else False)
             ctr = 0
     else:
         if args.use_official_pretrained:
             print("Training from official pretrained model")
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
         else:
             print("Training from scratch")
         CHECKPOINT_PATH = args.model_path
         if rank == 0:
             checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
             torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
-            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
+            torch.save(model.state_dict(), CHECKPOINT_PATH+".pure_model")
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
@@ -297,7 +245,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         start = time.time()
         optimizer.zero_grad() ## Empty the gradients before any computation.
         
-        if ctr % args.save_every == 0 and num_batches_this_optimizer_step == 0: ## We have to evaluate our model every save_every steps. Since there is no evaluation data during pretraining this means our model is saved every save_every steps.
+        if ctr % args.eval_every == 0 and num_batches_this_optimizer_step == 0: ## We have to evaluate our model every eval_every steps. Since there is no evaluation data this means our model is saved every eval_every steps.
             CHECKPOINT_PATH = args.model_path
             if rank == 0:
                 print("Saving the model")
@@ -306,14 +254,13 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 # random parameters and gradients are synchronized in backward passes.
                 # Therefore, saving it in one process is sufficient.
                 checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-                torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every save_every steps. This model will be saved with the same file name each time.
+                torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
                 torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
-                if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
-                    print("Saving an intermediate checkpoint")
-                    torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
-                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
-                    ## Copy the long saved model deploy folder.
-                    os.system("cp "+CHECKPOINT_PATH+"."+str(ctr)+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                if ctr % args.no_eval_save_every == 0: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
+                    if args.save_intermediate_checkpoints:
+                        print("Saving an intermediate checkpoint")
+                        torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
+                        torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
@@ -340,11 +287,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         if args.mixed_wait_k:
             model.module.config.wait_k = random.randint(1, args.wait_k)
 
-        if args.prompt_tuning:
-            input_shape = input_masks.size()
-            encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
-            input_masks = torch.cat([encoder_pad, input_masks], dim=1)
-            
+        
         if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
             with torch.cuda.amp.autocast():
                 if is_bilingual and args.unify_encoder:
@@ -425,24 +368,6 @@ def model_create_load_run_save(gpu, args, files, train_files):
                         if rank == 0:
                             writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                             writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
-                    if args.use_moe: ## add MOE losses too.
-                        moe_loss = torch.sum(torch.stack(mod_compute.encoder_moe_losses)) + torch.sum(torch.stack(mod_compute.decoder_moe_losses))
-                        if rank == 0:
-                            writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
-                        loss += moe_loss
-                        
-                    if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
-                        batch_size = decoder_input_ids.size()[0]
-                        shuffle_indices = torch.randperm(batch_size)
-                        decoder_input_ids = decoder_input_ids[shuffle_indices]
-                        labels = labels[shuffle_indices]
-                        mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids) ## Run the model and get logits.
-                        logits = mod_compute.logits
-                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                        contrastive_loss = label_smoothed_nll_loss(
-                            lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                        ) ## Label smoothed cross entropy loss.
-                        loss -= contrastive_loss
         else:
             if is_bilingual and args.unify_encoder:
                 source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -523,23 +448,6 @@ def model_create_load_run_save(gpu, args, files, train_files):
                     if rank == 0:
                         writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                         writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
-                if args.use_moe: ## add MOE losses too.
-                    moe_loss = torch.sum(torch.stack(mod_compute.encoder_moe_losses)) + torch.sum(torch.stack(mod_compute.decoder_moe_losses))
-                    if rank == 0:
-                        writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
-                    loss += moe_loss
-                if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
-                    batch_size = decoder_input_ids.size()[0]
-                    shuffle_indices = torch.randperm(batch_size)
-                    decoder_input_ids = decoder_input_ids[shuffle_indices]
-                    labels = labels[shuffle_indices]
-                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids) ## Run the model and get logits.
-                    logits = mod_compute.logits
-                    lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                    contrastive_loss = label_smoothed_nll_loss(
-                        lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                    ) ## Label smoothed cross entropy loss.
-                    loss -= contrastive_loss
 
         input_ids=input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net. 
         input_masks=input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net.
@@ -616,7 +524,6 @@ def run_demo():
                         help='Name of the model')
     parser.add_argument('--no_reload_optimizer_ctr_and_scheduler', action='store_true',
                         help='Should we reload the optimizer, counter and secheduler? By default we always reload these. Set this to False if we only want to reload the model params and optimize from scratch.')
-    parser.add_argument('--freeze_exception_list', default=None, type=str, help='Comma separated list of types of params NOT to freeze. The reason I provide a list of params not to freeze is because I want to freeze as many params as possible and that list may be long. This is in the spirit of minimal parameter modification. For prompt tuning it can be "prompt_params,encoder_attn,layer_norm,layernorm". For adaptor tuning it can be "adaptor_params,encoder_attn,layer_norm,layernorm". For both it can be "prompt_params,adaptor_params,encoder_attn,layer_norm,layernorm". Simply passing "decoder" will freeze all except decoder params. By that logic passing "encoder" will freeze all except encoder params. By default this is None so you dont freeze anything. You will have to look at the names of the model params in modeling_mbart.py to get a better idea of what to freeze.')
     parser.add_argument('--langs', default='', type=str, 
                         help='Comma separated string of source languages')
     parser.add_argument('--monolingual_domains', default='', type=str, 
@@ -625,10 +532,6 @@ def run_demo():
                         help='Source language(s) for training')
     parser.add_argument('--train_tlang', default='hi', type=str, 
                             help='Target language(s) for training')
-    parser.add_argument('--supported_languages', default=None, type=str, 
-                        help='Supported languages or language pairs. This will only be used if you plan to use the interface to the model. If you want to use the model directly then you can ignore this. The format will be a comma separated list of src_language-src_language_token-tgt_language-tgt_language_token. So in the case of IndicBART fine tuned for Hindi-English you would specify Hindi-<2hi>-English-<2en>. In the case of mBART50 for Hindi-English you would specify Hindi-hi_IN-English-en_XX.')
-    parser.add_argument('--activation_function', default='gelu', type=str, 
-                            help='Activation function. gelu is default. We can use relu or others.')
     parser.add_argument('--train_domains', default='', type=str, 
                         help='In case we have multiple domains for parallel corpora then domain indicator tokens should be provided as a comma separated list of tokens which be used to index the domain indicator. We will convert this into an index later. You have to provide values for this argument if you have more than one domains for the parallel or monolingual corpora.')
     parser.add_argument('--num_domains_for_domain_classifier', type=int, default=1, 
@@ -657,22 +560,12 @@ def run_demo():
                         help='Should we scale attention embeddings?')
     parser.add_argument('--is_document', action='store_true', 
                         help='This assumes that the input corpus is a document level corpus and each line is in fact a document. Each line also contains a token such as "[SEP]" (controlled by the "document_level_sentence_delimiter" flag) to mark the boundaries of sentences. When generating training data we will use this flag to select arbitrary sequences of sentences in case of long documents.')
-    parser.add_argument('--span_prediction', action='store_true', 
-                        help='This assumes that we do span prediction during pre-training like mt5 and MASS instead of full sentence prediction like mBART.')
-    parser.add_argument('--span_to_sentence_prediction', action='store_true', 
-                        help='This assumes that we do span to sentence prediction during pre-training the reverse of mt5 and MASS instead of full sentence prediction like mBART.')
-    parser.add_argument('--contrastive_decoder_training', action='store_true', 
-                        help='This assumes that we want to do a contrastive decoder loss along with the regular denoising loss when span prediction is used. The denoising loss predicts the masked tokens and the contrastive decoder loss is intended to train the decoder to correctly predict the infilled tokens. This may force better masked prediction.')
     parser.add_argument('--document_level_sentence_delimiter', default='</s>', type=str, 
                         help='If the corpus is document level then we assume that sentences are separated via this token. Please change this in case you have a different type of delimiter.')
     parser.add_argument('--future_prediction', action='store_true', 
                         help='This assumes that we dont mask token sequences randomly but only after the latter half of the sentence. We do this to make the model more robust towards missing future information. Granted we can achieve this using wait-k but methinks this may be a better way of training.')
     parser.add_argument('--unidirectional_encoder', action='store_true', 
                         help='This assumes that we use a unidirectional encoder. This is simulated via a lower-triangular matrix mask in the encoder. Easy peasy lemon squeazy.')
-    parser.add_argument('--no_positional_encoding_encoder', action='store_true', 
-                        help='This assumes that we dont use positional encodings for encoder')
-    parser.add_argument('--no_positional_encoding_decoder', action='store_true', 
-                        help='This assumes that we dont use positional encodings for decoder')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
@@ -700,8 +593,6 @@ def run_demo():
                         help='Maximum number of tokens in batch')
     parser.add_argument('--batch_size_indicates_lines', action='store_true', 
                         help='Should we batch as a fixed number of lines?')
-    parser.add_argument('--sorted_batching', action='store_true', 
-                        help='Use this flag if you want to sort the corpus by target length before batching. This helps reduce the number of padding tokens substatially.')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
     parser.add_argument('--weight_decay', default=0.00001, type=float, help="The value for weight decay")
@@ -760,8 +651,8 @@ def run_demo():
                         help='One or more of softmax_distillation, attention_distillation, hidden_layer_regression. For attention distillation you must make sure that the number of attention heads between the parent and child are the same and for hidden layer regression you must make sure that the hidden size (d_model) is the same for the parent and child. In both these cases, you should also specify the layer mapping. See the "distillation_layer_mapping" flag.')
     parser.add_argument('--distillation_layer_mapping', default='1-1,2-2,3-3,4-4,5-5,6-6', type=str, 
                         help='This indicates the mappings between the parent and child model. The same flag is used for the encoder and the decoder. If you want to map the 2nd parent layer to the first child layer then use 2-1. Note that the layers are not zero indexed as per the description. Ensure that your indices are correct because checking is not done at the moment. If you get weird results then first make sure that your flags are correctly set. If the parent has 6 layers and the child has 3 layers then something like 6-4 will definitely throw an error. User beware! Dokuro mark.')
-    parser.add_argument('--save_every', default=1000, type=int, help="The number of iterations after which a model checkpoint must be saved. This is useful for saving the model after every few iterations so that we dont lose the model if the training is interrupted.")
-    parser.add_argument('--long_save_every', default=10000, type=int, help="A large number of iterations after which a model must be force saved assuming we want to see what intermediate checkpoints look like.")
+    parser.add_argument('--eval_every', default=1000, type=int, help="The number of iterations after which an evaluation must be done. Also saves a checkpoint every these number of steps.")
+    parser.add_argument('--no_eval_save_every', default=10000, type=int, help="The number of iterations after which a model must be force saved in case evaluation is not done.")
     parser.add_argument('--parent_encoder_layers', default=3, type=int, help="The value for number of encoder layers")
     parser.add_argument('--parent_decoder_layers', default=3, type=int, help="The value for number of decoder layers")
     parser.add_argument('--parent_dropout', default=0.1, type=float, help="The value for embedding dropout")
@@ -774,24 +665,6 @@ def run_demo():
     parser.add_argument('--parent_d_model', default=512, type=int, help="The value for model hidden size")
     parser.add_argument('--save_weights_and_gradeint_info', action='store_true', 
                         help='Saving gradient information is time consuming. We should make this optional.')
-    parser.add_argument('--use_moe', action='store_true', 
-                        help='Should we use mixtures of experts instead of regular FFNs?".')
-    parser.add_argument('--num_experts', default=8, type=int, help="How many MOE experts should we use?")
-    parser.add_argument('--expert_ffn_size', default=128, type=int, help="What is the hidden size of the MOE?")
-    parser.add_argument('--prompt_tuning', action='store_true', 
-                        help='Should we use continuous prompts and tune them?')
-    parser.add_argument('--initialize_prompts_with_random_embeddings', action='store_true', 
-                        help='Should we use initialize the prompts with random embeddings?')
-    parser.add_argument('--num_prompts', default=100, type=int, help="How many prompts should we use?")
-    parser.add_argument('--adaptor_tuning', action='store_true', 
-                        help='Should we use lightweight adaptors? (Only applied to the final layer)')
-    parser.add_argument('--deep_adaptor_tuning', action='store_true', 
-                        help='Should we use deep lightweight adaptors? (Applied to each layer)')
-    parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
-    parser.add_argument('--hypercomplex', action='store_true', 
-                        help='Should we use hypercomplex adaptors?')
-    parser.add_argument('--hypercomplex_n', default=2, type=int, help="What is the scaling factor for hypercomplex params?")
-    parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     ###
     ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. These flags are here because the common_utils.py methods assume the existence of these args for when joint mbart training and regular NMT training is done. TODO: Modify code to avoid the need for these flags in this script.
     parser.add_argument('--multi_source', action='store_true', 

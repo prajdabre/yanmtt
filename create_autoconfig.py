@@ -25,24 +25,22 @@ from transformers import AutoConfig, AlbertTokenizer, AutoTokenizer, MBartTokeni
 import sys
 import os
 
-additional_tokens = sys.argv[4].strip().split(",") if sys.argv[4] is not "." else []
-for lang_file in sys.argv[3].strip().split(","):
-    lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language
-    if "<2"+lang_tok+">" not in additional_tokens:
-        additional_tokens.append("<2"+lang_tok+">")
-
 if sys.argv[2] == "albert":
     tokenizer = AlbertTokenizer.from_pretrained(sys.argv[1], do_lower_case=False, use_fast=False, keep_accents=True, strip_accents=False)
-    special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + additional_tokens} ## Add additional special tokens specified by the user as a comma separated list.
-    tokenizer.add_special_tokens(special_tokens_dict) ## This craps out for mbart tokenizer as in it does not allocate separate token ids for the special tokens. We will need to do a lot of manual work to fix this.
 elif sys.argv[2] == "mbart":
-    additional_tokens.extend(["[MASK]", "[CLS]", "[SEP]"]) ## Add the special tokens to the additional tokens list. They may not be used irl but keeping them here just in case. Note that <s> and </s> are already added by default in the implementation.
-    with open(os.path.join(sys.argv[1], "specially_added_tokens"), "w") as f:
-        f.write("\n".join(additional_tokens))
     tokenizer = MBartTokenizer.from_pretrained(sys.argv[1], do_lower_case=False, use_fast=False, keep_accents=True, strip_accents=False)
 else:
     print("Unknown tokenizer. Exiting!")
     sys.exit(1)
+
+special_tokens_dict = {'additional_special_tokens': ["<s>", "</s>"] + (sys.argv[4].strip().split(",") if sys.argv[4] is not "." else [])} ## Add additional special tokens specified by the user as a comma separated list.
+
+for lang_file in sys.argv[3].strip().split(","):
+    lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language
+    if "<2"+lang_tok+">" not in special_tokens_dict["additional_special_tokens"]:
+        special_tokens_dict["additional_special_tokens"].append("<2"+lang_tok+">")
+
+num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 
 tokenizer.save_pretrained(sys.argv[1])
 
