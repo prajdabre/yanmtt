@@ -64,7 +64,7 @@ def index():
 
 @REQUEST_API.route('/models', methods=['GET'])
 def models():
-    list_of_models = [ name for name in os.listdir(MODELS_PATH) if os.path.isdir(os.path.join(MODELS_PATH, name)) ] + ["ai4bharat/IndicBART"]
+    list_of_models = [ name for name in os.listdir(MODELS_PATH) if os.path.isdir(os.path.join(MODELS_PATH, name)) ] + ["ai4bharat/IndicBART", "ai4bharat/IndicBARTSS"]
     json_response = {"models": list_of_models}
     return jsonify(json_response)
 
@@ -82,6 +82,9 @@ def load_model():
         targetLangDict = {}
         if model_name == "ai4bharat/indicbart":
             path = "ai4bharat/IndicBART"
+            Lines = ["English <2en> English <2en>", "Hindi <2hi> Hindi <2hi>", "Bengali <2bn> Bengali <2bn>", "Gujarati <2gu> Gujarati <2gu>", "Kannada <2kn> Kannada <2kn>", "Malayalam <2ml> Malayalam <2ml>", "Marathi <2mr> Marathi <2mr>", "Odia <2or> Odia <2or>", "Punjabi <2pa> Punjabi <2pa>", "Tamil <2ta> Tamil <2ta>", "Telugu <2te> Telugu <2te>", "Assamese <2as> Assamese <2as>"]
+        elif  model_name == "ai4bharat/indicbartss":
+            path = "ai4bharat/IndicBARTSS"
             Lines = ["English <2en> English <2en>", "Hindi <2hi> Hindi <2hi>", "Bengali <2bn> Bengali <2bn>", "Gujarati <2gu> Gujarati <2gu>", "Kannada <2kn> Kannada <2kn>", "Malayalam <2ml> Malayalam <2ml>", "Marathi <2mr> Marathi <2mr>", "Odia <2or> Odia <2or>", "Punjabi <2pa> Punjabi <2pa>", "Tamil <2ta> Tamil <2ta>", "Telugu <2te> Telugu <2te>", "Assamese <2as> Assamese <2as>"]
         else:
             path = MODELS_PATH + "/" + model_name
@@ -120,7 +123,7 @@ def translate():
     else:
         tokenizer.tgt_lang = target_l
     model_name = request.form['model_name']
-    if model_name == "ai4bharat/indicbart":
+    if model_name == "ai4bharat/indicbart" or model_name == "ai4bharat/indicbartss":
         source_text = mask_spans(source_text)
         print(source_text)
 
