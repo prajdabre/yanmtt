@@ -131,9 +131,8 @@ def translate():
     input_suffix = " </s> <2"+source_l+">"
     input_sentence = source_text + input_suffix
     output_prefix = "<2"+target_l+"> "
-    print(len(input_sentence.split(" ")))
     inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
-    model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix)).to(device)
+    model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
     decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
     result = {
         "raw_text": source_text,
@@ -169,7 +168,7 @@ def visualize():
     output_prefix = "<2"+target_l+"> "
     
     inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
-    model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=20, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
+    model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
     decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
     outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)
     pyparams, vishtml=model_view(
