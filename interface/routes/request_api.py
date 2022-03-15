@@ -75,7 +75,6 @@ def load_model():
     if not request.form:
         abort(400)
     model_name = request.form['model_name']
-    
     try:
         ## Hindi <2hi> English <2en> format parsing
         sourceLangDict = {}
@@ -100,7 +99,6 @@ def load_model():
         tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=False, do_lower_case=False, use_fast=False, keep_accents=True)
         model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=False).to(device)
         return jsonify({"message": "success", "sourceLangDict": sourceLangDict, "targetLangDict": targetLangDict})
-
     except:
         return jsonify({"message": "fail"})
 
