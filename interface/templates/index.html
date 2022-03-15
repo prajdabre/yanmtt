@@ -194,7 +194,7 @@
                         "sourcelang": $('input[class=sourcelang]').val(),
                         "targetlang": $('input[class=targetlang]').val(),
                         "rawtext": $("#textareasource").val(),
-                        "model": $('input[class=modeldomain]').val()
+                        "model_name": $('input[class=modeldomain]').val()
                     }
                     $("#originalText").html(requestData['rawtext']);
                     $("#translatedText").html("Translating...");
@@ -203,6 +203,7 @@
                         type: "POST",
                         data: requestData,
                         success: function(data){
+                            $("#originalText").html(data.raw_text);
                             $("#translatedText").html(data.translated_text);
                             $("#copyTransButton").show()
                             $("#visualizeButton").show()
@@ -219,7 +220,7 @@
                         "sourcelang": $('input[class=sourcelang]').val(),
                         "targetlang": $('input[class=targetlang]').val(),
                         "rawtext": $("#originalText").html(),
-                        "model": $('input[class=modeldomain]').val()
+                        "model_name": $('input[class=modeldomain]').val()
                     }
                     $("#attText").show();
                     $("#attinfo").show();
