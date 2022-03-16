@@ -213,6 +213,7 @@ def translate():
             "raw_text": source_text,
             "translated_text": decoded_output
         }
+        
         return jsonify(result), 200
     elif model_name == "facebook/mbart-large-cc25":
         
