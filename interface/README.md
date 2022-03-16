@@ -25,13 +25,13 @@ Now, you can open Browser and copy and paste URL indicated in prompt (http://loc
 
 <hr/>
 
-<!-- ## User Interface
+## User Interface
 
 <br/>
 
 ![alt text](./screen.png?raw=true "User Interface")
 
-<hr/> -->
+<hr/>
 
 ## Yet to be added
 
