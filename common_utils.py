@@ -931,7 +931,7 @@ def generate_batches_bilingual(tok, args, files, rank):
             tgt_sent_len = len(tgt_sent_split)
             src_sent_len = len(src_sent_split)
             
-            if src_sent_len <=1 or tgt_sent_len <=1:
+            if src_sent_len < 1 or tgt_sent_len < 1:
                 continue
             else:   # Initial truncation
                 if src_sent_len >= args.max_src_length:
@@ -946,7 +946,7 @@ def generate_batches_bilingual(tok, args, files, rank):
             if args.cross_distillation or args.multi_source:
                 src_sent_split_parent = src_sent_parent.split(" ")
                 src_sent_len_parent = len(src_sent_split_parent)
-                if src_sent_len_parent <=1:
+                if src_sent_len_parent < 1:
                     continue
                 else:   # Initial truncation
                     if src_sent_len_parent >= args.max_src_length: ## The same sentence length constraint applies to Y as it does to X.
@@ -1160,7 +1160,7 @@ def generate_batches_pair(tok, args):
         tgt_sent_split = tgt_sent.split(" ")
         tgt_sent_len = len(tgt_sent_split)
         src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or tgt_sent_len <=1:
+        if src_sent_len < 1 or tgt_sent_len < 1:
             print("Big problem")
             #continue
         else:   # Initial truncation
@@ -1239,7 +1239,7 @@ def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation 
         tgt_sent_split = tgt_sent.split(" ")
         tgt_sent_len = len(tgt_sent_split)
         src_sent_len = len(src_sent_split)
-        if src_sent_len <=1 or src_sent_len >= 100 or tgt_sent_len <=1 or tgt_sent_len >= 100:
+        if src_sent_len < 1 or src_sent_len >= 100 or tgt_sent_len < 1 or tgt_sent_len >= 100:
             continue
         
         for pos_src in range(src_sent_len):
