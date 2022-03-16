@@ -162,8 +162,8 @@
                                 setTimeout(function() {
                                     $("#modelLoadSuccess").fadeOut();
                                 }, 2000);
-                                if (model == "facebook/mbart-large-50" || model == "facebook/mbart-large-cc25"){
-                                    // translate
+                                if (model == "facebook/mbart-large-50" || model == "facebook/mbart-large-cc25" || model == "ai4bharat/indicbartss" || model == "ai4bharat/indicbart"){
+                                    // translate button text change
                                     $("#translate").html("<i class='fa fa-clipboard'></i> &nbsp; [MASK] Sentence and Predict");
                                 }
                                 else{
@@ -185,6 +185,7 @@
                     $("#targetAlert").hide()
                     $("#rawTextAlert").hide()
                     $("#copyTransButton").hide()
+                    $("#attText").hide();
                     $("#attinfo").html("");
                     $("#attinfo").hide();
 

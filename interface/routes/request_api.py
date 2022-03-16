@@ -228,8 +228,8 @@ def translate():
         eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
         pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
 
-        encoded_hi = tokenizer(source_text, return_tensors="pt").input_ids.to(device)
-        generated_tokens = model.generate(encoded_hi, decoder_start_token_id=tokenizer.lang_code_to_id[target_l])
+        inp = tokenizer(source_text, return_tensors="pt").input_ids.to(device)
+        generated_tokens = model.generate(inp, decoder_start_token_id=tokenizer.lang_code_to_id[target_l])
         decoded_output = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         source_text = source_text.replace("<mask>", "[MASK]") ## Replacing the mask token as <mask> is being treated like an HTML tag on the interface. 
 
@@ -255,8 +255,8 @@ def translate():
         input_prefix = "<"+source_l+">"
         input_sentence = input_prefix + source_text + "</s>"
 
-        encoded_hi = tokenizer(input_sentence, return_tensors="pt").input_ids.to(device)
-        generated_tokens = model.generate(encoded_hi, forced_bos_token_id=tokenizer.lang_code_to_id[target_l])
+        inp = tokenizer(input_sentence, return_tensors="pt").input_ids.to(device)
+        generated_tokens = model.generate(inp, forced_bos_token_id=tokenizer.lang_code_to_id[target_l])
         decoded_output = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         source_text = source_text.replace("<mask>", "[MASK]") ## Replacing the mask token as <mask> is being treated like an HTML tag on the interface. 
 
@@ -296,43 +296,140 @@ def translate():
     
 
 @REQUEST_API.route('/visualize', methods=['POST'])
-def visualize():
 
+def visualize():
+    global tokenizer, model, device
     if not request.form:
         abort(400)
     
     source_text = request.form['rawtext']
-    source_l = langDict[request.form['sourcelang'].lower()]
-    if(source_l == ''):
-        tokenizer.src_lang = "en"
+    model_name = request.form['model_name']
+    if model_name == "ai4bharat/indicbart" or model_name == "ai4bharat/indicbartss":
+        source_l = langDict[request.form['sourcelang'].lower()]
+        if(source_l == ''):
+            tokenizer.src_lang = "en"
+        else:
+            tokenizer.src_lang = source_l
+        
+        target_l = langDict[request.form['targetlang'].lower()]
+        if(target_l == ''):
+            target_l = "de"
+        else:
+            tokenizer.tgt_lang = target_l
+        # print(source_text)
+        bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
+        eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
+        pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
+        input_suffix = " </s> <2"+source_l+">"
+        input_sentence = source_text + input_suffix
+        output_prefix = "<2"+target_l+"> "
+        inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
+        model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
+        decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)
+        pyparams, vishtml=model_view(
+            encoder_attention=outputs.encoder_attentions,
+            decoder_attention=outputs.decoder_attentions,
+            cross_attention=outputs.cross_attentions,
+            encoder_tokens= tokenizer.convert_ids_to_tokens(inp[0]),
+            decoder_tokens= tokenizer.convert_ids_to_tokens(model_output[0]),
+        )
+        result = {
+            "pyparams": pyparams,
+            "vishtml": vishtml.data
+        }
+        return jsonify(result), 200
+    elif model_name == "facebook/mbart-large-cc25":
+        
+        source_l = mBARTLangDictPruned[request.form['sourcelang'].lower()]
+        target_l = mBARTLangDictPruned[request.form['targetlang'].lower()]
+        
+        tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang=source_l, tgt_lang=target_l)
+
+        bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
+        eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
+        pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
+
+        inp = tokenizer(source_text, return_tensors="pt").input_ids.to(device)
+        generated_tokens = model.generate(inp, decoder_start_token_id=tokenizer.lang_code_to_id[target_l])
+        decoded_output = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        outputs = model(input_ids=inp, decoder_input_ids=generated_tokens, output_attentions=True)
+        pyparams, vishtml=model_view(
+            encoder_attention=outputs.encoder_attentions,
+            decoder_attention=outputs.decoder_attentions,
+            cross_attention=outputs.cross_attentions,
+            encoder_tokens= tokenizer.convert_ids_to_tokens(inp[0]),
+            decoder_tokens= tokenizer.convert_ids_to_tokens(generated_tokens[0]),
+        )
+        result = {
+            "pyparams": pyparams,
+            "vishtml": vishtml.data
+        }
+        return jsonify(result), 200
+
+    elif model_name == "facebook/mbart-large-50":
+        source_text = mask_spans_mbart(source_text)
+
+        source_l = mBARTLangDict[request.form['sourcelang'].lower()]
+        target_l = mBARTLangDict[request.form['targetlang'].lower()]
+        
+        tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-50", src_lang=source_l, tgt_lang=target_l)
+
+        bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
+        eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
+        pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
+
+        input_prefix = "<"+source_l+">"
+        input_sentence = input_prefix + source_text + "</s>"
+
+        inp = tokenizer(input_sentence, return_tensors="pt").input_ids.to(device)
+        generated_tokens = model.generate(inp, forced_bos_token_id=tokenizer.lang_code_to_id[target_l])
+        decoded_output = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        outputs = model(input_ids=inp, decoder_input_ids=generated_tokens, output_attentions=True)
+        pyparams, vishtml=model_view(
+            encoder_attention=outputs.encoder_attentions,
+            decoder_attention=outputs.decoder_attentions,
+            cross_attention=outputs.cross_attentions,
+            encoder_tokens= tokenizer.convert_ids_to_tokens(inp[0]),
+            decoder_tokens= tokenizer.convert_ids_to_tokens(generated_tokens[0]),
+        )
+        result = {
+            "pyparams": pyparams,
+            "vishtml": vishtml.data
+        }
+        return jsonify(result), 200
     else:
-        tokenizer.src_lang = source_l
-    
-    target_l = langDict[request.form['targetlang'].lower()]
-    if(target_l == ''):
-        target_l = "de"
-    else:
-        tokenizer.tgt_lang = target_l
-    bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
-    eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
-    pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
-    input_suffix = " </s> <2"+source_l+">"
-    input_sentence = source_text + input_suffix
-    output_prefix = "<2"+target_l+"> "
-    
-    inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
-    model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
-    decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)
-    pyparams, vishtml=model_view(
-        encoder_attention=outputs.encoder_attentions,
-        decoder_attention=outputs.decoder_attentions,
-        cross_attention=outputs.cross_attentions,
-        encoder_tokens= tokenizer.convert_ids_to_tokens(inp[0]),
-        decoder_tokens= tokenizer.convert_ids_to_tokens(model_output[0]),
-    )
-    result = {
-        "pyparams": pyparams,
-        "vishtml": vishtml.data
-    }
-    return jsonify(result), 200
+        source_l = langDict[request.form['sourcelang'].lower()]
+        if(source_l == ''):
+            tokenizer.src_lang = "en"
+        else:
+            tokenizer.src_lang = source_l
+        
+        target_l = langDict[request.form['targetlang'].lower()]
+        if(target_l == ''):
+            target_l = "de"
+        else:
+            tokenizer.tgt_lang = target_l
+        bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
+        eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
+        pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
+        input_suffix = " </s> <2"+source_l+">"
+        input_sentence = source_text + input_suffix
+        output_prefix = "<2"+target_l+"> "
+        
+        inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
+        model_output=model.generate(inp, use_cache=False, num_beams=4, max_length=len(input_sentence.split(" "))*2, min_length=1, early_stopping=True, pad_token_id=pad_id, bos_token_id=bos_id, eos_token_id=eos_id, decoder_start_token_id=tokenizer._convert_token_to_id_with_added_voc(output_prefix.strip())).to(device)
+        decoded_output=tokenizer.decode(model_output[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        outputs = model(input_ids=inp, decoder_input_ids=model_output, output_attentions=True)
+        pyparams, vishtml=model_view(
+            encoder_attention=outputs.encoder_attentions,
+            decoder_attention=outputs.decoder_attentions,
+            cross_attention=outputs.cross_attentions,
+            encoder_tokens= tokenizer.convert_ids_to_tokens(inp[0]),
+            decoder_tokens= tokenizer.convert_ids_to_tokens(model_output[0]),
+        )
+        result = {
+            "pyparams": pyparams,
+            "vishtml": vishtml.data
+        }
+        return jsonify(result), 200
