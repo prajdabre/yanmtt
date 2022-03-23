@@ -255,7 +255,8 @@
                         contentType: false,
                         processData: false,
                         success: function(data){
-                            alert("done!");
+                            $("#embed").attr('src', "http://localhost:26004/#projector");
+                            // $("#embed").;
                             // $("#outputBox").show();
                             // $("#originalText").html(data.raw_text);
                             // $("#translatedText").html(data.translated_text);
@@ -815,8 +816,9 @@
                     
                 </div>
             </div>
-        
-
+            <div class="container ui stackable equal width grid"></div>
+            <iframe id="embed" src="" width="100%" height="500px" frameborder="0"></iframe>
+        </div>
 
         <!-- Footer -->
         <footer class="footer">

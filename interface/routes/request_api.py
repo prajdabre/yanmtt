@@ -14,6 +14,10 @@ import numpy as np
 from validate_email import validate_email
 REQUEST_API = Blueprint('request_api', __name__)
 
+from werkzeug.utils import secure_filename
+import tensorflow as tf
+from tensorboard.plugins import projector
+
 
 tokenizer = ''
 model = ''
@@ -293,7 +297,83 @@ def translate():
         }
         return jsonify(result), 200
     
+
+@REQUEST_API.route('/upload_and_visualize', methods=['POST'])
+def upload_and_visualize():
+    global tokenizer, model, device
+    if not request.files:
+        abort(400)
     
+    file = request.files['filename']
+    filename = secure_filename(file.filename)
+    file.save(os.path.join("models/", filename))
+    # source_text = request.form['rawtext']
+    print(request.form)
+    source_l = langDict[request.form['sourcelang'].lower()]
+    if(source_l == ''):
+        tokenizer.src_lang = "en"
+    else:
+        tokenizer.src_lang = source_l
+    
+    target_l = langDict[request.form['targetlang'].lower()]
+    if(target_l == ''):
+        target_l = "de"
+    else:
+        tokenizer.tgt_lang = target_l
+    model_name = request.form['modeldomain']
+    print(model_name) 
+    bos_id = tokenizer._convert_token_to_id_with_added_voc("<s>")
+    eos_id = tokenizer._convert_token_to_id_with_added_voc("</s>")
+    pad_id = tokenizer._convert_token_to_id_with_added_voc("<pad>")
+    input_suffix = " </s> <2"+source_l+">"
+    output_prefix = "<2"+target_l+"> "
+    final_outputs = []
+    with open(os.path.join("models/", filename + ".embeds"), "w") as fw:
+        with open(os.path.join("models/", filename), 'r') as f:
+            for line in f:
+                source_text = line.strip()
+                if source_text == "":
+                    continue
+                input_sentence = source_text + input_suffix
+                inp = tokenizer(input_sentence, add_special_tokens=False, return_tensors="pt", padding=True).input_ids.to(device)
+                model_output = model(input_ids=inp, decoder_input_ids=inp, output_hidden_states=True)
+                outputs = torch.mean(model_output.encoder_hidden_states[-1], dim=1).view(-1).detach().cpu().numpy()
+                final_outputs.append(outputs)
+                # Convert to a tab separated string
+                output_str = "\t".join(str(x) for x in outputs)
+                # Write to file
+                fw.write(output_str + "\n")
+    # Stack the embeddings
+    embeddings = np.vstack(final_outputs)
+    # Set up a logs directory, so Tensorboard knows where to look for files.
+    log_dir="models"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    # Rename the file as metadata.tsv
+    os.rename(os.path.join("models/", filename ), os.path.join("models/", "metadata.tsv"))
+    
+    # Save the weights we want to analyze as a variable. Note that the first
+    # value represents any unknown word, which is not in the metadata, here
+    # we will remove this value.
+    weights = tf.Variable(embeddings)
+    # Create a checkpoint from embedding, the filename and key are the
+    # name of the tensor.
+    checkpoint = tf.train.Checkpoint(embedding=weights)
+    checkpoint.save(os.path.join(log_dir, "embedding.ckpt"))
+
+    # Set up config.
+    config = projector.ProjectorConfig()
+    embedding = config.embeddings.add()
+    # The name of the tensor will be suffixed by `/.ATTRIBUTES/VARIABLE_VALUE`.
+    embedding.tensor_name = "embedding/.ATTRIBUTES/VARIABLE_VALUE"
+    embedding.metadata_path = 'metadata.tsv'
+    projector.visualize_embeddings(log_dir, config)
+    result = {
+        "raw_text": "",
+        "translated_text": ""
+    }
+    return jsonify(result), 200
 
 @REQUEST_API.route('/visualize', methods=['POST'])
 
