@@ -203,6 +203,7 @@
                         type: "POST",
                         data: requestData,
                         success: function(data){
+                            $("#outputBox").show();
                             $("#originalText").html(data.raw_text);
                             $("#translatedText").html(data.translated_text);
                             $("#copyTransButton").show()
@@ -211,6 +212,59 @@
                             // renderattentions(data.pyparams);
                         }
                     });
+				});
+			});
+            $(document).ready(function() {
+                $('#myFile').change(function(evt) {
+                    // if($('input[class=sourcelang]').val() == ""){
+                    //     $("#sourceAlert").show()
+                    //     return false;
+                    // }
+                    // if($('input[class=targetlang]').val() == ""){
+                    //     $("#targetAlert").show()
+                    //     return false;
+                    // }
+                    // if($("#textareasource").val() == ""){
+                    //     $("#rawTextAlert").show()
+                    //     return false;
+                    // }
+                    var requestData = new FormData($('#mainForm')[0])
+                    // {
+                    //     "sourcelang": $('input[class=sourcelang]').val(),
+                    //     "targetlang": $('input[class=targetlang]').val(),
+                    //     "formdata": ,
+                    //     "model_name": $('input[class=modeldomain]').val()
+                    // }
+                    $.ajax({
+                        url: "{{ url_for('request_api.upload_and_visualize') }}",
+                        type: "POST",
+                        data: requestData,
+                        cache: false,
+                        contentType: false,
+                        processData: false,
+                        success: function(data){
+                            alert("done!");
+                            // $("#outputBox").show();
+                            // $("#originalText").html(data.raw_text);
+                            // $("#translatedText").html(data.translated_text);
+                            // $("#copyTransButton").show()
+                            // $("#visualizeButton").show()
+                            // $("#attinfo").html(data.vishtml);
+                            // renderattentions(data.pyparams);
+                        }
+                    });
+                });
+            });
+            $(function(){
+				$("#upload").click(function(){
+
+                    $("#sourceAlert").hide()
+                    $("#targetAlert").hide()
+                    $("#rawTextAlert").hide()
+                    $("#copyTransButton").hide()
+                    $("#attinfo").html("");
+                    $("#attinfo").hide();
+                    $("#myFile").click();
 				});
 			});
             $(function(){
@@ -655,7 +709,7 @@
         </nav>
         <br /><br /><br /><br />
         <div class="container">
-            <form method="POST" action="">
+            <form method="POST" action="" id="mainForm" enctype="multipart/form-data">
 				<!-- <p id="textsample">A sample sentence: The digital age, also referred to as the information society, is characterized by ever-growing volumes of information.</p> -->
                 <br />
                 <div class="container ui stackable equal width grid">
@@ -719,11 +773,13 @@
                     <textarea rows="5" cols="5" class="form-control" id="textareasource" placeholder="Enter text (preferably one sentence)" name="rawtext" required>{{ source_text }}</textarea>
                     <br />
                     <button id ="translate" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp;Translate</button>
+                    <button id ="upload" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp;Upload</button>
+                    <input type="file" id="myFile" name="filename" style="display: none">
                 </div>
             </form>
         </div>
 
-        <div class="container ui stackable equal width grid">
+        <div class="container ui stackable equal width grid" style="display: none" id="outputBox">
             <div class="column">
                 <p>Original</p>
                 <div id="originalText" class="alert alert-success" role="alert">
