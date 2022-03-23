@@ -136,18 +136,18 @@
 
                                 if("sourceLangDict" in data && "targetLangDict" in data){
                                     var lang = data['sourceLangDict'];
-                                    console.log(lang)
+                                    // console.log(lang)
                                     var divs = '';
                                     for (let k in lang) {
-                                        console.log('source ' + k + ' is ' + lang[k])
+                                        // console.log('source ' + k + ' is ' + lang[k])
                                         divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
                                     }
                                     $('#sourcel').html(divs);
                                     var lang = data['targetLangDict'];
-                                    console.log(lang)
+                                    // console.log(lang)
                                     var divs = '';
                                     for (let k in lang) {
-                                        console.log('target ' + k + ' is ' + lang[k])
+                                        // console.log('target ' + k + ' is ' + lang[k])
                                         divs = divs + "<div class='item' data-id='"+lang[k]+"'>"+k+"</div>"
                                     }
                                     $('#targetl').html(divs);
@@ -159,6 +159,16 @@
                                 }
                                 $("#modelLoadAlert").hide();
                                 $("#modelLoadSuccess").show();
+                                setTimeout(function() {
+                                    $("#modelLoadSuccess").fadeOut();
+                                }, 2000);
+                                if (model == "facebook/mbart-large-50" || model == "facebook/mbart-large-cc25" || model == "ai4bharat/indicbartss" || model == "ai4bharat/indicbart"){
+                                    // translate button text change
+                                    $("#translate").html("<i class='fa fa-clipboard'></i> &nbsp; [MASK] Sentence and Predict");
+                                }
+                                else{
+                                    $("#translate").html("<i class='fa fa-database'></i> &nbsp;&nbsp;Translate");
+                                }
                             } 
                             else{
                                 $("#modelLoadAlert").hide();
@@ -175,6 +185,7 @@
                     $("#targetAlert").hide()
                     $("#rawTextAlert").hide()
                     $("#copyTransButton").hide()
+                    $("#attText").hide();
                     $("#attinfo").html("");
                     $("#attinfo").hide();
 
@@ -205,6 +216,7 @@
                         success: function(data){
                             $("#outputBox").show();
                             $("#originalText").html(data.raw_text);
+                            console.log(data.translated_text)
                             $("#translatedText").html(data.translated_text);
                             $("#copyTransButton").show()
                             $("#visualizeButton").show()
@@ -743,22 +755,21 @@
                     <div class="container ui stackable equal width grid">
                         <div class="ui fluid search dropdown button column">
                             <input type="hidden" id="modeldomain" name="modeldomain" class="modeldomain">
-                            <i class="cloud icon"></i>
-                            <span class="text">Model / Domain</span>
+                            <span class="text"><i class="cloud icon"></i> Model / Domain</span>
                             <div class="menu" id="models">
                                 <!-- <div class="item disabled">Facebook M2M</div> -->
                             </div>
                         </div>
                         <div class="ui fluid search dropdown button column">
                             <input type="hidden" id="sourcelang" name="sourcelang" class="sourcelang">
-                            <span class="text"><i class="world icon"></i>Source Language</span>
+                            <span class="text"><i class="world icon"></i> Source Language</span>
                             <div class="menu" id="sourcel">
                                 <div class="item" data-id="af">Afrikaans</div><div class="item" data-id="sq">Albanian</div><div class="item" data-id="am">Amharic</div><div class="item" data-id="ar">Arabic</div><div class="item" data-id="hy">Armenian</div><div class="item" data-id="ast">Asturian</div><div class="item" data-id="az">Azerbaijani</div><div class="item" data-id="ba">Bashkir</div><div class="item" data-id="be">Belarusian</div><div class="item" data-id="bg">Bulgarian</div><div class="item" data-id="bn">Bengali</div><div class="item" data-id="br">Breton</div><div class="item" data-id="bs">Bosnian</div><div class="item" data-id="ceb">Cebuano</div><div class="item" data-id="zh">Chinese</div><div class="item" data-id="cs">Czech</div><div class="item" data-id="da">Danish</div><div class="item" data-id="en">English</div><div class="item" data-id="et">Estonian</div><div class="item" data-id="fi">Finnish</div><div class="item" data-id="nl">Flemish</div><div class="item" data-id="fr">French</div><div class="item" data-id="ff">Fulah</div><div class="item" data-id="de">German</div><div class="item" data-id="el">Greeek</div><div class="item" data-id="fa">Persian</div><div class="item" data-id="ga">Irish</div><div class="item" data-id="gd">Scottish Gaelic</div><div class="item" data-id="gl">Galician</div><div class="item" data-id="lg">Ganda</div><div class="item" data-id="gu">Gujarati</div><div class="item" data-id="ha">Hausa</div><div class="item" data-id="he">Hebrew</div><div class="item" data-id="hi">Hindi</div><div class="item" data-id="hr">Croatian</div><div class="item" data-id="ht">Haitian Creole</div><div class="item" data-id="hu">Hungarian</div><div class="item" data-id="id">Indonesian</div><div class="item" data-id="ig">Igbo</div><div class="item" data-id="ilo">Iloko</div><div class="item" data-id="is">Icelandic</div><div class="item" data-id="it">Italian</div><div class="item" data-id="ja">Japanese</div><div class="item" data-id="jv">Javanese</div><div class="item" data-id="ka">Georgian</div><div class="item" data-id="kk">Kazakh</div><div class="item" data-id="km">Central Khmer</div><div class="item" data-id="kn">Kannada</div><div class="item" data-id="ko">Korean</div><div class="item" data-id="lb">Letzeburgesch</div><div class="item" data-id="ln">Lingala</div><div class="item" data-id="lo">Lao</div><div class="item" data-id="lt">Lithuanian</div><div class="item" data-id="lv">Latvian</div><div class="item" data-id="mk">Macedonian</div><div class="item" data-id="mg">Malagasy</div><div class="item" data-id="ml">Malayalam</div><div class="item" data-id="mr">Marathi</div><div class="item" data-id="mn">Mongolian</div><div class="item" data-id="ro">Moldovan</div><div class="item" data-id="ms">Malay</div><div class="item" data-id="my">Burmese</div><div class="item" data-id="ne">Nepali</div><div class="item" data-id="no">Norwegian</div><div class="item" data-id="ns">Northern Sotho</div><div class="item" data-id="oc">Occitan</div><div class="item" data-id="or">Oriya</div><div class="item" data-id="pa">Punjabi</div><div class="item" data-id="pl">Polish</div><div class="item" data-id="ps">Pashto</div><div class="item" data-id="pt">Portuguese</div><div class="item" data-id="ru">Russian</div><div class="item" data-id="sr">Serbian</div><div class="item" data-id="sd">Sindhi</div><div class="item" data-id="si">Sinhalese</div><div class="item" data-id="sk">Slovak</div><div class="item" data-id="sl">Slovenian</div><div class="item" data-id="so">Somali</div><div class="item" data-id="es">Spanish</div><div class="item" data-id="ss">Swati</div><div class="item" data-id="su">Sundanese</div><div class="item" data-id="sv">Swedish</div><div class="item" data-id="sw">Swahili</div><div class="item" data-id="ta">Tamil</div><div class="item" data-id="th">Thai</div><div class="item" data-id="tl">Tagalog</div><div class="item" data-id="tn">Tswana</div><div class="item" data-id="tr">Turkish</div><div class="item" data-id="uk">Ukrainian</div><div class="item" data-id="ur">Urdu</div><div class="item" data-id="uz">Uzbek</div><div class="item" data-id="ca">Valencian</div><div class="item" data-id="vi">Vietnamese</div><div class="item" data-id="cy">Welsh</div><div class="item" data-id="wo">Wolof</div><div class="item" data-id="xh">Xhosa</div><div class="item" data-id="yi">Yiddish</div><div class="item" data-id="yo">Yoruba</div><div class="item" data-id="zu">Zulu</div>
                             </div>
                         </div>
                         <div class="ui fluid search dropdown button column">
                             <input type="hidden" id="targetlang" name="targetlang" class="targetlang">
-                            <span class="text"><i class="world icon"></i>Target Language</span>
+                            <span class="text"><i class="world icon"></i> Target Language</span>
                             <div class="menu" id="targetl">
                                 <div class="item" data-id="af">Afrikaans</div><div class="item" data-id="sq">Albanian</div><div class="item" data-id="am">Amharic</div><div class="item" data-id="ar">Arabic</div><div class="item" data-id="hy">Armenian</div><div class="item" data-id="ast">Asturian</div><div class="item" data-id="az">Azerbaijani</div><div class="item" data-id="ba">Bashkir</div><div class="item" data-id="be">Belarusian</div><div class="item" data-id="bg">Bulgarian</div><div class="item" data-id="bn">Bengali</div><div class="item" data-id="br">Breton</div><div class="item" data-id="bs">Bosnian</div><div class="item" data-id="ceb">Cebuano</div><div class="item" data-id="zh">Chinese</div><div class="item" data-id="cs">Czech</div><div class="item" data-id="da">Danish</div><div class="item" data-id="en">English</div><div class="item" data-id="et">Estonian</div><div class="item" data-id="fi">Finnish</div><div class="item" data-id="nl">Flemish</div><div class="item" data-id="fr">French</div><div class="item" data-id="ff">Fulah</div><div class="item" data-id="de">German</div><div class="item" data-id="el">Greeek</div><div class="item" data-id="fa">Persian</div><div class="item" data-id="ga">Irish</div><div class="item" data-id="gd">Scottish Gaelic</div><div class="item" data-id="gl">Galician</div><div class="item" data-id="lg">Ganda</div><div class="item" data-id="gu">Gujarati</div><div class="item" data-id="ha">Hausa</div><div class="item" data-id="he">Hebrew</div><div class="item" data-id="hi">Hindi</div><div class="item" data-id="hr">Croatian</div><div class="item" data-id="ht">Haitian Creole</div><div class="item" data-id="hu">Hungarian</div><div class="item" data-id="id">Indonesian</div><div class="item" data-id="ig">Igbo</div><div class="item" data-id="ilo">Iloko</div><div class="item" data-id="is">Icelandic</div><div class="item" data-id="it">Italian</div><div class="item" data-id="ja">Japanese</div><div class="item" data-id="jv">Javanese</div><div class="item" data-id="ka">Georgian</div><div class="item" data-id="kk">Kazakh</div><div class="item" data-id="km">Central Khmer</div><div class="item" data-id="kn">Kannada</div><div class="item" data-id="ko">Korean</div><div class="item" data-id="lb">Letzeburgesch</div><div class="item" data-id="ln">Lingala</div><div class="item" data-id="lo">Lao</div><div class="item" data-id="lt">Lithuanian</div><div class="item" data-id="lv">Latvian</div><div class="item" data-id="mk">Macedonian</div><div class="item" data-id="mg">Malagasy</div><div class="item" data-id="ml">Malayalam</div><div class="item" data-id="mr">Marathi</div><div class="item" data-id="mn">Mongolian</div><div class="item" data-id="ro">Moldovan</div><div class="item" data-id="ms">Malay</div><div class="item" data-id="my">Burmese</div><div class="item" data-id="ne">Nepali</div><div class="item" data-id="no">Norwegian</div><div class="item" data-id="ns">Northern Sotho</div><div class="item" data-id="oc">Occitan</div><div class="item" data-id="or">Oriya</div><div class="item" data-id="pa">Punjabi</div><div class="item" data-id="pl">Polish</div><div class="item" data-id="ps">Pashto</div><div class="item" data-id="pt">Portuguese</div><div class="item" data-id="ru">Russian</div><div class="item" data-id="sr">Serbian</div><div class="item" data-id="sd">Sindhi</div><div class="item" data-id="si">Sinhalese</div><div class="item" data-id="sk">Slovak</div><div class="item" data-id="sl">Slovenian</div><div class="item" data-id="so">Somali</div><div class="item" data-id="es">Spanish</div><div class="item" data-id="ss">Swati</div><div class="item" data-id="su">Sundanese</div><div class="item" data-id="sv">Swedish</div><div class="item" data-id="sw">Swahili</div><div class="item" data-id="ta">Tamil</div><div class="item" data-id="th">Thai</div><div class="item" data-id="tl">Tagalog</div><div class="item" data-id="tn">Tswana</div><div class="item" data-id="tr">Turkish</div><div class="item" data-id="uk">Ukrainian</div><div class="item" data-id="ur">Urdu</div><div class="item" data-id="uz">Uzbek</div><div class="item" data-id="ca">Valencian</div><div class="item" data-id="vi">Vietnamese</div><div class="item" data-id="cy">Welsh</div><div class="item" data-id="wo">Wolof</div><div class="item" data-id="xh">Xhosa</div><div class="item" data-id="yi">Yiddish</div><div class="item" data-id="yo">Yoruba</div><div class="item" data-id="zu">Zulu</div>
                             </div>
@@ -790,8 +801,8 @@
                 <p>Translation</p>
                 <div id="translatedText" class="alert alert-success" role="alert">
                 </div>
-                <button class="btn btn-sm btn-info" id="copyTransButton" style="display: none" onclick="copy('#translatedText')">Copy Translation To Clipboard</button> 
-                <button class="btn btn-sm btn-info" id="visualizeButton" style="display: none">Visualize Attention</button>
+                <button class="btn btn-sm btn-info" id="copyTransButton" style="display: none" onclick="copy('#translatedText')"><i class="fa fa-clipboard"></i> Copy Translation To Clipboard</button> 
+                <button class="btn btn-sm btn-info" id="visualizeButton" style="display: none"><i class="fa fa-line-chart"></i> Visualize Attention</button>
             </div>
           </div>
           <div class="container ui stackable equal width grid">
