@@ -129,7 +129,7 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 Contact me (Raj Dabre) at prajdabre@gmail.com or raj.dabre@nict.go.jp for general queries.
 For queries about the user interface, please contact Diptesh Kanojia at d.kanojia@surrey.ac.uk or Chinmay Sawant at chinmayssawant44@gmail.com
 
-**Backstory: Why I made this toolkit**
+**Backstory: Why I made this toolkit**<br>
 Despite the fact that I enjoy coding, I never really pushed myself throughout my Masters and Ph.D. towards writing a self contained toolkit. I had always known that coding is an important part of research and although I had made plenty of meaningful changes to several code bases, I never felt like I owned any of those changes. 
 
 Fast forward to 2020 where I wanted to play with MBART/BART/MASS. It would have been easy to use fairseq or tensor2tensor but then again the feeling of lack of ownership would remain. Huggingface provides a lot of implementations but (at the time) had no actual script to easily do MBART pre-training. All I had was this single <a href="https://github.com/huggingface/transformers/issues/5096#issuecomment-645860271">comment</a> and this guide for <a href="https://yangkky.github.io/2019/07/08/distributed-pytorch-tutorial.html">distributed training using pytorch</a> (thanks yangkky). 
