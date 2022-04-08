@@ -136,8 +136,6 @@ class MBartConfig(PretrainedConfig):
         features_embed_dims=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
         multilayer_softmaxing=None, ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper. You have to specify the indices of the intermediate layers which you want to softmax. These go from 0 for the embedding layer to L-2 for the penultimate layer. 
         wait_k=-1, ## Argument to control whether we will be doing SNMT or not.
-        no_positional_encoding_encoder=False, ## Argument to indicate whether we will use positional encoding for encoder or not.
-        no_positional_encoding_decoder=False, ## Argument to indicate whether we will use positional encoding for decoder or not.
         unidirectional_encoder=False, ## Argument to indicate whether we will train a unidirectional encoder or not.
         multi_source=False, ## Argument to control whether we do multi source or not.
         multi_source_method=None, ## Argument to control the multi source combination method. Should be a string.
@@ -151,15 +149,6 @@ class MBartConfig(PretrainedConfig):
         num_domains_for_domain_classifier=-1, ## Argument to indicate number of domains for domain classifier.
         gradient_reversal_for_domain_classifier=False, ## Argument to indicate whether we should do gradient reversal for domain classifier.
         positional_encodings=False, ## Argument to indicate whether we should do use positional encodings or embeddings.
-        use_moe=False, ## Argument to indicate whether we use mixtures of experts instead of FFNs.
-        num_experts=8, ## Argument to indicate how many experts we want. The FFN hidden size will be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
-        expert_ffn_size=128, ## Argument to indicate the hidden size of the expert.
-        prompt_tuning=False, ## Argument to indicate whether we should do prompt tuning or not.
-        num_prompts=10, ## Argument to indicate how many prompts we should use.
-        adaptor_tuning=False, ## Argument to indicate whether we should do adaptor tuning or not.
-        deep_adaptor_tuning=False, ## Argument to indicate whether we should do deep adaptor tuning or not.
-        adaptor_hidden_size=128, ## Argument to indicate the hidden size of the adaptor.
-        softmax_bias_tuning=False, ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -200,8 +189,6 @@ class MBartConfig(PretrainedConfig):
         self.multilayer_softmaxing = multilayer_softmaxing ## Argument to control multi layer softmaxing. According to my multilayer softmaxing paper.
         self.wait_k = wait_k ## Argument to control whether we will be doing SNMT or not.
         self.unidirectional_encoder = unidirectional_encoder ## Argument to indicate whether we will train a unidirectional encoder or not.
-        self.no_positional_encoding_encoder = no_positional_encoding_encoder  ## Argument to indicate whether we will use positional encoding for encoder or not.
-        self.no_positional_encoding_decoder = no_positional_encoding_decoder  ## Argument to indicate whether we will use positional encoding for decoder or not.
         self.multi_source = multi_source ## Argument to control whether we do multi source or not.
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
         self.mid_fusion_layers = mid_fusion_layers ## Argument to control the number of layers after which multi-source fusion will begin.
@@ -214,15 +201,6 @@ class MBartConfig(PretrainedConfig):
         self.num_domains_for_domain_classifier = num_domains_for_domain_classifier ## Argument to indicate number of domains for domain classifier.
         self.gradient_reversal_for_domain_classifier = gradient_reversal_for_domain_classifier ## Argument to indicate whether we should do gradient reversal for domain classifier.
         self.positional_encodings = positional_encodings ## Argument to indicate whether we should do use positional encodings or embeddings.
-        self.use_moe = use_moe ## Argument to indicate whether we use mixtures of experts instead of FFNs.
-        self.num_experts = num_experts ## Argument to indicate how many experts we want. The FFN hidden size will be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
-        self.expert_ffn_size = expert_ffn_size ## Argument to indicate the hidden size of the expert.
-        self.prompt_tuning = prompt_tuning ## Argument to indicate whether we should do prompt tuning or not.
-        self.num_prompts = num_prompts ## Argument to indicate how many prompts we should use.
-        self.adaptor_tuning = adaptor_tuning ## Argument to indicate whether we should do adaptor tuning or not.
-        self.deep_adaptor_tuning = deep_adaptor_tuning ## Argument to indicate whether we should do deep adaptor tuning or not.
-        self.adaptor_hidden_size = adaptor_hidden_size ## Argument to indicate the hidden size of the adaptor.
-        self.softmax_bias_tuning = softmax_bias_tuning ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         
     @property
