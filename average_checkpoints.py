@@ -76,24 +76,15 @@ def average_checkpoints(args):
                 params_dict[k] = p.clone()
                 # NOTE: clone() is needed in case of p is a shared parameter
             else:
-                if args.geometric_mean:
-                    params_dict[k] *= p
-                else:
-                    params_dict[k] += p
+                params_dict[k] += p
 
     averaged_params = collections.OrderedDict()
     for k, v in params_dict.items():
         averaged_params[k] = v
         if averaged_params[k].is_floating_point():
-            if args.geometric_mean:
-                averaged_params[k].pow_(1/num_models)
-            else:
-                averaged_params[k].div_(num_models)
+            averaged_params[k].div_(num_models)
         else:
-            if args.geometric_mean:
-                averaged_params[k].pow_(1/num_models).round()
-            else:
-                averaged_params[k] //= num_models
+            averaged_params[k] //= num_models
     new_state["model"] = averaged_params
     return new_state
 
@@ -131,8 +122,6 @@ def main():
                         help='Input checkpoint file paths.')
     parser.add_argument('--output', required=True, metavar='FILE',
                         help='Write the new checkpoint containing the averaged weights to this path.')
-    parser.add_argument('--geometric_mean', action='store_true',
-                        help='Should we do geometric mean instead of arithmetic mean?')
     args = parser.parse_args()
     print(args)
 

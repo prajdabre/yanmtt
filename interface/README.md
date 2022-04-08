@@ -1,7 +1,7 @@
 # YANMTT User Interface 
 
 Welcome to the YANMTT User Interface. Please find the instructions below to get started with the UI.
-Please note that any models that you need to deploy to the UI, should be stored (as an individual model foler) inside the yanmtt/interface/models folder.
+Please note that any models that you need to deploy to the UI, should be stored (as an individual model folder) inside the yanmtt/interface/models folder. You may create a softlink of your model in the yanmtt/interface/models folder. YANMTT creates a "*_deploy" folder in the model folder, which contains the model files that can be easily used by the UI. This "*_deploy" folder is to be either copied or softlinked into the yanmtt/interface/models folder. Remember that when you train a model using YANMTT that you plan to visualize, remember to use the --suported_languages flag (see train_nmt.py and pretrain_nmt.py for more information).
 ## Installation ( necessary; but easy :) )
 
 #### Step 1
@@ -17,6 +17,7 @@ pip install -r requirements.txt
 
 ## Run
 ```bash
+tensorboard --logdir=models --port=26004
 python app.py --port <VALUE>
 ```
 (requires GPU for fast inference, slower inference with CPUs)

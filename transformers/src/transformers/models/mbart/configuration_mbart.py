@@ -141,6 +141,8 @@ class MBartConfig(PretrainedConfig):
         unidirectional_encoder=False, ## Argument to indicate whether we will train a unidirectional encoder or not.
         multi_source=False, ## Argument to control whether we do multi source or not.
         multi_source_method=None, ## Argument to control the multi source combination method. Should be a string.
+        mid_fusion_layers = 3, ## Argument to control the number of layers after which multi-source fusion will begin.
+        bottleneck_mid_fusion_tokens = 4, ## Argument to control the number of bottleneck tokens for mid fusion in multi-source models.
         additional_source_wait_k=-1, ## Argument to indicate whether the additional source also a wait-k input.
         softmax_temperature=1.0, ## Argument to indicate the softmax temperature.
         temperature_calibration=False, ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.
@@ -202,6 +204,8 @@ class MBartConfig(PretrainedConfig):
         self.no_positional_encoding_decoder = no_positional_encoding_decoder  ## Argument to indicate whether we will use positional encoding for decoder or not.
         self.multi_source = multi_source ## Argument to control whether we do multi source or not.
         self.multi_source_method = multi_source_method ## Argument to control the multi source combination method. Should be a string.
+        self.mid_fusion_layers = mid_fusion_layers ## Argument to control the number of layers after which multi-source fusion will begin.
+        self.bottleneck_mid_fusion_tokens = bottleneck_mid_fusion_tokens ## Argument to control the number of bottleneck tokens for mid fusion in multi-source models.
         self.additional_source_wait_k = additional_source_wait_k ## Argument to indicate whether the additional source also a wait-k input.
         self.softmax_temperature = softmax_temperature ## Argument to indicate the softmax temperature.
         self.temperature_calibration = temperature_calibration ## Argument to indicate whether the softmax temperature should be calibrated (aka learned) or not.

@@ -78,13 +78,15 @@ def model_create_load_run_save(gpu, args, files, train_files):
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
+        if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             if "50" in args.pretrained_model:
-                tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path)
+                tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
+            elif "IndicBART" in args.pretrained_model:
+                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
             else:
-                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path)
+                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
         else:
-            tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path)
+            tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
     else:
         if "albert" in args.tokenizer_name_or_path:
             tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
@@ -694,7 +696,7 @@ def run_demo():
                         help='Maximum token length for source language')
     parser.add_argument('--max_tgt_length', default=256, type=int, 
                         help='Maximum token length for target language')
-    parser.add_argument('--hard_truncate_length', default=0, type=int, 
+    parser.add_argument('--hard_truncate_length', default=1024, type=int, 
                         help='Should we perform a hard truncation of the batch? This will be needed to eliminate cuda caching errors for when sequence lengths exceed a particular limit. This means self attention matrices will be massive and I used to get errors. Choose this value empirically.')
     parser.add_argument('--batch_size', default=4096, type=int, 
                         help='Maximum number of tokens in batch')

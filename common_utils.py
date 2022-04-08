@@ -99,6 +99,36 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     loss = loss/denominator
     return loss
 
+def prune_weights(model_weight_dict, prune_ratio):
+    """Prunes the weights of the model.
+    Args:
+        model_weight_dict: The weights of the model.
+        prune_ratio: The ratio of the weights to be pruned.
+    Returns:
+        The pruned weights which will be used to initialize the model.
+        
+    Logic:
+        1. For each key in the model_weight_dict, get the weight tensor and flatten it.
+        2. Sort the weight tensor in ascending order and get the indices of the top prune_ratio*len(weight_tensor) elements.
+        3. Set the weights to zero at the indices obtained in step 2."""
+    if prune_ratio <= 0:
+        return model_weight_dict
+    
+    print("Pruning weights. Pruning percent: {}%".format(prune_ratio*100))
+    for key in model_weight_dict:
+        weight_tensor = model_weight_dict[key]
+        weight_tensor = weight_tensor.view(-1)
+        weight_tensor = weight_tensor.cpu().numpy()
+        indices = np.argsort(weight_tensor)
+        indices = indices[:int(prune_ratio*len(weight_tensor))]
+        weight_tensor[indices] = 0
+        weight_tensor = torch.from_numpy(weight_tensor)
+        print("Pruned percentage: {}%".format(torch.sum(weight_tensor == 0)/len(weight_tensor)*100))
+        weight_tensor = weight_tensor.view_as(model_weight_dict[key])
+        model_weight_dict[key] = weight_tensor
+    return model_weight_dict
+
+
 def lmap(f, x):
     """list(map(f, x)). Converts a map into a list containing (key,value) pairs."""
     return list(map(f, x))
@@ -540,13 +570,25 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
             if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(masked_sentence, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
+                if curr_src_sent_len > args.hard_truncate_length:
+                    masked_sentence = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_src_sent_len = args.hard_truncate_length
                 iids = tok(sentence, return_tensors="pt").input_ids
                 curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > args.hard_truncate_length:
+                    sentence = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_tgt_sent_len = args.hard_truncate_length
             else:
                 iids = tok(lang + " " + masked_sentence + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
+                if curr_src_sent_len > args.hard_truncate_length:
+                    masked_sentence = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_src_sent_len = args.hard_truncate_length
                 iids = tok("<s> " + sentence, add_special_tokens=False, return_tensors="pt").input_ids
                 curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > args.hard_truncate_length:
+                    sentence = tok.decode(iids[0][1:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_tgt_sent_len = args.hard_truncate_length
             
                         
             if curr_src_sent_len > max_src_sent_len:
@@ -587,7 +629,10 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     encoder_input_batch.append(masked_sentence)
                     decoder_input_batch.append(sentence)
                 else:
-                    encoder_input_batch.append(masked_sentence + " </s> " + lang)
+                    if args.use_official_pretrained and "50" in args.pretrained_model: ## mbart-50 model has a different input representation
+                        encoder_input_batch.append(lang + " " + masked_sentence + " </s>")
+                    else:
+                        encoder_input_batch.append(masked_sentence + " </s> " + lang)
                     decoder_input_batch.append(lang + " " + sentence)
                     decoder_label_batch.append(sentence + " </s>")
                     if args.tokenization_sampling:
@@ -603,22 +648,22 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:args.hard_truncate_length]
+        # if len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
             decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+        # if len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        #     decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
         if (args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## We have to be careful when using stochastic segmentation. Note again that there will be no stoachastic segmentation with the official bart model. IT JUST WONT WORK.
             labels = decoder_input_ids[:,1:]
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-        if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            labels = labels[:,:args.hard_truncate_length]
+        # if len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        #     labels = labels[:,:args.hard_truncate_length]
         end = time.time()
 #         if rank == 0:
 #             print(input_ids.size(), functools.reduce(lambda x,y: x*y, input_ids.size()), decoder_input_ids.size(), functools.reduce(lambda x,y: x*y, decoder_input_ids.size()))
@@ -699,7 +744,7 @@ def generate_batches_lm(tok, args, rank, files): ## Address compatibilities of t
             input_ids = tok(input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        if len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             input_ids = input_ids[:,:args.hard_truncate_length+1]
         labels = input_ids[:,1:]
         input_ids = input_ids[:,:-1]
@@ -772,8 +817,18 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             sent_len = args.max_src_length
         
         if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            iids = tok(src_sent, return_tensors="pt").input_ids
+            sent_len = len(iids[0])
+            if sent_len > args.hard_truncate_length:
+                src_sent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                sent_len = args.hard_truncate_length
             encoder_input_batch.append(src_sent)
-        else:
+        else: ## Truncation code is the same as in the "if case" but replicating it just for clarity. Coincidentally the truncation indices are the same.
+            iids = tok(lang + " " + src_sent + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+            sent_len = len(iids[0])
+            if sent_len > args.hard_truncate_length:
+                src_sent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                sent_len = args.hard_truncate_length
             if args.use_official_pretrained and "50" in args.pretrained_model: ## mbart-50 model has a different input representation
                 encoder_input_batch.append(lang + " " + src_sent + " </s>")
             else:
@@ -786,8 +841,18 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
             if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                iids = tok(src_sent_parent, return_tensors="pt").input_ids
+                sent_len_parent = len(iids[0])
+                if sent_len_parent > args.hard_truncate_length:
+                    src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sent_len_parent = args.hard_truncate_length
                 encoder_input_batch_parent.append(src_sent_parent)
-            else:
+            else: ## Truncation code is the same as in the "if case" but replicating it just for clarity. Coincidentally the truncation indices are the same.
+                iids = tok(lang_parent + " " + src_sent_parent + " </s>", add_special_tokens=False, return_tensors="pt").input_ids
+                sent_len_parent = len(iids[0])
+                if sent_len_parent > args.hard_truncate_length:
+                    src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sent_len_parent = args.hard_truncate_length
                 if args.use_official_pretrained and "50" in args.pretrained_model: ## mbart-50 model has a different input representation
                     encoder_input_batch_parent.append(lang_parent + " " + src_sent_parent + " </s>")
                 else:
@@ -801,14 +866,14 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
             else:
                 input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
+            # if len(input_ids[0]) > args.hard_truncate_length:
+            #     input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             
             if args.multi_source: ## Process the batch for the additional source as well.
                 input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-                if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
-                    input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+                # if len(input_ids_parent[0]) > args.hard_truncate_length:
+                #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
                 input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
                 #print(input_ids.size(), input_ids_parent.size())
                 yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
@@ -825,14 +890,14 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
+        # if len(input_ids[0]) > args.hard_truncate_length:
+        #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         
         if args.multi_source: ## Process the batch for the additional source as well.
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
-                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            # if len(input_ids_parent[0]) > args.hard_truncate_length:
+            #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
             yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
         else:
@@ -1002,22 +1067,44 @@ def generate_batches_bilingual(tok, args, files, rank):
             if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
+                if curr_src_sent_len > args.hard_truncate_length:
+                    src_sent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_src_sent_len = args.hard_truncate_length
+                
+                iids = tok(tgt_sent, return_tensors="pt").input_ids
+                curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > args.hard_truncate_length:
+                    tgt_sent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_tgt_sent_len = args.hard_truncate_length
             else:
                 iids = tok(src_sent + " </s> " + slang, add_special_tokens=False, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
-            
-            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                iids = tok(tgt_sent, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
-            else:
+                if curr_src_sent_len > args.hard_truncate_length:
+                    src_sent = tok.decode(iids[0][0:args.hard_truncate_length-2], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_src_sent_len = args.hard_truncate_length
+                
                 iids = tok(tlang + " " + tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
                 curr_tgt_sent_len = len(iids[0])
+                if curr_tgt_sent_len > args.hard_truncate_length:
+                    tgt_sent = tok.decode(iids[0][1:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    curr_tgt_sent_len = args.hard_truncate_length
             
             if args.cross_distillation or args.multi_source:
-                iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_src_sent_len_parent = len(iids[0])
+                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                    iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                    curr_src_sent_len_parent = len(iids[0])
+                    if curr_src_sent_len_parent > args.hard_truncate_length:
+                        src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                        curr_src_sent_len_parent = args.hard_truncate_length
+                else: ## Truncation code is the same as in the "if case" but replicating it just for clarity. Coincidentally the truncation indices are the same.
+                    iids = tok(src_sent_parent + " </s> " + slang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                    curr_src_sent_len_parent = len(iids[0])
+                    if curr_src_sent_len_parent > args.hard_truncate_length:
+                        src_sent_parent = tok.decode(iids[0][0:args.hard_truncate_length-2], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                        curr_src_sent_len_parent = args.hard_truncate_length
+                
                 if curr_src_sent_len_parent > max_src_sent_len_parent:
-                    max_src_sent_len_parent = curr_src_sent_len_parent    
+                    max_src_sent_len_parent = curr_src_sent_len_parent
 
             if curr_src_sent_len > max_src_sent_len:
                 max_src_sent_len = curr_src_sent_len
@@ -1107,26 +1194,26 @@ def generate_batches_bilingual(tok, args, files, rank):
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            input_ids = input_ids[:,:args.hard_truncate_length]
+        # if len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         else:
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-        if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-            decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
+        # if len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+        #     decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
         if (args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             labels = decoder_input_ids[:,1:]
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-                labels = labels[:,:args.hard_truncate_length]
+            # if len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            #     labels = labels[:,:args.hard_truncate_length]
         if args.cross_distillation or args.multi_source:
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-            if args.hard_truncate_length > 0 and  len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
-                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            # if len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
+            #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
             end = time.time()
             #print(input_ids.size(), input_ids_parent.size(), decoder_input_ids.size())
@@ -1140,7 +1227,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                 yield input_ids, input_masks, decoder_input_ids, labels
 
             
-def generate_batches_pair(tok, args):
+def generate_batches_pair(tok, args): ## TODO: Fix for mbart and bart variants
     """Generates the source, target and source attention masks for the training set."""
     src_file = open(args.test_src)
     tgt_file = open(args.test_ref)
@@ -1181,18 +1268,18 @@ def generate_batches_pair(tok, args):
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            if len(input_ids[0]) > args.hard_truncate_length:
                 input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+            if len(decoder_input_ids[0]) > args.hard_truncate_length:
                 decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
             if args.tokenization_sampling: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 labels = decoder_input_ids[:,1:]
                 decoder_input_ids = decoder_input_ids[:,:-1]
             else:
                 labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-                if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+                if len(labels[0]) > args.hard_truncate_length:
                     labels = labels[:,:args.hard_truncate_length]
             decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
             end = time.time()
@@ -1204,7 +1291,7 @@ def generate_batches_pair(tok, args):
 
     if len(encoder_input_batch) != 0:
         input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+        if len(input_ids[0]) > args.hard_truncate_length:
             input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
         decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
@@ -1213,12 +1300,12 @@ def generate_batches_pair(tok, args):
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+            if len(labels[0]) > args.hard_truncate_length:
                 labels = labels[:,:args.hard_truncate_length]
         decoder_masks = (decoder_input_ids != tok.pad_token_id).int()
         yield input_ids, input_masks, decoder_input_ids, decoder_masks, labels
 
-def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation logic here if something bugs out. In general dont use this its highly untested.
+def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation logic here if something bugs out. In general dont use this its highly untested. ## TODO: Fix for mbart and bart variants
     """Generates the source, target and source attention masks for the training set."""
     if args.use_official_pretrained:
         mask_tok = "<mask>"
@@ -1260,15 +1347,15 @@ def generate_batches_pair_masked(tok, args): ## TODO: Implement hard truncation 
                 decoder_input_batch.append(tlang + " " + new_tgt_sent)
                 decoder_label_batch.append(new_tgt_sent + " </s>")
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
+            if len(input_ids[0]) > args.hard_truncate_length:
                 input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = (input_ids != tok.pad_token_id).int()
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(decoder_input_ids[0]) > args.hard_truncate_length:
+            if len(decoder_input_ids[0]) > args.hard_truncate_length:
                 decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
             tgt_masks = (decoder_input_ids != tok.pad_token_id).int()
             labels = tok(decoder_label_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(labels[0]) > args.hard_truncate_length:
+            if len(labels[0]) > args.hard_truncate_length:
                 labels = labels[:,:args.hard_truncate_length]
             end = time.time()
 
@@ -1347,8 +1434,18 @@ def generate_batches_for_decoding(tok, args):
             src_sent = " ".join(src_sent_split)
         
         if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            iids = tok(src_sent, return_tensors="pt").input_ids
+            sent_len = len(iids[0])
+            if sent_len > args.hard_truncate_length:
+                src_sent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                sent_len = args.hard_truncate_length
             encoder_input_batch.append(src_sent)
-        else:
+        else: ## Truncation code is the same as in the "if case" but replicating it just for clarity. Coincidentally the truncation indices are the same.
+            iids = tok(src_sent + " </s> " + lang, add_special_tokens=False, return_tensors="pt").input_ids
+            sent_len = len(iids[0])
+            if sent_len > args.hard_truncate_length:
+                src_sent = tok.decode(iids[0][0:args.hard_truncate_length-2], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                sent_len = args.hard_truncate_length
             if args.use_official_pretrained and "50" in args.model_path: ## mbart-50 model has a different input representation
                 encoder_input_batch.append(lang + " " + src_sent + " </s>")
             else:
@@ -1361,10 +1458,23 @@ def generate_batches_for_decoding(tok, args):
                 src_sent_split_parent=src_sent_split_parent[:args.max_src_length]
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
-            if args.use_official_pretrained and "50" in args.model_path: ## mbart-50 model has a different input representation
-                encoder_input_batch_parent.append(lang_parent + " " + src_sent_parent + " </s>")
-            else:
-                encoder_input_batch_parent.append(src_sent_parent + " </s> " + lang_parent)
+            if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                iids = tok(src_sent_parent, return_tensors="pt").input_ids
+                sent_len_parent = len(iids[0])
+                if sent_len_parent > args.hard_truncate_length:
+                    src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sent_len_parent = args.hard_truncate_length
+                encoder_input_batch.append(src_sent_parent)
+            else: ## Truncation code is the same as in the "if case" but replicating it just for clarity. Coincidentally the truncation indices are the same.
+                iids = tok(src_sent_parent + " </s> " + lang_parent, add_special_tokens=False, return_tensors="pt").input_ids
+                sent_len_parent = len(iids[0])
+                if sent_len_parent > args.hard_truncate_length:
+                    src_sent_parent = tok.decode(iids[0][0:args.hard_truncate_length-2], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sent_len_parent = args.hard_truncate_length
+                if args.use_official_pretrained and "50" in args.model_path: ## mbart-50 model has a different input representation
+                    encoder_input_batch_parent.append(lang_parent + " " + src_sent_parent + " </s>")
+                else:
+                    encoder_input_batch_parent.append(src_sent_parent + " </s> " + lang_parent)
             
             
         curr_batch_count += 1
@@ -1373,14 +1483,14 @@ def generate_batches_for_decoding(tok, args):
                 input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
             else:
                 input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-                input_ids = input_ids[:,:args.hard_truncate_length]
+            # if len(input_ids[0]) > args.hard_truncate_length:
+            #     input_ids = input_ids[:,:args.hard_truncate_length]
             input_masks = input_ids != tok.pad_token_id
             end = time.time()
             if args.multi_source: ## Process the batch for the additional source as well.
                 input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
-                if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
-                    input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+                # if len(input_ids_parent[0]) > args.hard_truncate_length:
+                #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
                 input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
                 yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
             else:
@@ -1395,13 +1505,13 @@ def generate_batches_for_decoding(tok, args):
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-        if args.hard_truncate_length > 0 and len(input_ids[0]) > args.hard_truncate_length:
-            input_ids = input_ids[:,:args.hard_truncate_length]
+        # if len(input_ids[0]) > args.hard_truncate_length:
+        #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = input_ids != tok.pad_token_id
         if args.multi_source: ## Process the batch for the additional source as well.
             input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
-            if args.hard_truncate_length > 0 and len(input_ids_parent[0]) > args.hard_truncate_length:
-                input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
+            # if len(input_ids_parent[0]) > args.hard_truncate_length:
+            #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
             yield [input_ids, input_ids_parent], [input_masks, input_masks_parent]
         else:

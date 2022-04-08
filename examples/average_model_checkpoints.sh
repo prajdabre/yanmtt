@@ -30,12 +30,7 @@
 
 ## Notes:
 # General: Look at the arguments in the script "average_checkpoints.py" for a better understanding.
-# 1. Use --geometric_mean flag for multilingual models.
 
 ## Arithmetic average two checkpoints (actually the same checkpoint twice as this is just an example)
 
 python average_checkpoints.py --inputs examples/models/nmt_model examples/models/nmt_model --output examples/models/averaged.nmt_model
-
-## Geometric average two checkpoints (actually the same checkpoint twice as this is just an example)
-
-# python average_checkpoints.py --inputs examples/models/nmt_model examples/models/nmt_model --output examples/models/averaged.nmt_model --geometric_mean

@@ -243,8 +243,8 @@ class MBartAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         ## Modified by Raj Dabre. Start.
-        if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or multi_source_method == "merge_after_attention_with_context_relevance_only": ## We pass the attentions through a gating method. X and Y are combined as w*x+(1-w)*Y where w=sigmoid(W[X:Y]) where [X:Y] is the concatenation of X and Y along hidden axis.
-            if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention":
+        if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or multi_source_method == "merge_after_attention_with_context_relevance_only" or multi_source_method == "mid_fusion_merge_after_attention" or multi_source_method == "bottleneck_mid_fusion_merge_after_attention": ## We pass the attentions through a gating method. X and Y are combined as w*x+(1-w)*Y where w=sigmoid(W[X:Y]) where [X:Y] is the concatenation of X and Y along hidden axis.
+            if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "mid_fusion_merge_after_attention" or multi_source_method == "bottleneck_mid_fusion_merge_after_attention":
                 self.gating_layer = nn.Linear(2*self.head_dim, self.head_dim, bias=False)
             else:
                 self.gating_layer = nn.Linear(self.head_dim, self.head_dim, bias=False)
@@ -423,7 +423,7 @@ class MBartAttention(nn.Module):
                 tgt_len,
                 self.head_dim,
             ), f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is {additional_attn_output.size()}"
-            if self.multi_source_method == "merge_after_attention" or self.multi_source_method == "self_relevance_and_merge_after_attention":
+            if self.multi_source_method == "merge_after_attention" or self.multi_source_method == "self_relevance_and_merge_after_attention" or self.multi_source_method == "mid_fusion_merge_after_attention" or self.multi_source_method == "bottleneck_mid_fusion_merge_after_attention":
                 attentions_merged = torch.cat([attn_output, additional_attn_output], -1) ## Concatenate along hidden axis.
                 gating_weight = torch.sigmoid(self.gating_layer(attentions_merged)) ## Compute gating weight.
                 attn_output = gating_weight*attn_output + (1.0-gating_weight)*additional_attn_output ## Combine attentions.
@@ -664,7 +664,7 @@ class MBartDecoderLayer(nn.Module):
         # Cross-Attention Block
         cross_attn_present_key_value = None
         cross_attn_weights = None
-        if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"):
+        if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
             additional_cross_attn_weights = None
             additional_cross_attn_present_key_value = None
 
@@ -674,7 +674,7 @@ class MBartDecoderLayer(nn.Module):
             
             ## Modified by Raj Dabre. Start.
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
-            if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"): ## This if else is not needed but keeping it that way for cleaner flow of logic.
+            if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"): ## This if else is not needed but keeping it that way for cleaner flow of logic.
                 cross_attn_past_key_value = past_key_value[-4:-2] if past_key_value is not None else None
                 additional_cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
                 hidden_states, cross_attn_weights, additional_cross_attn_weights, cross_attn_present_key_value, additional_cross_attn_present_key_value = self.encoder_attn(
@@ -707,7 +707,7 @@ class MBartDecoderLayer(nn.Module):
             
             ## Modified by Raj Dabre. Start.
             # add cross-attn to positions 3,4 of present_key_value tuple
-            if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"):
+            if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
                 present_key_value = present_key_value + cross_attn_present_key_value + additional_cross_attn_present_key_value
             else:
                 present_key_value = present_key_value + cross_attn_present_key_value ## Deal with the additional_cross_attn_present_key_value
@@ -1004,12 +1004,15 @@ class MBartEncoder(MBartPreTrainedModel):
             self.layers = [self.unique_layers[int(idx)-1] for idx in layer_idxs]
         else:
             self.layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.encoder_layers)])
-        if config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only": ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
+        if config.multi_source and (config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"): ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
             self.self_relevance_layer = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         ## Modified by Raj Dabre. End.
         if not config.no_embed_norm:
             self.layernorm_embedding = nn.LayerNorm(embed_dim)
-        self.layer_norm = nn.LayerNorm(config.d_model)
+        if config.multi_source and (config.multi_source_method == "mid_fusion_merge_before_attention" or config.multi_source_method == "mid_fusion_merge_after_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
+            pass
+        else:
+            self.layer_norm = nn.LayerNorm(config.d_model)
 
         self.init_weights()
 
@@ -1194,18 +1197,24 @@ class MBartEncoder(MBartPreTrainedModel):
                 hidden_states = torch.cat([prompt_params[idx+1], hidden_states[:,prompt_shape[1]:,:]], dim=1)
 
         ## Modified by Raj Dabre. Start.
-        if self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
+        if self.config.multi_source and (self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"):
             hidden_states = hidden_states*torch.sigmoid(self.self_relevance_layer(hidden_states)) # Do self relevance as usual.
         ## Modified by Raj Dabre. End.
         
         if adaptor_layers is not None and not deep_adaptor_tuning: ## Apply adaptor layer for final encoder layer.
             hidden_states = adaptor_layers(hidden_states, True)
 
-        hidden_states = self.layer_norm(hidden_states)
-        
-        if output_hidden_states:
-            encoder_states = encoder_states + (hidden_states,)
+        if self.config.multi_source and (self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"): # No layer norm because the fusion layers have not been processed yet.
+            pass
+        else:
+            hidden_states = self.layer_norm(hidden_states)
+            if output_hidden_states:
+                encoder_states = encoder_states + (hidden_states,)
 
+        
+        
+        
+        
         if not return_dict:
             return tuple(v for v in [hidden_states, encoder_states, all_attentions, moe_losses] if v is not None)
         return BaseModelOutput(
@@ -1460,9 +1469,9 @@ class MBartDecoder(MBartPreTrainedModel):
         all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
         moe_losses = () if self.config.use_moe else None
         ## Modified by Raj Dabre. Start.
-        additional_all_cross_attentions = () if (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") and output_attentions and encoder_hidden_states is not None else None
+        additional_all_cross_attentions = () if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention") and output_attentions and additional_encoder_hidden_states is not None else None
         next_decoder_cache = () if use_cache else None
-        if self.config.multi_source_method == "merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention":
+        if self.config.multi_source and (self.config.multi_source_method == "merge_before_attention" or self.config.multi_source_method == "self_relevance_and_merge_before_attention" or self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" ):
             encoder_hidden_states = torch.cat([encoder_hidden_states, additional_encoder_hidden_states], 1) ## Concatenate sequences blindly along the sequence axis. 
             encoder_attention_mask = torch.cat([encoder_attention_mask, additional_encoder_attention_mask], -1) ## Concatenate along the src_seq_len axis.
             #print(encoder_hidden_states.size(), encoder_attention_mask.size())
@@ -1540,7 +1549,7 @@ class MBartDecoder(MBartPreTrainedModel):
 
             ## Modified by Raj Dabre. Start.
             if use_cache:
-                if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
+                if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
                     next_decoder_cache += (layer_outputs[4 if output_attentions else 1],)
                 else:
                     next_decoder_cache += (layer_outputs[3 if output_attentions else 1],)
@@ -1552,7 +1561,7 @@ class MBartDecoder(MBartPreTrainedModel):
                 if encoder_hidden_states is not None:
                     all_cross_attentions += (layer_outputs[2],)
                     ## Modified by Raj Dabre. Start.
-                    if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
+                    if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
                         additional_all_cross_attentions += (layer_outputs[3],)
                     ## Modified by Raj Dabre. End.
 
@@ -1568,7 +1577,7 @@ class MBartDecoder(MBartPreTrainedModel):
         next_cache = next_decoder_cache if use_cache else None
         ## Modified by Raj Dabre. Start.
         if not return_dict:
-            if self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only":
+            if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
                 return tuple(
                     v
                     for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, additional_all_cross_attentions, moe_losses]
@@ -1607,8 +1616,17 @@ class MBartModel(MBartPreTrainedModel):
         self.decoder = MBartDecoder(config, self.shared)
         
         ## Modified by Raj Dabre. Start.
-        if config.multi_source_method == "additional_source_attention":
+        if self.config.multi_source and config.multi_source_method == "additional_source_attention":
             self.context_attention = MBartDecoderLayer(config)
+            self.context_norm = nn.LayerNorm(config.d_model)
+
+        if self.config.multi_source and (config.multi_source_method == "mid_fusion_merge_before_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or config.multi_source_method == "mid_fusion_merge_after_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
+            self.mid_fusion_layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.mid_fusion_layers)])
+            self.mid_fusion_norm = nn.LayerNorm(config.d_model)
+            if config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention":
+                bottleneck_params = torch.zeros(1, config.bottleneck_mid_fusion_tokens, config.d_model)
+                bottleneck_params.normal_(mean=0.0, std=config.init_std)
+                self.bottleneck_params = torch.nn.Parameter(bottleneck_params)
         ## Modified by Raj Dabre. End.
         
         self.init_weights()
@@ -1706,6 +1724,9 @@ class MBartModel(MBartPreTrainedModel):
                     output_hidden_states=output_hidden_states, ## Should be False. Dont mess with this.
                     return_dict=return_dict,
                 )
+                if self.config.use_moe: ## Add the additional encoder MOE losses to the main encoder.
+                    encoder_outputs[3] = encoder_outputs[3] + additional_encoder_outputs[3]
+
                 self.config.wait_k = main_source_wait_k
             # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
             elif return_dict and not isinstance(additional_encoder_outputs, BaseModelOutput):
@@ -1717,8 +1738,140 @@ class MBartModel(MBartPreTrainedModel):
         else:
             additional_encoder_outputs = [None]
         
-        if self.config.multi_source_method == "additional_source_attention": ## We do a "cross attention" between the sentence and its context. For now this will be recomputed for each decoding time step.
+        if self.config.multi_source and (self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention"): 
+            # Concatenate the encoder and additional encoder outputs or concatenate the bottleneck params with the encoder and additional encoder outputs
+            # Create encoder layers to deal with further processing
+            # Do processing, deal with MOEs etc, update the hidden states after splitting at each stage etc
+            # We will need a new hyperparam to tell us the number of additional layers. Will have to deal with recurrent stacking etc. additional layers and current layers sum to actual total layers.
+            # Disable layer norm in the main encoder code when this type of fusion is done. 
             if context_encoder_representations is None:
+                hidden_states = encoder_outputs[0]
+                additional_hidden_states = additional_encoder_outputs[0]
+                encoder_input_length = hidden_states.size()[1]
+                additional_encoder_input_length = additional_hidden_states.size()[1]
+                encoder_self_attention_mask = _expand_mask(attention_mask, hidden_states.dtype, wait_k=self.config.wait_k)
+                additional_encoder_self_attention_mask = _expand_mask(additional_input_ids_mask, additional_hidden_states.dtype, wait_k=self.config.additional_source_wait_k)
+                if self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention":
+                    # Concatenate the encoder and additional encoder outputs
+                    # We have to deal with creation of attention masks for encoder to itself, additional encoder to itself and then cross between these two.
+                    encoder_to_additional_encoder_self_attention_mask = _expand_mask(additional_input_ids_mask, additional_hidden_states.dtype, tgt_len=encoder_input_length, wait_k=self.config.wait_k)
+                    additional_encoder_to_encoder_self_attention_mask = _expand_mask(attention_mask, hidden_states.dtype, tgt_len=additional_encoder_input_length, wait_k=self.config.additional_source_wait_k)
+                    combined_mask_a = torch.cat([encoder_self_attention_mask, encoder_to_additional_encoder_self_attention_mask], dim=3)
+                    combined_mask_b = torch.cat([additional_encoder_to_encoder_self_attention_mask, additional_encoder_self_attention_mask], dim=3)
+                    combined_mask = torch.cat((combined_mask_a, combined_mask_b), dim=2)
+                    combined_encoder_outputs = torch.cat((hidden_states, additional_hidden_states), dim=1)
+                    for idx, fusion_layer in enumerate(self.mid_fusion_layers):
+                        if output_hidden_states:
+                            encoder_outputs[1] = encoder_outputs[1] + (hidden_states,)
+                            additional_encoder_outputs[1] = additional_encoder_outputs[1] + (additional_hidden_states,)
+                        layer_outputs = fusion_layer(
+                            combined_encoder_outputs,
+                            combined_mask,
+                            layer_head_mask=(head_mask[idx] if head_mask is not None else None),
+                            output_attentions=output_attentions,
+                            adaptor_layers=adaptor_layers,
+                            deep_adaptor_tuning=deep_adaptor_tuning,
+                            adaptor_layer_idx=idx+self.config.encoder_layers,
+                        )
+
+                        if self.config.use_moe:
+                            hidden_states, moe_loss = layer_outputs[0]
+                            encoder_outputs[3] = encoder_outputs[3] + moe_loss
+                        else:
+                            hidden_states = layer_outputs[0]
+                        
+                        combined_encoder_outputs = hidden_states
+                        # Split hidden states and update the hidden states
+                        hidden_states, additional_hidden_states = torch.split(hidden_states, (encoder_input_length, additional_encoder_input_length), dim=1)
+                    
+                        if output_attentions:
+                            current_attentions = layer_outputs[1]
+                            # Split the attentions and update the attentions
+                            current_attentions, additional_current_attentions = torch.split(current_attentions, (encoder_input_length, additional_encoder_input_length), dim=2) ## This needs to be fixed. Since the number of columns will be (encoder_input_length+additional_encoder_input_length). But this may or may not be important.
+                            encoder_outputs[2] = encoder_outputs[2] + (current_attentions,)
+                            additional_encoder_outputs[2] = additional_encoder_outputs[2] + (additional_current_attentions,)
+                elif self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention":
+                    batch_size = hidden_states.size()[0]
+                    # Expand the bottleneck params to batch size
+                    bottleneck_params = self.bottleneck_params.expand(batch_size, -1, -1)
+                    # Concatenate the bottleneck params with the encoder and additional encoder outputs individually
+                    combined_hidden_states = torch.cat((bottleneck_params, hidden_states), dim=1)
+                    combined_additional_hidden_states = torch.cat((bottleneck_params, additional_hidden_states), dim=1)
+                    # Create a ones mask of shape (batch_size, 1, encoder_input_length, bottleneck_mid_fusion_tokens)
+                    ones_mask = torch.ones(batch_size, 1, encoder_input_length, self.config.bottleneck_mid_fusion_tokens).to(hidden_states.device)
+                    additional_ones_mask = torch.ones(batch_size, 1, additional_encoder_input_length, self.config.bottleneck_mid_fusion_tokens).to(hidden_states.device)
+                    
+                    # Expand the masks to accommodate the bottleneck params. We replicate the first row bottleneck_mid_fusion_tokens number of times. Its ok since bottleneck params can attend to itself and should attend to the first token. 
+                    encoder_self_attention_mask = torch.cat((ones_mask, encoder_self_attention_mask), dim=3) 
+                    encoder_self_attention_mask = torch.cat([encoder_self_attention_mask[:,:,0:1,:].expand(batch_size, 1, self.config.bottleneck_mid_fusion_tokens, self.config.bottleneck_mid_fusion_tokens+encoder_input_length), encoder_self_attention_mask], dim=2)
+                    additional_encoder_self_attention_mask = torch.cat((additional_ones_mask, additional_encoder_self_attention_mask), dim=3)
+                    additional_encoder_self_attention_mask = torch.cat([additional_encoder_self_attention_mask[:,:,0:1,:].expand(batch_size, 1, self.config.bottleneck_mid_fusion_tokens, self.config.bottleneck_mid_fusion_tokens+additional_encoder_input_length), additional_encoder_self_attention_mask], dim=2)
+
+                    for idx, fusion_layer in enumerate(self.mid_fusion_layers):
+                        if output_hidden_states:
+                            encoder_outputs[1] = encoder_outputs[1] + (hidden_states,)
+                            additional_encoder_outputs[1] = additional_encoder_outputs[1] + (additional_hidden_states,)
+                        layer_outputs = fusion_layer(
+                            combined_hidden_states,
+                            encoder_self_attention_mask,
+                            layer_head_mask=(head_mask[idx] if head_mask is not None else None),
+                            output_attentions=output_attentions,
+                            adaptor_layers=adaptor_layers,
+                            deep_adaptor_tuning=deep_adaptor_tuning,
+                            adaptor_layer_idx=idx+self.config.encoder_layers,
+                        )
+
+                        additional_layer_outputs = fusion_layer(
+                            combined_additional_hidden_states,
+                            additional_encoder_self_attention_mask,
+                            layer_head_mask=(head_mask[idx] if head_mask is not None else None),
+                            output_attentions=output_attentions,
+                            adaptor_layers=adaptor_layers,
+                            deep_adaptor_tuning=deep_adaptor_tuning,
+                            adaptor_layer_idx=idx+self.config.encoder_layers,
+                        )
+
+                        if self.config.use_moe:
+                            combined_hidden_states, moe_loss = layer_outputs[0]
+                            combined_additional_hidden_states, additional_moe_loss = additional_layer_outputs[0]
+                            encoder_outputs[3] = encoder_outputs[3] + moe_loss + additional_moe_loss
+                        else:
+                            combined_hidden_states = layer_outputs[0]
+                            combined_additional_hidden_states = additional_layer_outputs[0]
+                        
+                        # Split hidden states and additionl hidden states bu discarding the bottleneck parts
+                        bottleneck_params, hidden_states  = torch.split(combined_hidden_states, (self.config.bottleneck_mid_fusion_tokens, encoder_input_length), dim=1)
+                        additional_bottleneck_params, additional_hidden_states  = torch.split(combined_additional_hidden_states, (self.config.bottleneck_mid_fusion_tokens, additional_encoder_input_length), dim=1)
+
+                        # Average the bottleneck params
+                        bottleneck_params = (bottleneck_params + additional_bottleneck_params)/2
+
+                        # Concatenate the bottleneck params with the encoder and additional encoder outputs individually
+                        combined_hidden_states = torch.cat((bottleneck_params, hidden_states), dim=1)
+                        combined_additional_hidden_states = torch.cat((bottleneck_params, additional_hidden_states), dim=1)
+                        
+                        if output_attentions:
+                            current_attentions = layer_outputs[1]
+                            additional_current_attentions = additional_layer_outputs[1]
+                            # Split the attentions and update the attentions
+                            ## This needs to be fixed. Since the number of columns will be (self.config.bottleneck_mid_fusion_tokens+encoder_input_length) and (self.config.bottleneck_mid_fusion_tokens+additional_encoder_input_length). But this may or may not be important.
+                            current_attentions = torch.split(current_attentions, (self.config.bottleneck_mid_fusion_tokens, encoder_input_length), dim=2)[1]
+                            additional_current_attentions = torch.split(additional_current_attentions, (self.config.bottleneck_mid_fusion_tokens, additional_encoder_input_length), dim=2)[1]
+                            encoder_outputs[2] = encoder_outputs[2] + (current_attentions,)
+                            additional_encoder_outputs[2] = additional_encoder_outputs[2] + (additional_current_attentions,)
+                
+                # Apply the layer normalization
+                hidden_states = self.mid_fusion_norm(hidden_states)
+                additional_hidden_states = self.mid_fusion_norm(additional_hidden_states)
+
+                # Update the hidden states
+                encoder_outputs["last_hidden_state"] = hidden_states
+                additional_encoder_outputs["last_hidden_state"] = additional_hidden_states
+                context_encoder_representations = torch.cat((hidden_states, additional_hidden_states), dim=1) ## We use this as a placeholder to prevent any additional computations :)
+            
+
+        if self.config.multi_source and self.config.multi_source_method == "additional_source_attention": ## We do a "cross attention" between the sentence and its context. For now this will be recomputed for each decoding time step.
+            if context_encoder_representations is None: 
                 encoder_input_length = encoder_outputs[0].size()[1]
                 additional_encoder_input_length = additional_encoder_outputs[0].size()[1]
                 encoder_self_attention_mask = _expand_mask(attention_mask, encoder_outputs[0].dtype, wait_k=self.config.additional_source_wait_k)
@@ -1735,10 +1888,11 @@ class MBartModel(MBartPreTrainedModel):
                         use_cache=False,
                         additional_encoder_hidden_states=None,
                         additional_encoder_attention_mask=None,)
+                context_encoder_representations[0] = self.context_norm(context_encoder_representations[0]) 
                 #print(type(encoder_outputs), type(context_encoder_representations))
                 encoder_outputs["last_hidden_state"] = context_encoder_representations[0]
                 context_encoder_representations = context_encoder_representations[0]
-        
+
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
@@ -1778,8 +1932,8 @@ class MBartModel(MBartPreTrainedModel):
             additional_encoder_last_hidden_state=additional_encoder_outputs.last_hidden_state if self.config.multi_source else None,
             additional_encoder_hidden_states=additional_encoder_outputs.hidden_states if self.config.multi_source else None,
             additional_encoder_attentions=additional_encoder_outputs.attentions if self.config.multi_source else None,
-            additional_cross_attentions=decoder_outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only") else (),
-            context_encoder_representations = context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None, ## Find a way to return all contents of context_encoder_representations in the future.
+            additional_cross_attentions=decoder_outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention") else (),
+            context_encoder_representations = context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention" or self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention") else None, ## Find a way to return all contents of context_encoder_representations in the future.
             encoder_moe_losses = encoder_outputs.moe_losses, 
             decoder_moe_losses = decoder_outputs.moe_losses, 
         )
@@ -2195,10 +2349,10 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             additional_encoder_last_hidden_state=outputs.additional_encoder_last_hidden_state if self.config.multi_source else None,
             additional_encoder_hidden_states=outputs.additional_encoder_hidden_states if self.config.multi_source else None,
             additional_encoder_attentions=outputs.additional_encoder_attentions if self.config.multi_source else None,
-            additional_cross_attentions=outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "average_softmaxes") else (),
+            additional_cross_attentions=outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "average_softmaxes" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention") else (),
             additional_past_key_values=additional_outputs.past_key_values if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
             additional_source_lm_logits=additional_source_lm_logits if self.config.multi_source and (self.config.multi_source_method == "average_softmaxes") else None,
-            context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention") else None,
+            context_encoder_representations = outputs.context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention" or self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention") else None,
             softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
             domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier > 1 else None,
             encoder_moe_losses = outputs.encoder_moe_losses, 
