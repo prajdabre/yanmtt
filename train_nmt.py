@@ -65,7 +65,7 @@ from prefetch_generator import BackgroundGenerator
 torch.manual_seed(621311)
 ##
 
-def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition):
+def model_create_load_run_save(gpu, args, train_files, dev_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size.
@@ -75,6 +75,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_bi(train_files, args)
     
+    if rank == 0:
+        with open(args.model_path + ".quitflag", "w") as f:
+            f.write("0")
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
@@ -431,7 +434,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
                             print("Terminating training")
                             print("Global dev", metric, "history:", global_sbleu_history)
                             print("Individual", metric, "history:", individual_sbleu_history )
-                            quit_condition[0] = -1 ## Since this is a shared variable it will be updated for all processes.
+                            with open(args.model_path + ".quitflag", "w") as f:
+                                f.write("1")
                     curr_eval_step += 1
 
                     model.train() ## Put the model back in training mode where dropout will be done.
@@ -459,8 +463,10 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
-            if quit_condition[0].cpu().numpy() == -1: ## All processes will see the same value which is always updated by rank 0 processes.
-                break ## Everyone quits.
+            with open(args.model_path + ".quitflag", "r") as f:
+                if f.read().strip() == "1":
+                    print("All processess to die!")
+                    break
             # configure map_location properly
             print("Loading from checkpoint")
             sys.stdout.flush()
@@ -985,9 +991,7 @@ def run_demo():
     
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    quit_condition = torch.ones(1) ## Create a variable to hold the quitting condition trigger
-    quit_condition.share_memory_() ## Share this among all processes
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files, quit_condition))         #
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files))         #
     
 if __name__ == "__main__":
     run_demo()

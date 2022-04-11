@@ -593,7 +593,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
-
+    dist.barrier() ## Wait till all processes reach this point so that the prime process saves the final checkpoint.
     dist.destroy_process_group()
 
 def run_demo():
