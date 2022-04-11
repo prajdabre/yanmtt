@@ -75,6 +75,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_bi(train_files, args)
     
+    if rank == 0:
+        quit_condition[0] = -1
+    dist.barrier() ## Wait for all processes to reach this point.
+    print("Process:", rank, quit_condition)
+    sys.exit()
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.use_official_pretrained:
@@ -405,6 +410,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, quit_condition
             # 0 saves it.
             dist.barrier()
             if quit_condition[0].cpu().numpy() == -1: ## All processes will see the same value which is always updated by rank 0 processes.
+                print("All processes to quit!")
                 break ## Everyone quits.
             # configure map_location properly
             print("Loading from checkpoint")
