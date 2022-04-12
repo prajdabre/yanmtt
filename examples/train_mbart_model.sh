@@ -41,6 +41,21 @@ export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that
 
 python pretrain_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/mbart_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --langs hi,en,vi --mono_src examples/data/train.hi,examples/data/train.en,examples/data/train.vi --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files
 
+# Note 1: The --data_sampling_temperature argument helps balance the size of the corpora. The default value is 1.0 which means smaller corpora are not oversampled. A value of 5 will oversample the smaller corpora a lot more frequently. A very high value of 100 means all corpora will be sampled equally often.
+# Note 2: --token_masking_lambda and --token_masking_probs_range arguments will control the lengths of spans to be masked and the percentage of tokens to be masked.
+# Note 3: If you wish to use this model with a GUI then look at the --supported_languages argument.
+# Note 4: If each line in the corpora are documents then look at the --is_document and --document_level_sentence_delimiter arguments. If you also want to use the future prediction objective then look into the --future_prediction argument.
+# Note 5: If you want to use MASS or mT5 style denosing then look at the --span_prediction. For a reversed objective look at --span_to_sentence_prediction.
+# Note 5: If you want a contrastive objective  where negative examples are taken from the same batch then look at --contrastive_decoder_training.
+# Note 6: Look at the --save_every and --long_save_every arguments to choose how often and which major checkpoints are to be saved, respectively.
+
+
+## Train a very small MBART model on a single GPU but simulate a 8-gpu setup. The argument --multistep_optimizer_steps is to be used.
+
+# export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
+
+# python pretrain_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/mbart_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --langs hi,en,vi --mono_src examples/data/train.hi,examples/data/train.en,examples/data/train.vi --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files --multistep_optimizer_steps 8
+
 ## Train a very small MBART model on a single GPU but initialize it with a previous checkpoint. We assume that the model training had crashed but fortunately we had saved a checkpoint every 1,000 batches.
 
 # export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
@@ -75,3 +90,14 @@ python pretrain_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/mbart_model
 # On the second machine aka the follower node:
 
 # python pretrain_nmt.py -n 2  -nr 1 -g 8 -a $ipaddr --model_path examples/models/mbart_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --langs hi,en,vi --mono_src examples/data/train.hi,examples/data/train.en,examples/data/train.vi --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files
+
+
+## Train a very small MBART+NLG model on a single GPU. This is essentially joint denoising and NLG model. The most commonly used NLG task is NMT.
+
+# export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
+
+# python pretrain_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/mbart_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --langs hi,en,vi --mono_src examples/data/train.hi,examples/data/train.en,examples/data/train.vi --train_slang hi,vi,en,en --train_tlang en,en,hi,vi --train_src examples/data/train.hi,examples/data/train.vi,examples/data/train.en,examples/data/train.en --train_tgt examples/data/train.en,examples/data/train.en,examples/data/train.hi,examples/data/train.vi --bilingual_train_frequency 0.5 --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files 
+
+# Note 1: The bilingual training frequency is the ratio of the number of training examples that are bilingual to the total number of training examples. This is to balance the NLG and the denoising ovjectives.
+# Note 2: If you want to additionally mask the source sentences in the NLG objective then use the flag --source_masking_for_bilingual 
+# Note 3: There is no evaluation for the NLG objective so when training reaches a the predefined number of iterations then the training will stop.

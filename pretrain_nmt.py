@@ -32,7 +32,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 ## Huggingface imports
 import transformers
 from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
-from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, BartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
 
@@ -133,6 +133,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
             config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
             config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
+            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
             config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
             config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
@@ -149,6 +151,8 @@ def model_create_load_run_save(gpu, args, files, train_files):
             config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
             config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
             config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
+            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
             config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
             config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
@@ -156,7 +160,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: ## We are going to manually specify our own model config.
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration. TODO: Save this configuration somehow.
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         model = MBartForConditionalGeneration(config)
     torch.cuda.set_device(gpu)
@@ -244,7 +248,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         sys.stdout.flush()
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False)
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.softmax_bias_tuning) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
@@ -260,7 +264,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             else:
                 ctr = 0
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False)
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.softmax_bias_tuning) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             ctr = 0
@@ -643,6 +647,8 @@ def run_demo():
                             help='Source language training sentences')
     parser.add_argument('--train_tgt', default='', type=str, 
                             help='Target language training sentences')
+    parser.add_argument('--source_masking_for_bilingual', action='store_true', 
+                        help='Should we use masking on source sentences when training on parallel corpora?')
     parser.add_argument('--bilingual_train_frequency', default=0.0, type=float, 
                         help='If this is 0 then we assume no bilingual corpora. If this is set to a value say 0.8 then bilingual data is sampled for 4 out of every 5 batches.')
     parser.add_argument('--unify_encoder', action='store_true', 
@@ -789,6 +795,10 @@ def run_demo():
                         help='Should we use lightweight adaptors? (Only applied to the final layer)')
     parser.add_argument('--deep_adaptor_tuning', action='store_true', 
                         help='Should we use deep lightweight adaptors? (Applied to each layer)')
+    parser.add_argument('--encoder_adaptor_tying_config', default=None, type=str, 
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
+    parser.add_argument('--decoder_adaptor_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
     parser.add_argument('--hypercomplex', action='store_true', 
                         help='Should we use hypercomplex adaptors?')
@@ -800,8 +810,6 @@ def run_demo():
                         help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
     parser.add_argument('--cross_distillation', action='store_true', 
                         help='Should we perform cross distillation from a parent model which has been trained on another source language but the same target language? If so then you must specify the model using "parent_pretrained_model". Additionally you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence" There are several distillation options check the flag called "distillation_styles".')
-    parser.add_argument('--source_masking_for_bilingual', action='store_true', 
-                        help='Should we use masking on source sentences when training on parallel corpora?')
     parser.add_argument('--is_summarization', action='store_true', 
                         help='Should we use masking on source sentences when training on parallel corpora?')
     ###

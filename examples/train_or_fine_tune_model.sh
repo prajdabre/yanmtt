@@ -35,11 +35,20 @@
 # 3. When running separate experiments on the same GPU, please specify a unique port via "--port [port]".
 # 4. A separate model checkpoint will be saved for a translation direction if the BLEU score for that pair exceeds the previous high. The checkpoint will be saved with an extension indicating the translation direction and the number of batches processed. A checkpoint will also be saved if the global score (average of scores for all translation directions) exceeds the previous high. This checkpoint will be saved with an extension indicating the number of batches processed. Additionally there will be a global checkpoint that will be overwritten every 1,000 batches by default.
 
-## Train a very small NMT model on a single GPU for a translation direction
+## Train a very small NMT model on a single GPU for a translation direction.
 
 export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
 
 python train_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/nmt_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --train_slang hi --train_tlang en --dev_slang hi --dev_tlang en --train_src examples/data/train.hi --train_tgt examples/data/train.en --dev_src examples/data/dev.hi --dev_tgt examples/data/dev.en --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files
+
+# Note 1: If you want to use Rouge as an evaluation metric then use --use_rouge.
+# Note 2: If you wish to use this model with a GUI then look at the supported_languages argument.
+
+# Train a very small NMT model on a single GPU for a translation direction but simulate a 8-gpu setup. Use the --multistep_optimizer_steps argument.
+
+# export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
+
+# python train_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/nmt_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --train_slang hi --train_tlang en --dev_slang hi --dev_tlang en --train_src examples/data/train.hi --train_tgt examples/data/train.en --dev_src examples/data/dev.hi --dev_tgt examples/data/dev.en --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files --multistep_optimizer_steps 8.
 
 ## Train a very small NMT model on a single GPU for a translation direction but initialize it with a previous checkpoint. We assume that the model training had crashed but fortunately we had saved a checkpoint every 1,000 batches.
 
@@ -52,6 +61,10 @@ python train_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/nmt_model --to
 # export CUDA_VISIBLE_DEVICES=0 # Change to the GPU ID corresponding to a GPU that is free.
 
 # python train_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/nmt_model --tokenizer_name_or_path examples/tokenizers/albert-vienhi16k --train_slang hi --train_tlang en --dev_slang hi --dev_tlang en --train_src examples/data/train.hi --train_tgt examples/data/train.en --dev_src examples/data/dev.hi --dev_tgt examples/data/dev.en --encoder_layers 1 --decoder_layers 1 --encoder_attention_heads=1 --decoder_attention_heads=1 --encoder_ffn_dim=128 --decoder_ffn_dim=128 --d_model=64 --shard_files --pretrained_model examples/models/mbart_model --no_reload_optimizer_ctr_and_scheduler
+
+# Note 1: Currently, if you want to use mBART-50, mBART-25 or IndicBART then you may use facebook/mbart-large-cc25, facebook/mbart-large-50, and ai4bharat/IndicBART or ai4bharat/IndicBARTSS, respectively for --tokenizer_name_or_path and --pretrained_model. Additionally, pass the flag --use_official_pretrained.
+# Note 2: If you want to freeze certain components of the model prior to fine-tuning then for embeddings use --freeze_embeddings and for encoder use --freeze_encoder. 
+# Note 3: If you want to freeze specific params whose names you know use --freeze_exception_list and pass a comma separated list of names like "encoder_attn,self_attn" for freeze ALL self- and cross-attentions. If you want to want to freeze the self-attention of the encoder only then use "encoder.self_attn". Essentially, be more descriptive with the names.
 
 ## Train a very small multilingual NMT model on a single GPU for a multiple translation directions. Use --pretrained_model and --no_reload_optimizer_ctr_and_scheduler (as applicable) if you have a previously trained model.
 

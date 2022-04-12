@@ -32,7 +32,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 ## Huggingface imports
 import transformers
 from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
-from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, BartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
 ##
 
@@ -110,6 +110,8 @@ def model_create_load_decode(gpu, args):
             config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
             config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
             config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
+            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
             config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
             config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
@@ -121,13 +123,15 @@ def model_create_load_decode(gpu, args):
             config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
             config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
             config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
+            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
+            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
             config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
             config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
     else: ## Its a locally trained model. You should know the config.
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
         model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -144,9 +148,9 @@ def model_create_load_decode(gpu, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
         else:
-            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -234,7 +238,7 @@ def model_create_load_decode(gpu, args):
             mod_compute = model(input_ids=input_ids.to(gpu), attention_mask=input_masks.to(gpu), decoder_input_ids=decoder_input_ids.to(gpu))
             logits = mod_compute.logits
             softmax = torch.nn.functional.log_softmax(logits, dim=-1)
-            logprobs = nll_loss(softmax, labels.to(gpu), ignore_index=tok.pad_token_id)
+            logprobs = label_smoothed_nll_loss(softmax, labels.to(gpu), args.label_smoothing, ignore_index=tok.pad_token_id)
             minprob = 1000
             minpos = 0
             for log_prob, dec_p in zip(logprobs, dec_pos):
