@@ -2078,17 +2078,40 @@ class DeepEncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will be applied after each layer.
     The adaptors should be lightweight with small hidden params.
     """
-    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, init_std=0.02, hypercomplex=False, hypercomplex_n=2):
+    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2):
         
         super().__init__()
         # initialize weights with random numbers
-        self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(encoder_layers*2)])
-        self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(decoder_layers*3)])
+        if encoder_adaptor_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
+            print("Tied Encoder adaptors with config", encoder_adaptor_tying_config)
+            layer_idxs = encoder_adaptor_tying_config.strip().split("-")
+            unique_idxs = sorted(set(layer_idxs))
+            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(len(unique_idxs)*2)])
+            self.encoder_adaptors = []
+            for idx in layer_idxs:
+                self.encoder_adaptors.extend([self.unique_encoder_adaptors[(int(idx)-1)*2], self.unique_encoder_adaptors[(int(idx)-1)*2+1]])
+            unique_encoder_adaptors_count = len(self.unique_encoder_adaptors)
+        else:
+            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(encoder_layers*2)])
+            unique_encoder_adaptors_count = len(self.encoder_adaptors)
+        if decoder_adaptor_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
+            print("Tied Decoder adaptors with config", decoder_adaptor_tying_config)
+            layer_idxs = decoder_adaptor_tying_config.strip().split("-")
+            unique_idxs = sorted(set(layer_idxs))
+            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(len(unique_idxs)*3)])
+            self.decoder_adaptors = []
+            for idx in layer_idxs:
+                self.decoder_adaptors.extend([self.unique_decoder_adaptors[(int(idx)-1)*3], self.unique_decoder_adaptors[(int(idx)-1)*3+1], self.unique_decoder_adaptors[(int(idx)-1)*3+2]])
+            unique_decoder_adaptors_count = len(self.unique_decoder_adaptors)
+        else:
+            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(decoder_layers*3)])
+            unique_decoder_adaptors_count = len(self.decoder_adaptors)
+        
         if hypercomplex:
             print("Hypercomplex adaptors will be used.")
-            print("Number of additional parameters during training are:", ((d_model*hidden*2)/hypercomplex_n + hypercomplex_n**3)*(encoder_layers*2+decoder_layers*3))
+            print("Number of additional parameters during training are:", ((d_model*hidden*2)/hypercomplex_n + hypercomplex_n**3)*(unique_encoder_adaptors_count+unique_decoder_adaptors_count))
         else:
-            print("Number of additional parameters during training are:", (d_model*hidden*2)*(encoder_layers*2+decoder_layers*3))
+            print("Number of additional parameters during training are:", (d_model*hidden*2)*(unique_encoder_adaptors_count+unique_decoder_adaptors_count))
         
     def forward(self, input, is_encoder, layer_idx):
         if is_encoder:
@@ -2139,12 +2162,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             self.prompt_params = EncoderDecoderPrompts(config.num_prompts, config.encoder_layers, config.decoder_layers, config.d_model, config.init_std)
         
         if config.adaptor_tuning:
-            if config.deep_adaptor_tuning:
-                print("Deep adaptor tuning will be done.")
-                self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.init_std, config.hypercomplex, config.hypercomplex_n)
-            else:
-                print("Shallow adaptor tuning will be done.")
-                self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n)
+            print("Shallow adaptor tuning will be done.")
+            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n)
+        elif config.deep_adaptor_tuning:
+            print("Deep adaptor tuning will be done.")
+            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n)
+                
         
         if config.softmax_bias_tuning:
             print("Softmax bias tuning will be done. Replacing the final logits bias with a learnable parameter.")
@@ -2255,6 +2278,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
+                prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
+                deep_adaptor_tuning=self.config.deep_adaptor_tuning,
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2278,6 +2304,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
+                prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
+                deep_adaptor_tuning=self.config.deep_adaptor_tuning,
             )
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2304,7 +2333,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 curr_decode_length=curr_decode_length,
                 context_encoder_representations=context_encoder_representations,
                 prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
-                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning else None,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
