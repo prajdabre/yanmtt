@@ -68,8 +68,9 @@ sacremoses==0.0.43
 scipy==1.4.1
 sentencepiece==0.1.95
 six==1.16.0
-tensorboard==2.3.0
-tensorboard-plugin-wit==1.8.0
+tensorboard==2.8.0
+tensorboard-data-server==0.6.1
+tensorboard-plugin-wit==1.8.1
 tensorflow-estimator==2.3.0
 tensorflow-gpu==2.3.0
 tensorflow-tensorboard==1.5.1
