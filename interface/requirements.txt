@@ -14,4 +14,4 @@ flask-swagger-ui==3.20.9
 torch
 sentencepiece
 transformers
-IPython==8.1.1
+IPython==7.16.1
