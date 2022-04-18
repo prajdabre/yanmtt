@@ -61,6 +61,7 @@ sacrebleu==1.5.1
 sacremoses==0.0.43
 sentencepiece==0.1.95
 six==1.16.0
+tensorflow-gpu==2.3.0
 tensorboard==2.3.0
 tensorboard-plugin-wit==1.8.0
 tensorflow-tensorboard==1.5.1
