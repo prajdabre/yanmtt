@@ -74,6 +74,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_bi(train_files, args)
+        if args.use_dev_for_fisher:
+            shard_files_bi(dev_files, args)
     
     if rank == 0:
         with open(args.model_path + ".quitflag", "w") as f:
@@ -313,6 +315,35 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         print("Doing entropy maximization during loss computation.")
     if args.multistep_optimizer_steps > 1:
         print("Using a multistep optimizer where gradients will be accumulated over", args.multistep_optimizer_steps, "batches.")
+
+    if args.ewc_importance != 0: ## Set up elastic weight consolidation
+        print("Using Elastic Weight Consolidation with importance", args.ewc_importance)
+        print("Number of training batches to compute Fisher coefficients:", args.ewc_samples)
+        num_batches_tmp = args.num_batches
+        args.num_batches = args.ewc_samples
+        print("Learning Fisher coefficients.")
+        if args.use_dev_for_fisher:
+            print("Using dev set for computing Fisher coefficients.")
+            files = dev_files
+        else:
+            print("Using train set for computing Fisher coefficients.")
+            files = train_files
+        if args.use_denoising_prediction_for_fisher:
+            print("Using denoising objective for computing Fisher coefficients.")
+            print("We will select sentences for each language.") ## Be careful here as languages with the same ids will end up with only one set of sentences among all. Change this to your liking by merging corpora.
+            files_tmp = {}
+            for k in files:
+                slang, tlang = k.split("-")
+                files_tmp[slang+"-"+slang] = [files[k][0], files[k][0]]
+                files_tmp[tlang+"-"+tlang] = [files[k][1], files[k][1]]
+            files = files_tmp
+        else:
+            print("Using regular seq2seq objective for computing Fisher coefficients.")
+        datagenerator = generate_batches_bilingual(tok, args, files, rank)
+        ewc_loss = EWC(model, datagenerator, gpu, args.label_smoothing, ignore_index=tok.pad_token_id)
+        args.num_batches = num_batches_tmp
+        print("Fisher coefficients learned.")
+    
     num_batches_this_optimizer_step = 0
     losses = 0
     global_sbleu_history = [] ## To save the global evaluation metric history.
@@ -521,6 +552,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                 loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
                 if rank == 0:
                     writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
+                if args.ewc_importance != 0: ## Update the model with the EWC loss.
+                    ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
+                    if rank == 0:
+                        writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
+                    loss = loss + ewc_loss_current
                 if args.temperature_calibration: 
                     loss = loss*mod_compute.softmax_temperature
                     if rank == 0:
@@ -593,6 +629,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
             if rank == 0:
                 writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
+            if args.ewc_importance != 0: ## Update the model with the EWC loss.
+                ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
+                if rank == 0:
+                    writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
+                loss = loss + ewc_loss_current
             if args.temperature_calibration: 
                 loss = loss*mod_compute.softmax_temperature
                 if rank == 0:
@@ -889,6 +930,14 @@ def run_demo():
                         help='Should we use ROUGE for evaluation?')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
+    parser.add_argument('--ewc_importance', type=float, default=0.0, 
+                        help='Should we do elastic weight consolidation? If the value is 0 then we dont do any EWC else we use this as the importance weight in the part "NLL LOSS + ewc_importance*ewc_loss(model,datasetiterator)".')
+    parser.add_argument('--ewc_samples', type=int, default=200, 
+                        help='How many batches of training data should we run on to do EWC.')
+    parser.add_argument('--use_dev_for_fisher', action='store_true', 
+                        help='Should we use the dev set for the fisher matrix?')
+    parser.add_argument('--use_denoising_prediction_for_fisher', action='store_true', 
+                        help='Should we use the denoising objective to compute the fisher matrix?')
     parser.add_argument('--num_domains_for_domain_classifier', type=int, default=1, 
                         help='If we have multiple domains then we should set this to a value higher than one.')
     parser.add_argument('--gradient_reversal_for_domain_classifier', action='store_true', 

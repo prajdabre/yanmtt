@@ -44,6 +44,7 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.optim import Adam
+import torch.nn.functional as F
 ##
 
 ## Our imports
@@ -64,11 +65,63 @@ rcParams['font.sans-serif'] = ['Source Han Sans TW',
                                    'sans-serif',
                                    "FreeSerif"  # fc-list :lang=hi family
                                    ]
+from copy import deepcopy
 ##
 
 ## Seed setting here
 torch.manual_seed(621311)
 ##
+
+
+class EWC(object):
+    def __init__(self, model, dataset, gpu, label_smoothing, ignore_index=None):
+
+        self.model = model
+        self.dataset = dataset
+
+        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
+        self._means = {}
+        self.gpu = gpu
+        self.label_smoothing = label_smoothing
+        self.ignore_index = ignore_index
+        self._precision_matrices = self._diag_fisher()
+        
+        for n, p in deepcopy(self.params).items():
+            self._means[n] = torch.tensor(p.detach().cpu().numpy()).to(gpu)
+
+    def _diag_fisher(self):
+        precision_matrices = {}
+        for n, p in deepcopy(self.params).items():
+            p.data.zero_()
+            precision_matrices[n] = torch.tensor(p.detach().cpu().numpy()).to(self.gpu)
+
+        self.model.eval()
+        num_samples = 0
+        for input_ids, input_masks, decoder_input_ids, labels in self.dataset:
+            self.model.zero_grad()
+            input_ids = input_ids.to(self.gpu)
+            input_masks = input_masks.to(self.gpu)
+            decoder_input_ids = decoder_input_ids.to(self.gpu)
+            labels = labels.to(self.gpu)
+            num_samples += input_ids.size(0)
+            output = self.model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids)
+            lprobs = torch.nn.functional.log_softmax(output.logits, dim=-1) ## Softmax tempering of logits if needed.
+            loss = label_smoothed_nll_loss(lprobs, labels, self.label_smoothing, self.ignore_index)
+            loss.backward()
+
+            for n, p in self.model.named_parameters():
+                precision_matrices[n].data += p.grad.data ** 2 / num_samples
+
+        precision_matrices = {n: p for n, p in precision_matrices.items()}
+        self.model.train()
+        return precision_matrices
+
+    def penalty(self, model):
+        loss = 0
+        for n, p in model.named_parameters():
+            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
+            loss += _loss.sum()
+        return loss
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
     """From fairseq. This returns the label smoothed cross entropy loss."""
@@ -184,7 +237,7 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
                 parent_encoder_self_attention = parent_mod_compute.encoder_attentions[parent_layer_idx]
                 child_encoder_self_attention = child_mod_compute.encoder_attentions[child_layer_idx]
                 # deal with padding here. We will need to access the source token padding information.
-                encoder_sa_loss = parent_encoder_attention*torch.log(child_encoder_attention.masked_fill_(child_encoder_attention.eq(0.0), 1e-10))
+                encoder_sa_loss = parent_encoder_self_attention*torch.log(child_encoder_self_attention.masked_fill_(child_encoder_self_attention.eq(0.0), 1e-10))
                 encoder_l2_loss = encoder_l2_loss.sum(dim=-1).mean()
                 parent_decoder_self_attention = parent_mod_compute.decoder_attentions[parent_layer_idx]
                 child_decoder_self_attention = child_mod_compute.decoder_attentions[child_layer_idx]
@@ -1037,7 +1090,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                         del spans_to_mask[0]
                         if span_to_mask > (max_mask_count-mask_count): ## Cant mask more than the allowable number of tokens.
                             continue
-                        idx_to_mask = random.randint(sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
+                        idx_to_mask = random.randint(curr_sent_len//2 if args.future_prediction else 0, (curr_sent_len-1)-(span_to_mask-1))
                         if mask_tok not in src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]:
                             actually_masked_length = len(src_sent_split[idx_to_mask:idx_to_mask+span_to_mask]) ## If at the end of the sentence then we have likely masked fewer tokens.
                             src_sent_split[idx_to_mask:idx_to_mask+span_to_mask] = [mask_tok]

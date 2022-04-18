@@ -296,6 +296,17 @@ def model_create_load_run_save(gpu, args, files, train_files):
         print("Doing entropy maximization during loss computation.")
     if args.multistep_optimizer_steps > 1:
         print("Using a multistep optimizer where gradients will be accumulated over", args.multistep_optimizer_steps, "batches.")
+    
+    if args.ewc_importance != 0: ## Set up elastic weight consolidation
+        print("Using Elastic Weight Consolidation with importance", args.ewc_importance)
+        print("Number of training batches to compute Fisher coefficients:", args.ewc_samples)
+        num_batches_tmp = args.num_batches
+        args.num_batches = args.ewc_samples
+        print("Learning Fisher coefficients.")
+        ewc_loss = EWC(model, generate_batches_monolingual_masked(tok, args, files, rank), gpu, args.label_smoothing, ignore_index=tok.pad_token_id)
+        args.num_batches = num_batches_tmp
+        print("Fisher coefficients learned.")
+
     num_batches_this_optimizer_step = 0
     losses = 0
     
@@ -377,6 +388,11 @@ def model_create_load_run_save(gpu, args, files, train_files):
                     loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
                     if rank == 0:
                         writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
+                    if args.ewc_importance != 0: ## Update the model with the EWC loss.
+                        ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
+                        if rank == 0:
+                            writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
+                        loss = loss + ewc_loss_current
                     if args.temperature_calibration: 
                         loss = loss*mod_compute.softmax_temperature
                         if rank == 0:
@@ -474,6 +490,11 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
                 if rank == 0:
                     writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
+                if args.ewc_importance != 0: ## Update the model with the EWC loss.
+                    ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
+                    if rank == 0:
+                        writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
+                    loss = loss + ewc_loss_current
                 if args.temperature_calibration: 
                     loss = loss*mod_compute.softmax_temperature
                     if rank == 0:
@@ -735,6 +756,10 @@ def run_demo():
                         help='Are we calibrating the temperature automatically during training? If yes then the softmax_temperature parameter should have a value of 1.0 furthermore the returned temperature will be used to scale the loss.')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
+    parser.add_argument('--ewc_importance', type=float, default=0.0, 
+                        help='Should we do elastic weight consolidation? If the value is 0 then we dont do any EWC else we use this as the importance weight in the part "NLL LOSS + ewc_importance*ewc_loss(model,datasetiterator)".')
+    parser.add_argument('--ewc_samples', type=int, default=200, 
+                        help='How many batches of training data should we run on to do EWC.')
     parser.add_argument('--fp16', action='store_true', 
                         help='Should we use fp16 training?')
     parser.add_argument('--encoder_tying_config', default=None, type=str,

@@ -494,6 +494,10 @@ def run_demo():
                         help='Should we use lightweight adaptors? (Only applied to the final layer)')
     parser.add_argument('--deep_adaptor_tuning', action='store_true', 
                         help='Should we use deep lightweight adaptors? (Applied to each layer)')
+    parser.add_argument('--encoder_adaptor_tying_config', default=None, type=str, 
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
+    parser.add_argument('--decoder_adaptor_tying_config', default=None, type=str,
+                        help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
     parser.add_argument('--hypercomplex', action='store_true', 
                         help='Should we use hypercomplex adaptors?')
