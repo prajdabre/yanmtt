@@ -406,7 +406,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                                 
                             if args.prompt_tuning:
                                 dev_input_shape = dev_input_masks.size()
-                                encoder_pad = torch.tensor(torch.ones(dev_input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+                                encoder_pad = torch.tensor(torch.ones(dev_input_shape[0], args.num_prompts).clone().detach().requires_grad_(False), dtype=torch.int64)
                                 dev_input_masks = torch.cat([encoder_pad, dev_input_masks], dim=1)
                             start = time.time()
                             dev_input_ids = dev_input_ids.to(gpu) ## Move to GPU.

@@ -2507,7 +2507,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             "additional_encoder_outputs": kwargs["additional_encoder_outputs"] if self.config.multi_source else None, ## This will contain the additional encoder outputs. 
             "additional_past_key_values": kwargs["additional_past"] if self.config.multi_source_method == "average_softmaxes" and "additional_past" in kwargs else None, ## This is for the past of the additional source when averaging softmaxes. 
             "context_encoder_representations": kwargs["context_encoder_representations"] if self.config.multi_source else None, ##  A bit sloppy and should be controlled by an additional condition looking at the value of multi_source type.
-            "prompt_params": kwargs["context_encoder_representations"] if self.config.prompt_tuning else None, ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
+            "prompt_params": kwargs["prompt_params"] if self.config.prompt_tuning else None, ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
             "adaptor_layers": kwargs["adaptor_layers"] if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None, ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
             "deep_adaptor_tuning": kwargs["deep_adaptor_tuning"], ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
             "deep_adaptor_tuning_ffn_only": kwargs["deep_adaptor_tuning_ffn_only"], ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
