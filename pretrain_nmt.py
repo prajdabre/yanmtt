@@ -645,6 +645,8 @@ def run_demo():
                         help='Number of batches to train on')
     parser.add_argument('-a', '--ipaddr', default='localhost', type=str, 
                         help='IP address of the main node')
+    parser.add_argument('-p', '--port', default='26023', type=str, 
+                        help='Port main node')
     parser.add_argument('-m', '--model_path', default='ddpdefault', type=str, 
                         help='Name of the model')
     parser.add_argument('--save_intermediate_checkpoints', action='store_true', 
@@ -903,7 +905,7 @@ def run_demo():
     if args.num_domains_for_domain_classifier > 1: ## In case we have to do domain classification
         print("Number of unique domains are ", len(args.train_domains))
     os.environ['MASTER_ADDR'] = args.ipaddr              #
-    os.environ['MASTER_PORT'] = '26023'                      #
+    os.environ['MASTER_PORT'] = args.port                      #
     mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,train_files,))         #
     
 if __name__ == "__main__":
