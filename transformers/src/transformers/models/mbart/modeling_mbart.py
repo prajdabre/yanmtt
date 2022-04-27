@@ -498,6 +498,8 @@ class MBartEncoderLayer(nn.Module):
         output_attentions: bool = False,
         adaptor_layers = None,
         deep_adaptor_tuning = False,
+        deep_adaptor_tuning_ffn_only = False,
+        parallel_adaptors=False,
         adaptor_layer_idx = 0,
     ):
         """
@@ -523,7 +525,15 @@ class MBartEncoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
-            hidden_states = adaptor_layers(hidden_states, True, adaptor_layer_idx*2)
+            if parallel_adaptors:
+                adaptor_input = residual
+            else:
+                adaptor_input = hidden_states
+            adaptor_output = adaptor_layers(adaptor_input, True, adaptor_layer_idx*2)
+            if parallel_adaptors:
+                hidden_states = adaptor_output + hidden_states
+            else:
+                hidden_states = adaptor_output
             
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
@@ -536,8 +546,20 @@ class MBartEncoderLayer(nn.Module):
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
-        if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
-            hidden_states = adaptor_layers(hidden_states, True, adaptor_layer_idx*2+1)
+        if adaptor_layers is not None:
+            if parallel_adaptors:
+                adaptor_input = residual
+            else:
+                adaptor_input = hidden_states
+            if deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
+                adaptor_output = adaptor_layers(adaptor_input, True, adaptor_layer_idx*2+1)
+            elif deep_adaptor_tuning_ffn_only:
+                adaptor_output = adaptor_layers(adaptor_input, True, adaptor_layer_idx)
+            if parallel_adaptors:
+                hidden_states = adaptor_output + hidden_states
+            else:
+                hidden_states = adaptor_output
+
 
         if torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any():
             clamp_value = torch.finfo(hidden_states.dtype).max - 1000
@@ -621,6 +643,8 @@ class MBartDecoderLayer(nn.Module):
         additional_encoder_attention_mask: Optional[torch.Tensor] = None,
         adaptor_layers = None,
         deep_adaptor_tuning = False,
+        deep_adaptor_tuning_ffn_only = False,
+        parallel_adaptors=False,
         adaptor_layer_idx = 0,
     ):
         """
@@ -659,7 +683,16 @@ class MBartDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
-            hidden_states = adaptor_layers(hidden_states, False, adaptor_layer_idx*3)
+            if parallel_adaptors:
+                adaptor_input = residual
+            else:
+                adaptor_input = hidden_states
+            adaptor_output = adaptor_layers(adaptor_input, False, adaptor_layer_idx*3)
+            if parallel_adaptors:
+                hidden_states = adaptor_output + hidden_states
+            else:
+                hidden_states = adaptor_output
+
 
         # Cross-Attention Block
         cross_attn_present_key_value = None
@@ -714,8 +747,17 @@ class MBartDecoderLayer(nn.Module):
             ## Modified by Raj Dabre. End.
 
         
-        if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
-            hidden_states = adaptor_layers(hidden_states, False, adaptor_layer_idx*3+1)
+            if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
+                if parallel_adaptors:
+                    adaptor_input = residual
+                else:
+                    adaptor_input = hidden_states
+                adaptor_output = adaptor_layers(adaptor_input, False, adaptor_layer_idx*3+1)
+                if parallel_adaptors:
+                    hidden_states = adaptor_output + hidden_states
+                else:
+                    hidden_states = adaptor_output
+
         # Fully Connected
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
@@ -728,8 +770,20 @@ class MBartDecoderLayer(nn.Module):
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
         
-        if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
-            hidden_states = adaptor_layers(hidden_states, False, adaptor_layer_idx*3+2)
+        if adaptor_layers is not None:
+            if parallel_adaptors:
+                adaptor_input = residual
+            else:
+                adaptor_input = hidden_states
+            if deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
+                adaptor_output = adaptor_layers(adaptor_input, False, adaptor_layer_idx*3+2)
+            elif deep_adaptor_tuning_ffn_only:
+                adaptor_output = adaptor_layers(adaptor_input, False, adaptor_layer_idx)
+            if parallel_adaptors:
+                hidden_states = adaptor_output + hidden_states
+            else:
+                hidden_states = adaptor_output
+
 
         if self.config.use_moe:
             outputs = ([hidden_states, moe_loss],)
@@ -1031,6 +1085,8 @@ class MBartEncoder(MBartPreTrainedModel):
         prompt_params=None, ## Prompts to be prepended to the encoder outputs.
         adaptor_layers=None, ## Adaptor layers to used in the encoder.
         deep_adaptor_tuning=False, ## Whether to use deep adaptor tuning or not.
+        deep_adaptor_tuning_ffn_only=False, ## Whether to use deep adaptor tuning only after ffn or not.
+        parallel_adaptors=False, ## Whether to use parallel adaptors or not.
     ):
         r"""
         Args:
@@ -1179,6 +1235,8 @@ class MBartEncoder(MBartPreTrainedModel):
                         output_attentions=output_attentions,
                         adaptor_layers=adaptor_layers,
                         deep_adaptor_tuning=deep_adaptor_tuning,
+                        deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                        parallel_adaptors=parallel_adaptors,
                         adaptor_layer_idx=idx,
                     )
                 
@@ -1201,7 +1259,7 @@ class MBartEncoder(MBartPreTrainedModel):
             hidden_states = hidden_states*torch.sigmoid(self.self_relevance_layer(hidden_states)) # Do self relevance as usual.
         ## Modified by Raj Dabre. End.
         
-        if adaptor_layers is not None and not deep_adaptor_tuning: ## Apply adaptor layer for final encoder layer.
+        if adaptor_layers is not None and not deep_adaptor_tuning and not deep_adaptor_tuning_ffn_only: ## Apply adaptor layer for final encoder layer.
             hidden_states = adaptor_layers(hidden_states, True)
 
         if self.config.multi_source and (self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"): # No layer norm because the fusion layers have not been processed yet.
@@ -1210,10 +1268,6 @@ class MBartEncoder(MBartPreTrainedModel):
             hidden_states = self.layer_norm(hidden_states)
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
-
-        
-        
-        
         
         if not return_dict:
             return tuple(v for v in [hidden_states, encoder_states, all_attentions, moe_losses] if v is not None)
@@ -1325,6 +1379,8 @@ class MBartDecoder(MBartPreTrainedModel):
         prompt_params=None, ## Prompts to be prepended to the decoder outputs.
         adaptor_layers=None, ## Adaptor layers to be used in the decoder.
         deep_adaptor_tuning=False, ## Whether to use deep adaptor tuning.
+        deep_adaptor_tuning_ffn_only=False, ## Whether to use deep adaptor tuning after ffn only.
+        parallel_adaptors=False, ## Whether to use parallel adaptors.
     ):
         r"""
         Args:
@@ -1535,6 +1591,8 @@ class MBartDecoder(MBartPreTrainedModel):
                     additional_encoder_attention_mask=additional_encoder_attention_mask,
                     adaptor_layers=adaptor_layers,
                     deep_adaptor_tuning=deep_adaptor_tuning,
+                    deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                    parallel_adaptors=parallel_adaptors,
                     adaptor_layer_idx=idx,
                 )
             if self.config.use_moe:
@@ -1565,7 +1623,7 @@ class MBartDecoder(MBartPreTrainedModel):
                         additional_all_cross_attentions += (layer_outputs[3],)
                     ## Modified by Raj Dabre. End.
 
-        if adaptor_layers is not None and not deep_adaptor_tuning: ## Apply adaptor layer for final decoder output only.
+        if adaptor_layers is not None and not deep_adaptor_tuning and not deep_adaptor_tuning_ffn_only: ## Apply adaptor layer for final decoder output only.
             hidden_states = adaptor_layers(hidden_states, False)
             
         hidden_states = self.layer_norm(hidden_states)
@@ -1676,6 +1734,8 @@ class MBartModel(MBartPreTrainedModel):
         prompt_params=None,
         adaptor_layers=None,
         deep_adaptor_tuning=False,
+        deep_adaptor_tuning_ffn_only=False,
+        parallel_adaptors=False,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1701,6 +1761,8 @@ class MBartModel(MBartPreTrainedModel):
                 prompt_params=prompt_params[0] if prompt_params is not None else None,
                 adaptor_layers=adaptor_layers,
                 deep_adaptor_tuning=deep_adaptor_tuning,
+                deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                parallel_adaptors=parallel_adaptors,
             )
         # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
@@ -1771,6 +1833,8 @@ class MBartModel(MBartPreTrainedModel):
                             output_attentions=output_attentions,
                             adaptor_layers=adaptor_layers,
                             deep_adaptor_tuning=deep_adaptor_tuning,
+                            deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                            parallel_adaptors=parallel_adaptors,
                             adaptor_layer_idx=idx+self.config.encoder_layers,
                         )
 
@@ -1818,6 +1882,8 @@ class MBartModel(MBartPreTrainedModel):
                             output_attentions=output_attentions,
                             adaptor_layers=adaptor_layers,
                             deep_adaptor_tuning=deep_adaptor_tuning,
+                            deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                            parallel_adaptors=parallel_adaptors,
                             adaptor_layer_idx=idx+self.config.encoder_layers,
                         )
 
@@ -1828,6 +1894,8 @@ class MBartModel(MBartPreTrainedModel):
                             output_attentions=output_attentions,
                             adaptor_layers=adaptor_layers,
                             deep_adaptor_tuning=deep_adaptor_tuning,
+                            deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+                            parallel_adaptors=parallel_adaptors,
                             adaptor_layer_idx=idx+self.config.encoder_layers,
                         )
 
@@ -1913,6 +1981,8 @@ class MBartModel(MBartPreTrainedModel):
             prompt_params=prompt_params[1] if prompt_params is not None else None,
             adaptor_layers=adaptor_layers,
             deep_adaptor_tuning=deep_adaptor_tuning,
+            deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
+            parallel_adaptors=parallel_adaptors,
         )
 
         if prompt_params is not None and (self.training or curr_decode_length == 1):
@@ -2014,7 +2084,7 @@ class EncoderDecoderPrompts(nn.Module):
 class Adaptor(nn.Module):
     """Custom Pytorch model for adaptor FFNs. We will pass these to the model and optimize and save them separately.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2047,21 +2117,34 @@ class Adaptor(nn.Module):
             self.ffn2 = torch.nn.Parameter(ffn2)
         
         self.activation = torch.nn.GELU()
-        self.layer_norm = nn.LayerNorm(d_model)
+        if layernorm_adaptor_input:
+            self.layer_norm = nn.LayerNorm(d_model)
+        else: # Identity
+            self.layer_norm = None
+        self.adaptor_scaling_factor = adaptor_scaling_factor
+        self.residual_connection = residual_connection
         
     def forward(self, input):
-        return input + torch.matmul(self.activation(torch.matmul(self.layer_norm(input), self.ffn1)), self.ffn2) # Don't forget the residual connection
+        if self.layer_norm is not None:
+            output = self.layer_norm(input)
+        else:
+            output = input
+        output = self.adaptor_scaling_factor * torch.matmul(self.activation(torch.matmul(output, self.ffn1)), self.ffn2) # Don't forget to check if you need the residual connection or not as well as the input layernorm or not.
+        if self.residual_connection:
+            return output + input
+        else:
+            return output
    
 
 class EncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will only be applied to the top encoder and decoder layer.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
         
         super().__init__()
         # initialize weights with random numbers
-        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n)
-        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n)
+        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection)
+        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection)
         if hypercomplex:
             print("Hypercomplex adaptors will be used.")
             print("Number of additional parameters during training are:", (d_model*hidden*2*2)/hypercomplex_n + hypercomplex_n**3)
@@ -2078,7 +2161,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will be applied after each layer.
     The adaptors should be lightweight with small hidden params.
     """
-    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2):
+    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2, ffn_only=False, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2086,31 +2169,39 @@ class DeepEncoderDecoderAdaptors(nn.Module):
             print("Tied Encoder adaptors with config", encoder_adaptor_tying_config)
             layer_idxs = encoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(len(unique_idxs)*2)])
+            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(len(unique_idxs)*(1 if ffn_only else 2))])
             self.encoder_adaptors = []
             for idx in layer_idxs:
-                self.encoder_adaptors.extend([self.unique_encoder_adaptors[(int(idx)-1)*2], self.unique_encoder_adaptors[(int(idx)-1)*2+1]])
+                if ffn_only:
+                    self.encoder_adaptors.append(self.unique_encoder_adaptors[int(idx)-1])
+                else:
+                    self.encoder_adaptors.extend([self.unique_encoder_adaptors[(int(idx)-1)*2], self.unique_encoder_adaptors[(int(idx)-1)*2+1]])
             unique_encoder_adaptors_count = len(self.unique_encoder_adaptors)
         else:
-            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(encoder_layers*2)])
+            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(encoder_layers*(1 if ffn_only else 2))])
             unique_encoder_adaptors_count = len(self.encoder_adaptors)
         if decoder_adaptor_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             print("Tied Decoder adaptors with config", decoder_adaptor_tying_config)
             layer_idxs = decoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(len(unique_idxs)*3)])
+            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(len(unique_idxs)*(1 if ffn_only else 3))])
             self.decoder_adaptors = []
             for idx in layer_idxs:
-                self.decoder_adaptors.extend([self.unique_decoder_adaptors[(int(idx)-1)*3], self.unique_decoder_adaptors[(int(idx)-1)*3+1], self.unique_decoder_adaptors[(int(idx)-1)*3+2]])
+                if ffn_only:
+                    self.decoder_adaptors.append(self.unique_decoder_adaptors[int(idx)-1])
+                else:
+                    self.decoder_adaptors.extend([self.unique_decoder_adaptors[(int(idx)-1)*3], self.unique_decoder_adaptors[(int(idx)-1)*3+1], self.unique_decoder_adaptors[(int(idx)-1)*3+2]])
             unique_decoder_adaptors_count = len(self.unique_decoder_adaptors)
         else:
-            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n) for _ in range(decoder_layers*3)])
+            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(decoder_layers*(1 if ffn_only else 3))])
             unique_decoder_adaptors_count = len(self.decoder_adaptors)
         
         if hypercomplex:
             print("Hypercomplex adaptors will be used.")
             print("Number of additional parameters during training are:", ((d_model*hidden*2)/hypercomplex_n + hypercomplex_n**3)*(unique_encoder_adaptors_count+unique_decoder_adaptors_count))
         else:
+            if ffn_only:
+                print("Adaptors will be used after FFN only.")
             print("Number of additional parameters during training are:", (d_model*hidden*2)*(unique_encoder_adaptors_count+unique_decoder_adaptors_count))
         
     def forward(self, input, is_encoder, layer_idx):
@@ -2144,7 +2235,6 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         if config.multilayer_softmaxing is not None:
             config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
         
-        self.init_weights()
         if config.temperature_calibration:
             assert config.softmax_temperature == 1.0
             print("Temperature calibration will be done.")
@@ -2163,15 +2253,19 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         
         if config.adaptor_tuning:
             print("Shallow adaptor tuning will be done.")
-            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n)
-        elif config.deep_adaptor_tuning:
+            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor)
+        elif config.deep_adaptor_tuning or config.deep_adaptor_tuning_ffn_only:
             print("Deep adaptor tuning will be done.")
-            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n)
+            if config.parallel_adaptors:
+                print("Parallel adaptors will be used.")
+            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor)
                 
         
         if config.softmax_bias_tuning:
             print("Softmax bias tuning will be done. Replacing the final logits bias with a learnable parameter.")
             self.final_logits_bias = nn.Parameter(torch.zeros(self.model.shared.num_embeddings).normal_(mean=0.0, std=config.init_std))
+
+        self.init_weights()
 
     def get_encoder(self):
         return self.model.get_encoder()
@@ -2279,8 +2373,10 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
                 prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
-                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
-                deep_adaptor_tuning=self.config.deep_adaptor_tuning,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
+                deep_adaptor_tuning=self.config.deep_adaptor_tuning, ## TODO: make this a part of the object's attributes and access from there
+                deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only, 
+                parallel_adaptors=self.config.parallel_adaptors,
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2305,8 +2401,10 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
                 prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
-                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
+                deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
+                parallel_adaptors=self.config.parallel_adaptors,
             )
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2333,8 +2431,10 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 curr_decode_length=curr_decode_length,
                 context_encoder_representations=context_encoder_representations,
                 prompt_params=self.prompt_params(0) if self.config.prompt_tuning else None,
-                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning else None,
+                adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
+                deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
+                parallel_adaptors=self.config.parallel_adaptors,
             )
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2407,6 +2507,11 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             "additional_encoder_outputs": kwargs["additional_encoder_outputs"] if self.config.multi_source else None, ## This will contain the additional encoder outputs. 
             "additional_past_key_values": kwargs["additional_past"] if self.config.multi_source_method == "average_softmaxes" and "additional_past" in kwargs else None, ## This is for the past of the additional source when averaging softmaxes. 
             "context_encoder_representations": kwargs["context_encoder_representations"] if self.config.multi_source else None, ##  A bit sloppy and should be controlled by an additional condition looking at the value of multi_source type.
+            "prompt_params": kwargs["context_encoder_representations"] if self.config.prompt_tuning else None, ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
+            "adaptor_layers": kwargs["adaptor_layers"] if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None, ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
+            "deep_adaptor_tuning": kwargs["deep_adaptor_tuning"], ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
+            "deep_adaptor_tuning_ffn_only": kwargs["deep_adaptor_tuning_ffn_only"], ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
+            "parallel_adaptors": kwargs["parallel_adaptors"], ## Dare not forget this. 26th April 2022 is the day I had a brain fart.
         }
 
 ## Modified by Raj Dabre. End.
