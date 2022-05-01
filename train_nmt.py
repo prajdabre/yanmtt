@@ -539,7 +539,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             label_mask = labels.eq(tok.pad_token_id).unsqueeze(-1).to(gpu)
         if args.prompt_tuning:
             input_shape = input_masks.size()
-            encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+            encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(False), dtype=torch.int64)
             input_masks = torch.cat([encoder_pad, input_masks], dim=1)
         input_ids=input_ids.to(gpu) ## Move to gpu
         input_masks=input_masks.to(gpu) ## Move to gpu

@@ -371,7 +371,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
 
         if args.prompt_tuning:
             input_shape = input_masks.size()
-            encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+            encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(False), dtype=torch.int64)
             input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             
         if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.

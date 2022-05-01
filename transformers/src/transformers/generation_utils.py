@@ -392,18 +392,18 @@ class GenerationMixin:
         }
 
         if self.config.prompt_tuning:
-            encoder_kwargs["prompt_params"] = self.prompt_params(0)[0]
-            model_kwargs["prompt_params"] = self.prompt_params(0)[0]
+            encoder_kwargs["prompt_params"] = [self.prompt_params(0)[0], self.prompt_params(0)[1]]
+            # model_kwargs["prompt_params"] = self.prompt_params(0)[0]
 
         if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only:
             encoder_kwargs["adaptor_layers"] = self.adaptor_layers
             encoder_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
             encoder_kwargs["deep_adaptor_tuning_ffn_only"] = self.config.deep_adaptor_tuning_ffn_only
             encoder_kwargs["parallel_adaptors"] = self.config.parallel_adaptors
-            model_kwargs["adaptor_layers"] = self.adaptor_layers
-            model_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
-            model_kwargs["deep_adaptor_tuning_ffn_only"] = self.config.deep_adaptor_tuning_ffn_only
-            model_kwargs["parallel_adaptors"] = self.config.parallel_adaptors
+            # model_kwargs["adaptor_layers"] = self.adaptor_layers
+            # model_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
+            # model_kwargs["deep_adaptor_tuning_ffn_only"] = self.config.deep_adaptor_tuning_ffn_only
+            # model_kwargs["parallel_adaptors"] = self.config.parallel_adaptors
             
         model_kwargs["encoder_outputs"]: ModelOutput = encoder(input_ids, return_dict=True, **encoder_kwargs)
         ## Modified by Raj Dabre. Start.
