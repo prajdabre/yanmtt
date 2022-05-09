@@ -392,7 +392,8 @@ class GenerationMixin:
         }
 
         if self.config.prompt_tuning:
-            encoder_kwargs["prompt_params"] = [self.prompt_params(0)[0], self.prompt_params(0)[1]]
+            prompt_params = self.prompt_params(0)
+            encoder_kwargs["prompt_params"] = [prompt_params[0], prompt_params[1]]
             # model_kwargs["prompt_params"] = self.prompt_params(0)[0]
 
         if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only:

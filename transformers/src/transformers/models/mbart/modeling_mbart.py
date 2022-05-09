@@ -294,19 +294,23 @@ class MBartAttention(nn.Module):
         elif is_cross_attention:
             # cross_attentions
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
-            prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
-            key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
+            if prompt_params is not None:
+                prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
+                key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
             value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
-            prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
-            value_states = torch.cat([prompt_params_expanded, value_states], dim=2)
+            if prompt_params is not None:
+                prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
+                value_states = torch.cat([prompt_params_expanded, value_states], dim=2)
             ## Modified by Raj Dabre. Start.
             if self.multi_source: # additional_past_key_value is not None
                 additional_key_states = self._shape(self.k_proj(additional_key_value_states), -1, bsz)
-                prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
-                additional_key_states = torch.cat([prompt_params_expanded, additional_key_states], dim=2)
+                if prompt_params is not None:
+                    prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
+                    additional_key_states = torch.cat([prompt_params_expanded, additional_key_states], dim=2)
                 additional_value_states = self._shape(self.v_proj(additional_key_value_states), -1, bsz)
-                prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
-                additional_value_states = torch.cat([prompt_params_expanded, additional_value_states], dim=2)
+                if prompt_params is not None:
+                    prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
+                    additional_value_states = torch.cat([prompt_params_expanded, additional_value_states], dim=2)
             ## Modified by Raj Dabre. End.
         elif past_key_value is not None:
             # reuse k, v, self_attention
@@ -317,11 +321,13 @@ class MBartAttention(nn.Module):
         else:
             # self_attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
-            key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
+            if prompt_params is not None:
+                prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
+                key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
-            prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
-            value_states = torch.cat([prompt_params_expanded, value_states], dim=2)
+            if prompt_params is not None:
+                prompt_params_expanded = self._shape(prompt_params[1][adaptor_or_prompt_layer_idx], -1, bsz)
+                value_states = torch.cat([prompt_params_expanded, value_states], dim=2)
 
         if self.is_decoder:
             # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
@@ -696,7 +702,7 @@ class MBartDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
-            prompt_params=[prompt_params[0], prompt_params[1]],
+            prompt_params=[prompt_params[0], prompt_params[1]] if prompt_params is not None else None,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
         )
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
@@ -740,7 +746,7 @@ class MBartDecoderLayer(nn.Module):
                     past_key_value=cross_attn_past_key_value,
                     additional_past_key_value=additional_cross_attn_past_key_value,
                     output_attentions=output_attentions, ## Should be false. Dont mess with this.
-                    prompt_params=[prompt_params[2], prompt_params[3]],
+                    prompt_params=[prompt_params[2], prompt_params[3]] if prompt_params is not None else None,
                     adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
                 )
                 #print(hidden_states.size() if hidden_states is not None else 1, attention_mask.size() if attention_mask is not None else 1)
@@ -753,7 +759,7 @@ class MBartDecoderLayer(nn.Module):
                     layer_head_mask=layer_head_mask,
                     past_key_value=cross_attn_past_key_value,
                     output_attentions=output_attentions,
-                    prompt_params=[prompt_params[2], prompt_params[3]],
+                    prompt_params=[prompt_params[2], prompt_params[3]] if prompt_params is not None else None,
                     adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
                 )
 
@@ -1222,7 +1228,8 @@ class MBartEncoder(MBartPreTrainedModel):
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype, wait_k=1 if self.config.wait_k!=-1 or self.config.unidirectional_encoder else -1) ## Raj: Just make the mask wait-k with a k=1 and we are good to go. We want to have a unidirectional encoder no matter what.
+            input_shape = inputs_embeds.size()[:-1]
+            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[1] if prompt_params is not None else None, wait_k=1 if self.config.wait_k!=-1 or self.config.unidirectional_encoder else -1) ## Raj: Just make the mask wait-k with a k=1 and we are good to go. We want to have a unidirectional encoder no matter what.
         ## Modified by Raj Dabre. End.
 
         encoder_states = () if output_hidden_states else None
@@ -1514,7 +1521,7 @@ class MBartDecoder(MBartPreTrainedModel):
                 prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
             
         attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, input_shape, inputs_embeds, past_key_values_length, prompting = prompt_params is not None
+            attention_mask, input_shape, inputs_embeds, past_key_values_length
         ) ## Will be none if not training.
                 
         ## Modified by Raj Dabre. Start.
@@ -2352,11 +2359,11 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         num_embeds = embeds.size()[0]
         num_prompts = self.config.num_prompts
         with torch.no_grad():
-            for i in range(len(self.prompt_params.encoder_prompts)):
+            for i in range(len(self.prompt_params.encoder_prompts_key)):
                 for prompt_id in range(num_prompts):
                     self.prompt_params.encoder_prompts_key[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
                     self.prompt_params.encoder_prompts_value[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
-            for i in range(len(self.prompt_params.decoder_prompts)):
+            for i in range(len(self.prompt_params.decoder_prompts_key_sa)):
                 for prompt_id in range(num_prompts):
                     self.prompt_params.decoder_prompts_key_sa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
                     self.prompt_params.decoder_prompts_value_sa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
@@ -2427,7 +2434,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning  and (self.training or curr_decode_length == 1) else None, ## Dont need this during decoding when curr decode length > 1 set to none and save headache.
+                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None, ## Dont need this during decoding when curr decode length > 1 set to none and save headache.
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning, ## TODO: make this a part of the object's attributes and access from there
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only, 
@@ -2455,7 +2462,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning  and (self.training or curr_decode_length == 1) else None,
+                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
@@ -2485,7 +2492,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=additional_encoder_outputs,
                 curr_decode_length=curr_decode_length,
                 context_encoder_representations=context_encoder_representations,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning  and (self.training or curr_decode_length == 1) else None,
+                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
