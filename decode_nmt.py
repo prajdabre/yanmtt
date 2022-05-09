@@ -173,7 +173,7 @@ def model_create_load_decode(gpu, args):
             start = time.time()
             if args.prompt_tuning:
                 input_shape = input_masks.size()
-                encoder_pad = torch.tensor(torch.ones(input_shape[0], args.num_prompts).clone().detach().requires_grad_(True), dtype=torch.int64)
+                encoder_pad = torch.ones(input_shape[0], args.num_prompts).clone().detach()
                 input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             print("Processing batch:", ctr)
             if args.multi_source:
