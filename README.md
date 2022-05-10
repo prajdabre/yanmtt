@@ -61,7 +61,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Can be combined with wait-k NMT. <br>
     
 **Prerequisites (core):** <br>
-    * Python v3.6
+    * Python v3.6.8 <b>IMPORTANT</b><br>
     * Pytorch v1.7.1 <br>
     * HuggingFace Transformers v4.3.2 (install the modified copy of the transformers library provided with this toolkit) <br>
     * tensorflow-gpu v2.3.0 <br>
