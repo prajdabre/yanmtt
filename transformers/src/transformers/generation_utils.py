@@ -392,7 +392,7 @@ class GenerationMixin:
         }
 
         if self.config.prompt_tuning:
-            prompt_params = self.prompt_params(0)
+            prompt_params = self.prompt_params(self.device)
             encoder_kwargs["prompt_params"] = [prompt_params[0], prompt_params[1]]
             # model_kwargs["prompt_params"] = self.prompt_params(0)[0]
 

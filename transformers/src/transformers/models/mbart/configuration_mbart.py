@@ -156,9 +156,11 @@ class MBartConfig(PretrainedConfig):
         expert_ffn_size=128, ## Argument to indicate the hidden size of the expert.
         prompt_tuning=False, ## Argument to indicate whether we should do prompt tuning or not.
         num_prompts=10, ## Argument to indicate how many prompts we should use.
+        prompt_dropout=0.0, ## Argument to indicate the dropout for prompt tuning.
         adaptor_tuning=False, ## Argument to indicate whether we should do adaptor tuning or not.
         deep_adaptor_tuning=False, ## Argument to indicate whether we should do deep adaptor tuning or not.
         deep_adaptor_tuning_ffn_only=False, ## Argument to indicate whether we should do deep adaptor tuning for FFNs only or not.
+        adaptor_dropout=0.0, ## Argument to indicate the dropout for adaptor tuning.
         parallel_adaptors=False, ## Argument to indicate whether we should do parallel adaptors or not.
         layernorm_adaptor_input=False, ## Argument to indicate whether we should do layer normalization of adaptor input or not.
         adaptor_scaling_factor=1.0,     ## Argument to indicate the scaling factor for adaptors.
@@ -226,9 +228,11 @@ class MBartConfig(PretrainedConfig):
         self.expert_ffn_size = expert_ffn_size ## Argument to indicate the hidden size of the expert.
         self.prompt_tuning = prompt_tuning ## Argument to indicate whether we should do prompt tuning or not.
         self.num_prompts = num_prompts ## Argument to indicate how many prompts we should use.
+        self.prompt_dropout = prompt_dropout ## Argument to indicate the amount of prompt dropout.
         self.adaptor_tuning = adaptor_tuning ## Argument to indicate whether we should do adaptor tuning or not.
         self.deep_adaptor_tuning = deep_adaptor_tuning ## Argument to indicate whether we should do deep adaptor tuning or not.
         self.deep_adaptor_tuning_ffn_only = deep_adaptor_tuning_ffn_only ## Argument to indicate whether we should do deep adaptor tuning only for FFN or not.
+        self.adaptor_dropout = adaptor_dropout ## Argument to indicate the amount of adaptor dropout.
         self.parallel_adaptors = parallel_adaptors ## Argument to indicate whether we should do parallel adaptors or not.
         self.layernorm_adaptor_input = layernorm_adaptor_input ## Argument to indicate whether we should do layer normalization of adaptor input or not.
         self.adaptor_scaling_factor = adaptor_scaling_factor ## Argument to indicate the scaling factor for adaptor.

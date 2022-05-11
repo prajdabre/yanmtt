@@ -290,7 +290,7 @@ class MBartAttention(nn.Module):
             if self.multi_source: # additional_past_key_value is not None
                 additional_key_states = additional_past_key_value[0]
                 additional_value_states = additional_past_key_value[1]
-        ## Modified by Raj Dabre. Enf.
+        ## Modified by Raj Dabre. End.
         elif is_cross_attention:
             # cross_attentions
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
@@ -1178,9 +1178,9 @@ class MBartEncoder(MBartPreTrainedModel):
             if prompt_params is not None:
                 prompt_shape = prompt_params[0][0].size()[:-1]
                 for prompt_param_idx in range(len(prompt_params[0])):
-                    prompt_params[0][prompt_param_idx] = prompt_params[0][prompt_param_idx] * self.embed_scale
+                    # prompt_params[0][prompt_param_idx] = prompt_params[0][prompt_param_idx] * self.embed_scale
                     prompt_params[0][prompt_param_idx] = prompt_params[0][prompt_param_idx].repeat(input_shape[0], 1, 1)
-                    prompt_params[1][prompt_param_idx] = prompt_params[1][prompt_param_idx] * self.embed_scale
+                    # prompt_params[1][prompt_param_idx] = prompt_params[1][prompt_param_idx] * self.embed_scale
                     prompt_params[1][prompt_param_idx] = prompt_params[1][prompt_param_idx].repeat(input_shape[0], 1, 1)
                 
             ## Modified by Raj Dabre. Start.
@@ -1192,27 +1192,27 @@ class MBartEncoder(MBartPreTrainedModel):
             
         if self.config.no_positional_encoding_encoder:
             embed_pos = self.embed_positions
-            if prompt_params is not None:
-                prompt_pos = self.embed_positions
+            # if prompt_params is not None:
+            #     prompt_pos = self.embed_positions
         else:
-            if prompt_params is not None:
-                prompt_pos = self.embed_positions(prompt_shape, 0)
-                embed_pos = self.embed_positions(input_shape, prompt_shape[1])
-            else:
-                embed_pos = self.embed_positions(input_shape)
+            # if prompt_params is not None:
+            #     prompt_pos = self.embed_positions(prompt_shape, 0)
+            #     embed_pos = self.embed_positions(input_shape, prompt_shape[1])
+            # else:
+            embed_pos = self.embed_positions(input_shape)
 
         hidden_states = inputs_embeds + embed_pos
-        if prompt_params is not None:
-            for prompt_param_idx in range(len(prompt_params[0])):
-                prompt_params[0][prompt_param_idx] = prompt_params[0][prompt_param_idx] + prompt_pos
-                prompt_params[1][prompt_param_idx] = prompt_params[1][prompt_param_idx] + prompt_pos
+        # if prompt_params is not None:
+        #     for prompt_param_idx in range(len(prompt_params[0])):
+        #         prompt_params[0][prompt_param_idx] = prompt_params[0][prompt_param_idx] + prompt_pos
+        #         prompt_params[1][prompt_param_idx] = prompt_params[1][prompt_param_idx] + prompt_pos
 
         if not self.config.no_embed_norm:
             hidden_states = self.layernorm_embedding(hidden_states)
-            if prompt_params is not None:
-                for prompt_param_idx in range(len(prompt_params[0])):
-                    prompt_params[0][prompt_param_idx] = self.layernorm_embedding(prompt_params[0][prompt_param_idx])
-                    prompt_params[1][prompt_param_idx] = self.layernorm_embedding(prompt_params[1][prompt_param_idx])
+            # if prompt_params is not None:
+            #     for prompt_param_idx in range(len(prompt_params[0])):
+            #         prompt_params[0][prompt_param_idx] = self.layernorm_embedding(prompt_params[0][prompt_param_idx])
+            #         prompt_params[1][prompt_param_idx] = self.layernorm_embedding(prompt_params[1][prompt_param_idx])
         
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         
@@ -1414,6 +1414,7 @@ class MBartDecoder(MBartPreTrainedModel):
         additional_encoder_attention_mask=None,
         curr_decode_length=-1,
         prompt_params=None, ## Prompts to be prepended to the decoder outputs.
+        num_prompts=0, ## Number of prompts to be prepended to the decoder outputs.
         adaptor_layers=None, ## Adaptor layers to be used in the decoder.
         deep_adaptor_tuning=False, ## Whether to use deep adaptor tuning.
         deep_adaptor_tuning_ffn_only=False, ## Whether to use deep adaptor tuning after ffn only.
@@ -1502,22 +1503,20 @@ class MBartDecoder(MBartPreTrainedModel):
 
         # past_key_values_length
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-        
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         
         if prompt_params is not None: ## During training past_key_values_length will always be 0 so it needs to be increased to get a proper causal decoder. Of course we need the input embeds to be augmented with the prompt info. During evaluation, this does not matter at all but we need the input embeds to be augmented with the prompt info during the first generation step.
-            prompt_shape = prompt_params[0][0].size()[:-1]
-            past_key_values_length += prompt_shape[1]
+            past_key_values_length += num_prompts
             batch_dims = inputs_embeds.size()
             for prompt_params_idx in range(len(prompt_params[0])):
-                prompt_params[0][prompt_params_idx] = prompt_params[0][prompt_params_idx] * self.embed_scale
+                # prompt_params[0][prompt_params_idx] = prompt_params[0][prompt_params_idx] * self.embed_scale
                 prompt_params[0][prompt_params_idx] = prompt_params[0][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
-                prompt_params[1][prompt_params_idx] = prompt_params[1][prompt_params_idx] * self.embed_scale
+                # prompt_params[1][prompt_params_idx] = prompt_params[1][prompt_params_idx] * self.embed_scale
                 prompt_params[1][prompt_params_idx] = prompt_params[1][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
-                prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx] * self.embed_scale
+                # prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx] * self.embed_scale
                 prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
-                prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx] * self.embed_scale
+                # prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx] * self.embed_scale
                 prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
             
         attention_mask = self._prepare_decoder_attention_mask(
@@ -1537,31 +1536,32 @@ class MBartDecoder(MBartPreTrainedModel):
         ## Modified by Raj Dabre. End.
         if self.config.no_positional_encoding_decoder:
             positions = self.embed_positions
-            if prompt_params is not None:
-                prompt_positions = self.embed_positions
+            # if prompt_params is not None:
+            #     prompt_positions = self.embed_positions
         else:
+            # if prompt_params is not None:
+            #     prompt_positions = self.embed_positions(prompt_shape, 0)
             if prompt_params is not None:
-                prompt_positions = self.embed_positions(prompt_shape, 0)
-
-            positions = self.embed_positions(inputs_embeds.size(), past_key_values_length) ## No matter what, the past key values length will be be properly updated.
-            
+                positions = self.embed_positions(inputs_embeds.size()) ## No matter what, the past key values length will be be properly updated.
+            else:
+                positions = self.embed_positions(inputs_embeds.size(), past_key_values_length-num_prompts) ## No matter what, the past key values length will be be properly updated.
         hidden_states = inputs_embeds + positions
 
-        if prompt_params is not None:
-            for prompt_params_idx in range(len(prompt_params[0])):
-                prompt_params[0][prompt_params_idx] = prompt_params[0][prompt_params_idx] + prompt_positions
-                prompt_params[1][prompt_params_idx] = prompt_params[1][prompt_params_idx] + prompt_positions
-                prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx] + prompt_positions
-                prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx] + prompt_positions
+        # if prompt_params is not None:
+        #     for prompt_params_idx in range(len(prompt_params[0])):
+        #         prompt_params[0][prompt_params_idx] = prompt_params[0][prompt_params_idx] + prompt_positions
+        #         prompt_params[1][prompt_params_idx] = prompt_params[1][prompt_params_idx] + prompt_positions
+        #         prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx] + prompt_positions
+        #         prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx] + prompt_positions
 
         if not self.config.no_embed_norm:
             hidden_states = self.layernorm_embedding(hidden_states)
-            if prompt_params is not None:
-                for prompt_params_idx in range(len(prompt_params[0])):
-                    prompt_params[0][prompt_params_idx] = self.layernorm_embedding(prompt_params[0][prompt_params_idx])
-                    prompt_params[1][prompt_params_idx] = self.layernorm_embedding(prompt_params[1][prompt_params_idx])
-                    prompt_params[2][prompt_params_idx] = self.layernorm_embedding(prompt_params[2][prompt_params_idx])
-                    prompt_params[3][prompt_params_idx] = self.layernorm_embedding(prompt_params[3][prompt_params_idx])
+            # if prompt_params is not None:
+            #     for prompt_params_idx in range(len(prompt_params[0])):
+            #         prompt_params[0][prompt_params_idx] = self.layernorm_embedding(prompt_params[0][prompt_params_idx])
+            #         prompt_params[1][prompt_params_idx] = self.layernorm_embedding(prompt_params[1][prompt_params_idx])
+            #         prompt_params[2][prompt_params_idx] = self.layernorm_embedding(prompt_params[2][prompt_params_idx])
+            #         prompt_params[3][prompt_params_idx] = self.layernorm_embedding(prompt_params[3][prompt_params_idx])
 
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
         if prompt_params is not None:
@@ -1786,6 +1786,7 @@ class MBartModel(MBartPreTrainedModel):
         context_encoder_representations=None,
         curr_decode_length=-1,
         prompt_params=None,
+        num_prompts=0,
         adaptor_layers=None,
         deep_adaptor_tuning=False,
         deep_adaptor_tuning_ffn_only=False,
@@ -2033,6 +2034,7 @@ class MBartModel(MBartPreTrainedModel):
             additional_encoder_attention_mask=additional_input_ids_mask,
             curr_decode_length=curr_decode_length,
             prompt_params=[prompt_params[2], prompt_params[3], prompt_params[4], prompt_params[5]] if prompt_params is not None else None,
+            num_prompts=num_prompts,
             adaptor_layers=adaptor_layers,
             deep_adaptor_tuning=deep_adaptor_tuning,
             deep_adaptor_tuning_ffn_only=deep_adaptor_tuning_ffn_only,
@@ -2098,51 +2100,54 @@ class GradientReversal(nn.Module):
 class Prompts(nn.Module):
     """Custom Pytorch model for creating continuous prompts.
     """
-    def __init__(self, num_prompts, d_model, init_std):
+    def __init__(self, num_prompts, d_model, init_std, dropout=0.0):
         
         super().__init__()
         # initialize weights with random numbers
-        prompt_params = torch.zeros(1, num_prompts, d_model)
-        prompt_params.normal_(mean=0.0, std=init_std)
-        self.prompt_params = torch.nn.Parameter(prompt_params)
+        self.input_tokens = torch.arange(num_prompts).long()
+        self.wte = nn.Embedding(num_prompts, d_model)
+        self.wte.weight.data.normal_(mean=0.0, std=init_std)
         ffn1 = torch.zeros(d_model, d_model*4)
         ffn1.normal_(mean=0.0, std=init_std)
         self.ffn1 = torch.nn.Parameter(ffn1)
-        self.activation = torch.nn.GELU()
+        self.activation = torch.nn.Tanh()
         ffn2 = torch.zeros(d_model*4, d_model)
         ffn2.normal_(mean=0.0, std=init_std)
         self.ffn2 = torch.nn.Parameter(ffn2)
-        self.layer_norm = nn.LayerNorm(d_model)
+        self.dropout = dropout
         
-    def forward(self, dummy_arg):
-        return self.prompt_params + torch.matmul(self.activation(torch.matmul(self.layer_norm(self.prompt_params), self.ffn1)), self.ffn2)
+    def forward(self, device):
+        input_tokens = self.input_tokens.to(device)
+        prompt_params = self.wte(input_tokens)
+        prompt_params = prompt_params[None,:,:]
+        return torch.matmul(F.dropout(self.activation(torch.matmul(prompt_params, self.ffn1)), p=self.dropout, training=self.training), self.ffn2)
     
 class EncoderDecoderPrompts(nn.Module):
     """Custom Pytorch model for creating continuous prompts.
     """
-    def __init__(self, num_prompts, encoder_layers, decoder_layers, d_model, init_std):
+    def __init__(self, num_prompts, encoder_layers, decoder_layers, d_model, init_std, dropout=0.0):
         
         super().__init__()
         # initialize weights with random numbers
-        self.encoder_prompts_key = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(encoder_layers)])
-        self.decoder_prompts_key_sa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(decoder_layers)])
-        self.decoder_prompts_key_xa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(decoder_layers)])
-        self.encoder_prompts_value = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(encoder_layers)])
-        self.decoder_prompts_value_sa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(decoder_layers)])
-        self.decoder_prompts_value_xa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std) for _ in range(decoder_layers)])
-        print("Number of additional parameters during training are:", (encoder_layers*2)*(d_model*d_model*4*2+ num_prompts*d_model)+(decoder_layers*3)*(d_model*d_model*4*2+ num_prompts*d_model))
-        print("Number of additional parameters during evaluation are:", (encoder_layers*2)*(num_prompts*d_model)+(decoder_layers*3)*(num_prompts*d_model))
+        self.encoder_prompts_key = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(encoder_layers)])
+        self.decoder_prompts_key_sa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(decoder_layers)])
+        self.decoder_prompts_key_xa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(decoder_layers)])
+        self.encoder_prompts_value = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(encoder_layers)])
+        self.decoder_prompts_value_sa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(decoder_layers)])
+        self.decoder_prompts_value_xa = torch.nn.ModuleList([Prompts(num_prompts, d_model, init_std, dropout) for _ in range(decoder_layers)])
+        print("Number of additional parameters during training are:", (encoder_layers*2)*(d_model*d_model*4*2+ num_prompts*d_model)+(decoder_layers*4)*(d_model*d_model*4*2+ num_prompts*d_model))
+        print("Number of additional parameters during evaluation are:", (encoder_layers*2)*(num_prompts*d_model)+(decoder_layers*4)*(num_prompts*d_model))
         self.num_prompts = num_prompts
         self.d_model = d_model
         
-    def forward(self, dummy_arg):
-        return [encoder_prompt(dummy_arg) for encoder_prompt in self.encoder_prompts_key], [encoder_prompt(dummy_arg) for encoder_prompt in self.encoder_prompts_value], [decoder_prompt(dummy_arg) for decoder_prompt in self.decoder_prompts_key_sa], [decoder_prompt(dummy_arg) for decoder_prompt in self.decoder_prompts_value_sa], [decoder_prompt(dummy_arg) for decoder_prompt in self.decoder_prompts_key_xa], [decoder_prompt(dummy_arg) for decoder_prompt in self.decoder_prompts_value_xa]
+    def forward(self, device):
+        return [encoder_prompt(device) for encoder_prompt in self.encoder_prompts_key], [encoder_prompt(device) for encoder_prompt in self.encoder_prompts_value], [decoder_prompt(device) for decoder_prompt in self.decoder_prompts_key_sa], [decoder_prompt(device) for decoder_prompt in self.decoder_prompts_value_sa], [decoder_prompt(device) for decoder_prompt in self.decoder_prompts_key_xa], [decoder_prompt(device) for decoder_prompt in self.decoder_prompts_value_xa]
 
 
 class Adaptor(nn.Module):
     """Custom Pytorch model for adaptor FFNs. We will pass these to the model and optimize and save them separately.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2181,13 +2186,14 @@ class Adaptor(nn.Module):
             self.layer_norm = None
         self.adaptor_scaling_factor = adaptor_scaling_factor
         self.residual_connection = residual_connection
+        self.dropout = dropout
         
     def forward(self, input):
         if self.layer_norm is not None:
             output = self.layer_norm(input)
         else:
             output = input
-        output = self.adaptor_scaling_factor * torch.matmul(self.activation(torch.matmul(output, self.ffn1)), self.ffn2) # Don't forget to check if you need the residual connection or not as well as the input layernorm or not.
+        output = self.adaptor_scaling_factor * torch.matmul(F.dropout(self.activation(torch.matmul(output, self.ffn1)), p=self.dropout, training=self.training), self.ffn2) # Don't forget to check if you need the residual connection or not as well as the input layernorm or not.
         if self.residual_connection:
             return output + input
         else:
@@ -2197,12 +2203,12 @@ class Adaptor(nn.Module):
 class EncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will only be applied to the top encoder and decoder layer.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0):
         
         super().__init__()
         # initialize weights with random numbers
-        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection)
-        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection)
+        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout)
+        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout)
         if hypercomplex:
             print("Hypercomplex adaptors will be used.")
             print("Number of additional parameters during training are:", (d_model*hidden*2*2)/hypercomplex_n + hypercomplex_n**3)
@@ -2219,7 +2225,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will be applied after each layer.
     The adaptors should be lightweight with small hidden params.
     """
-    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2, ffn_only=False, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False):
+    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2, ffn_only=False, layernorm_adaptor_input=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2227,7 +2233,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
             print("Tied Encoder adaptors with config", encoder_adaptor_tying_config)
             layer_idxs = encoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(len(unique_idxs)*(1 if ffn_only else 2))])
+            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout) for _ in range(len(unique_idxs)*(1 if ffn_only else 2))])
             self.encoder_adaptors = []
             for idx in layer_idxs:
                 if ffn_only:
@@ -2236,13 +2242,13 @@ class DeepEncoderDecoderAdaptors(nn.Module):
                     self.encoder_adaptors.extend([self.unique_encoder_adaptors[(int(idx)-1)*2], self.unique_encoder_adaptors[(int(idx)-1)*2+1]])
             unique_encoder_adaptors_count = len(self.unique_encoder_adaptors)
         else:
-            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(encoder_layers*(1 if ffn_only else 2))])
+            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout) for _ in range(encoder_layers*(1 if ffn_only else 2))])
             unique_encoder_adaptors_count = len(self.encoder_adaptors)
         if decoder_adaptor_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             print("Tied Decoder adaptors with config", decoder_adaptor_tying_config)
             layer_idxs = decoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(len(unique_idxs)*(1 if ffn_only else 3))])
+            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout) for _ in range(len(unique_idxs)*(1 if ffn_only else 3))])
             self.decoder_adaptors = []
             for idx in layer_idxs:
                 if ffn_only:
@@ -2251,7 +2257,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
                     self.decoder_adaptors.extend([self.unique_decoder_adaptors[(int(idx)-1)*3], self.unique_decoder_adaptors[(int(idx)-1)*3+1], self.unique_decoder_adaptors[(int(idx)-1)*3+2]])
             unique_decoder_adaptors_count = len(self.unique_decoder_adaptors)
         else:
-            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection) for _ in range(decoder_layers*(1 if ffn_only else 3))])
+            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, layernorm_adaptor_input=layernorm_adaptor_input, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout) for _ in range(decoder_layers*(1 if ffn_only else 3))])
             unique_decoder_adaptors_count = len(self.decoder_adaptors)
         
         if hypercomplex:
@@ -2307,16 +2313,16 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
 
         if config.prompt_tuning:
             print("Prompt tuning will be done.")
-            self.prompt_params = EncoderDecoderPrompts(config.num_prompts, config.encoder_layers, config.decoder_layers, config.d_model, config.init_std)
+            self.prompt_params = EncoderDecoderPrompts(config.num_prompts, config.encoder_layers, config.decoder_layers, config.d_model, config.init_std, config.prompt_dropout)
         
         if config.adaptor_tuning:
             print("Shallow adaptor tuning will be done.")
-            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor)
+            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout)
         elif config.deep_adaptor_tuning or config.deep_adaptor_tuning_ffn_only:
             print("Deep adaptor tuning will be done.")
             if config.parallel_adaptors:
                 print("Parallel adaptors will be used.")
-            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor)
+            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout)
                 
         
         if config.softmax_bias_tuning:
@@ -2355,20 +2361,20 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         """ Using random prompts as initial params is bad. Apparently its better to use random pretrained embeddings from the model.
         """
         print("Initializing prompt params with random embedding weights.")
-        embeds = self.model.shared.weight.detach().clone().requires_grad_(True)
+        embeds = self.model.shared.weight.data.detach().clone()
         num_embeds = embeds.size()[0]
         num_prompts = self.config.num_prompts
         with torch.no_grad():
             for i in range(len(self.prompt_params.encoder_prompts_key)):
                 for prompt_id in range(num_prompts):
-                    self.prompt_params.encoder_prompts_key[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
-                    self.prompt_params.encoder_prompts_value[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.encoder_prompts_key[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.encoder_prompts_value[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
             for i in range(len(self.prompt_params.decoder_prompts_key_sa)):
                 for prompt_id in range(num_prompts):
-                    self.prompt_params.decoder_prompts_key_sa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
-                    self.prompt_params.decoder_prompts_value_sa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
-                    self.prompt_params.decoder_prompts_key_xa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
-                    self.prompt_params.decoder_prompts_value_xa[i].prompt_params[0, prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.decoder_prompts_key_sa[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.decoder_prompts_value_sa[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.decoder_prompts_key_xa[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
+                    self.prompt_params.decoder_prompts_value_xa[i].wte.weight.data[prompt_id, :] = embeds[random.randint(0, num_embeds-1)] ##  initialize with existing embeddings
 
     @add_start_docstrings_to_model_forward(MBART_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
@@ -2434,7 +2440,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None, ## Dont need this during decoding when curr decode length > 1 set to none and save headache.
+                prompt_params=self.prompt_params(self.device) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None, ## Dont need this during decoding when curr decode length > 1 set to none and save headache.
+                num_prompts=self.config.num_prompts if self.config.prompt_tuning else 0, # To offset the positional embedding during decoding.
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning, ## TODO: make this a part of the object's attributes and access from there
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only, 
@@ -2462,7 +2469,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_input_ids_mask=None,
                 additional_encoder_outputs=None,
                 curr_decode_length=curr_decode_length,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
+                prompt_params=self.prompt_params(self.device) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
+                num_prompts=self.config.num_prompts if self.config.prompt_tuning else 0, # To offset the positional embedding during decoding.
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
@@ -2492,7 +2500,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 additional_encoder_outputs=additional_encoder_outputs,
                 curr_decode_length=curr_decode_length,
                 context_encoder_representations=context_encoder_representations,
-                prompt_params=self.prompt_params(0) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
+                prompt_params=self.prompt_params(self.device) if self.config.prompt_tuning and (self.training or curr_decode_length == 1)  else None,
+                num_prompts=self.config.num_prompts if self.config.prompt_tuning else 0, # To offset the positional embedding during decoding.
                 adaptor_layers=self.adaptor_layers if self.config.adaptor_tuning or self.config.deep_adaptor_tuning or self.config.deep_adaptor_tuning_ffn_only else None,
                 deep_adaptor_tuning=self.config.deep_adaptor_tuning,
                 deep_adaptor_tuning_ffn_only = self.config.deep_adaptor_tuning_ffn_only,
