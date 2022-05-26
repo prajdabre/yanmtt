@@ -401,6 +401,7 @@ class GenerationMixin:
             encoder_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
             encoder_kwargs["deep_adaptor_tuning_ffn_only"] = self.config.deep_adaptor_tuning_ffn_only
             encoder_kwargs["parallel_adaptors"] = self.config.parallel_adaptors
+            encoder_kwargs["moe_adaptors"] = self.config.moe_adaptors
             # model_kwargs["adaptor_layers"] = self.adaptor_layers
             # model_kwargs["deep_adaptor_tuning"] = self.config.deep_adaptor_tuning
             # model_kwargs["deep_adaptor_tuning_ffn_only"] = self.config.deep_adaptor_tuning_ffn_only

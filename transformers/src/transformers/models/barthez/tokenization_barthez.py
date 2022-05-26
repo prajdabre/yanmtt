@@ -222,7 +222,7 @@ class BarthezTokenizer(PreTrainedTokenizer):
         vocab.update(self.added_tokens_encoder)
         return vocab
 
-    def _tokenize(self, text):
+    def _tokenize(self, text, sample=False, nbest=-1, alpha=0.1):
         return self.sp_model.EncodeAsPieces(text)
 
     def _convert_token_to_id(self, token):

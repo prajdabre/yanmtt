@@ -107,41 +107,37 @@ def model_create_load_decode(gpu, args):
     if args.use_official_pretrained:
         if "mbart" in args.model_path or "IndicBART" in args.model_path:
             config = MBartConfig.from_pretrained(args.model_path)
-            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
-            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
-            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
-            config.deep_adaptor_tuning_ffn_only = args.deep_adaptor_tuning_ffn_only ## We should set deep_adaptor_tuning_info_manually
-            config.parallel_adaptors = args.parallel_adaptors ## We should set parallel_adaptors_info_manually
-            config.layernorm_adaptor_input = args.layernorm_adaptor_input ## We should set layernorm_adaptor_input_info_manually
-            config.adaptor_scaling_factor = args.adaptor_scaling_factor ## We should set adaptor_scaling_factor_info_manually
-            config.residual_connection_adaptor = args.residual_connection_adaptor ## We should set residual_connection_adaptor_info_manually
-            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
-            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
-            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
-            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
-            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
-            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
+            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info manually
+            config.prompt_projection_hidden_size=args.prompt_projection_hidden_size
+            config.layernorm_prompt_projection=args.layernorm_prompt_projection ## We should set layernorm_prompt_projection manually
+            config.no_projection_prompt=args.no_projection_prompt ## We should set no_projection_prompt manually
+            config.use_tanh_activation_prompt=args.use_tanh_activation_prompt ## We should set use_tanh_activation_prompt manually
+            config.residual_connection_prompt=args.residual_connection_prompt ## We should set residual_connection_prompt manually
+            config.num_prompts = args.num_prompts ## We should set num_prompts manually
+            config.recurrent_projections = args.recurrent_projections ## We should set recurrent_projections manually
+            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info manually
+            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info manually
+            config.deep_adaptor_tuning_ffn_only = args.deep_adaptor_tuning_ffn_only ## We should set deep_adaptor_tuning_info manually
+            config.parallel_adaptors = args.parallel_adaptors ## We should set parallel_adaptors_info manually
+            config.layernorm_adaptor_input = args.layernorm_adaptor_input ## We should set layernorm_adaptor_input_info manually
+            config.adaptor_scaling_factor = args.adaptor_scaling_factor ## We should set adaptor_scaling_factor_info manually
+            config.residual_connection_adaptor = args.residual_connection_adaptor ## We should set residual_connection_adaptor_info manually
+            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config manually
+            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config manually
+            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size manually
+            config.moe_adaptors=args.moe_adaptors ## We should set moe_adaptors_info manually
+            config.num_moe_adaptor_experts=args.num_moe_adaptor_experts ## We should set num_moe_adaptor_experts_info manually
+            config.hypercomplex = args.hypercomplex ## We should set hypercomplex manually
+            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n manually
+            config.ia3_adaptors = args.ia3_adaptors ## We should set ia3_adaptors info manually
+            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info manually
             model = MBartForConditionalGeneration.from_pretrained(args.model_path, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
             
         elif "bart" in args.model_path:
             config = BartConfig.from_pretrained(args.model_path)
-            config.prompt_tuning = args.prompt_tuning ## We should set prompt_tuning_info_manually
-            config.adaptor_tuning = args.adaptor_tuning ## We should set adaptor_tuning_info_manually
-            config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info_manually
-            config.deep_adaptor_tuning_ffn_only = args.deep_adaptor_tuning_ffn_only ## We should set deep_adaptor_tuning_info_manually
-            config.parallel_adaptors = args.parallel_adaptors ## We should set parallel_adaptors_info_manually
-            config.layernorm_adaptor_input = args.layernorm_adaptor_input ## We should set layernorm_adaptor_input_info_manually
-            config.adaptor_scaling_factor = args.adaptor_scaling_factor ## We should set adaptor_scaling_factor_info_manually
-            config.residual_connection_adaptor = args.residual_connection_adaptor ## We should set residual_connection_adaptor_info_manually
-            config.encoder_adaptor_tying_config = args.encoder_adaptor_tying_config ## We should set encoder_tying_config_manually
-            config.decoder_adaptor_tying_config = args.decoder_adaptor_tying_config ## We should set decoder_tying_config_manually
-            config.adaptor_hidden_size = args.adaptor_hidden_size ## We should set adaptor_hidden_size_manually
-            config.hypercomplex = args.hypercomplex ## We should set hypercomplex_manually
-            config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n_manually
-            config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info_manually
             model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
     else: ## Its a locally trained model. You should know the config.
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,  encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
+        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,  encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, prompt_projection_hidden_size=args.prompt_projection_hidden_size, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
         model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -158,9 +154,9 @@ def model_create_load_decode(gpu, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
         else:
-            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -495,6 +491,16 @@ def run_demo():
     parser.add_argument('--prompt_tuning', action='store_true', 
                         help='Should we use continuous prompts and tune them?')
     parser.add_argument('--num_prompts', default=100, type=int, help="How many prompts should we use?")
+    parser.add_argument('--recurrent_projections', default=1, type=int, help="How many recurrent projections of the prompt should we do? This means that the output will go through the FFN recurrent_projections number of times?")
+    parser.add_argument('--prompt_projection_hidden_size', default=4096, type=int, help="What is the hidden size of the FFN for the prompt embedding projection?")
+    parser.add_argument('--layernorm_prompt_projection', action='store_true', 
+                        help='Should we use layernorm for the input of the FFN that does prompt projection?')
+    parser.add_argument('--no_projection_prompt', action='store_true', 
+                        help='Should we directly use prompt embeddings as they are instead of using an FFN to project them first? This means prompts, which are embeddings will be directly optimized.')
+    parser.add_argument('--use_tanh_activation_prompt', action='store_true', 
+                        help='Should  we use the tanh activation or the gelu activation by default?')
+    parser.add_argument('--residual_connection_prompt', action='store_true', 
+                        help='Should we add the prompt embedding to the output of the projection?')
     parser.add_argument('--adaptor_tuning', action='store_true', 
                         help='Should we use lightweight adaptors? (Only applied to the final layer)')
     parser.add_argument('--deep_adaptor_tuning', action='store_true', 
@@ -513,9 +519,14 @@ def run_demo():
     parser.add_argument('--decoder_adaptor_tying_config', default=None, type=str,
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--adaptor_hidden_size', default=512, type=int, help="What is the hidden size of the adaptor FFNs?")
+    parser.add_argument('--moe_adaptors', action='store_true', 
+                        help='Should we use mixtures of experts as adaptors?')
+    parser.add_argument('--num_moe_adaptor_experts', default=4, type=int, help="How many experts should we use for adaptor FFNs?")
     parser.add_argument('--hypercomplex', action='store_true', 
                         help='Should we use hypercomplex adaptors?')
     parser.add_argument('--hypercomplex_n', default=2, type=int, help="What is the scaling factor for hypercomplex params?")
+    parser.add_argument('--ia3_adaptors', action='store_true', 
+                        help='Should we use ia3 adaptors from https://arxiv.org/pdf/2205.05638.pdf?')                    
     parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     
     args = parser.parse_args()

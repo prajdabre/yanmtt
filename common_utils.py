@@ -510,7 +510,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
     
     if args.tokenization_sampling:
         print("Stochastic tokenizer will be used.")
-        if "bart" in args.tokenizer_name_or_path:
+        if "mbart" in args.tokenizer_name_or_path:
             print("BPE dropout with a dropout probability of", args.tokenization_alpha_or_dropout, "will be used.")
         else:
             print("Sentencepiece regularization with an alpha value of", args.tokenization_alpha_or_dropout, "will be used.")
@@ -620,7 +620,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     sentence = final_sentence
             
             
-            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(masked_sentence, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
                 if curr_src_sent_len > args.hard_truncate_length:
@@ -651,7 +651,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 max_tgt_sent_len = curr_tgt_sent_len
             
             if args.batch_size_indicates_lines: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
-                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     encoder_input_batch.append(masked_sentence)
                     decoder_input_batch.append(sentence)
                 else:
@@ -678,7 +678,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                         dropped_sentence = sentence
                         dropped_language = language
                     break
-                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     encoder_input_batch.append(masked_sentence)
                     decoder_input_batch.append(sentence)
                 else:
@@ -697,20 +697,20 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         if len(encoder_input_batch) == 0:
             print("Zero size batch due to an abnormal example. Skipping empty batch.")
             continue
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         # if len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
         #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. No support for stochastic tokenizer because the roberta tokenizer which is inherited from GPT2 tokenizer does its onw weird BPE and I dont want to mess with it.
             decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         # if len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
         #     decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        if (args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## We have to be careful when using stochastic segmentation. Note again that there will be no stoachastic segmentation with the official bart model. IT JUST WONT WORK.
+        if (args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## We have to be careful when using stochastic segmentation. Note again that there will be no stoachastic segmentation with the official bart model. IT JUST WONT WORK.
             labels = decoder_input_ids[:,1:]
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
@@ -869,7 +869,7 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             src_sent = " ".join(src_sent_split)
             sent_len = args.max_src_length
         
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             iids = tok(src_sent, return_tensors="pt").input_ids
             sent_len = len(iids[0])
             if sent_len > args.hard_truncate_length:
@@ -893,7 +893,7 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 src_sent_split_parent=src_sent_split_parent[:args.max_src_length]
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
-            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent_parent, return_tensors="pt").input_ids
                 sent_len_parent = len(iids[0])
                 if sent_len_parent > args.hard_truncate_length:
@@ -915,7 +915,7 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
 
         curr_batch_count += 1
         if curr_batch_count == args.dev_batch_size:
-            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
             else:
                 input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
@@ -939,7 +939,7 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 encoder_input_batch_parent = []
 
     if len(encoder_input_batch) != 0:
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
@@ -961,7 +961,7 @@ def generate_batches_bilingual(tok, args, files, rank):
     """Generates the source, target and source attention masks for the training set. The source and target sentences are ignored if empty and are truncated if longer than a threshold. The batch size in this context is the maximum number of tokens in the batch post padding."""
     if args.tokenization_sampling:
         print("Stochastic tokenizer will be used.")
-        if "bart" in args.tokenizer_name_or_path:
+        if "mbart" in args.tokenizer_name_or_path:
             print("BPE dropout with a dropout probability of", args.tokenization_alpha_or_dropout, "will be used.")
         else:
             print("Sentencepiece regularization with an alpha value of", args.tokenization_alpha_or_dropout, "will be used.")
@@ -1117,7 +1117,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                     else:
                         tgt_sent = final_sentence
 
-            if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent, return_tensors="pt").input_ids
                 curr_src_sent_len = len(iids[0])
                 if curr_src_sent_len > args.hard_truncate_length:
@@ -1143,7 +1143,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                     curr_tgt_sent_len = args.hard_truncate_length
             
             if args.cross_distillation or args.multi_source:
-                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
                     curr_src_sent_len_parent = len(iids[0])
                     if curr_src_sent_len_parent > args.hard_truncate_length:
@@ -1166,7 +1166,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                 max_tgt_sent_len = curr_tgt_sent_len
             
             if args.batch_size_indicates_lines: ## Batch a fixed number of sentences. We can safely add the current example because we assume that the user knows the max batch size.
-                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     encoder_input_batch.append(src_sent)
                     decoder_input_batch.append(tgt_sent)
 
@@ -1215,7 +1215,7 @@ def generate_batches_bilingual(tok, args, files, rank):
                         else:
                             dropped_source_sentence_parent = src_sent_parent
                     break
-                if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                     encoder_input_batch.append(src_sent)
                     decoder_input_batch.append(tgt_sent)
 
@@ -1243,20 +1243,20 @@ def generate_batches_bilingual(tok, args, files, rank):
             print("Zero size batch due to an abnormal example. Skipping empty batch.")
             continue    
 
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-            input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         # if len(input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
         #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = (input_ids != tok.pad_token_id).int()
-        if args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-            decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+        if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            decoder_input_ids = tok(decoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             decoder_input_ids = tok(decoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         # if len(decoder_input_ids[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
         #     decoder_input_ids = decoder_input_ids[:,:args.hard_truncate_length]
-        if (args.use_official_pretrained and "bart" in args.pretrained_model and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+        if (args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model) or args.tokenization_sampling: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             labels = decoder_input_ids[:,1:]
             decoder_input_ids = decoder_input_ids[:,:-1]
         else:
@@ -1264,7 +1264,10 @@ def generate_batches_bilingual(tok, args, files, rank):
             # if len(labels[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             #     labels = labels[:,:args.hard_truncate_length]
         if args.cross_distillation or args.multi_source:
-            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+            if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
+            else:
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
             # if len(input_ids_parent[0]) > args.hard_truncate_length: ## Truncate again if we exceed the maximum sequence length.
             #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
@@ -1420,7 +1423,7 @@ def generate_batches_for_decoding(tok, args):
     """Generates the source sentences for the test set."""
     if args.tokenization_sampling:
         print("Stochastic tokenizer will be used.")
-        if "bart" in args.tokenizer_name_or_path:
+        if "mbart" in args.tokenizer_name_or_path:
             print("BPE dropout with a dropout probability of", args.tokenization_alpha_or_dropout, "will be used.")
         else:
             print("Sentencepiece regularization with an alpha value of", args.tokenization_alpha_or_dropout, "will be used.")
@@ -1486,7 +1489,7 @@ def generate_batches_for_decoding(tok, args):
                     break ## If we cannot get a properly masked sentence despite all our efforts then we just give up and continue with what we have so far.
             src_sent = " ".join(src_sent_split)
         
-        if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+        if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
             iids = tok(src_sent, return_tensors="pt").input_ids
             sent_len = len(iids[0])
             if sent_len > args.hard_truncate_length:
@@ -1511,7 +1514,7 @@ def generate_batches_for_decoding(tok, args):
                 src_sent_split_parent=src_sent_split_parent[:args.max_src_length]
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
-            if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent_parent, return_tensors="pt").input_ids
                 sent_len_parent = len(iids[0])
                 if sent_len_parent > args.hard_truncate_length:
@@ -1532,7 +1535,7 @@ def generate_batches_for_decoding(tok, args):
             
         curr_batch_count += 1
         if curr_batch_count == args.batch_size:
-            if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
             else:
                 input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
@@ -1554,15 +1557,18 @@ def generate_batches_for_decoding(tok, args):
                 encoder_input_batch_parent = []
 
     if len(encoder_input_batch) != 0:
-        if args.use_official_pretrained and "bart" in args.model_path and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-            input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+        if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+            input_ids = tok(encoder_input_batch, return_tensors="pt", padding=True).input_ids
         else:
             input_ids = tok(encoder_input_batch, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
         # if len(input_ids[0]) > args.hard_truncate_length:
         #     input_ids = input_ids[:,:args.hard_truncate_length]
         input_masks = input_ids != tok.pad_token_id
         if args.multi_source: ## Process the batch for the additional source as well.
-            input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
+            if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True).input_ids
+            else:
+                input_ids_parent = tok(encoder_input_batch_parent, add_special_tokens=False, return_tensors="pt", padding=True, sample=args.tokenization_sampling, nbest=args.tokenization_nbest_list_size, alpha_or_dropout=args.tokenization_alpha_or_dropout).input_ids
             # if len(input_ids_parent[0]) > args.hard_truncate_length:
             #     input_ids_parent = input_ids_parent[:,:args.hard_truncate_length]
             input_masks_parent = (input_ids_parent != tok.pad_token_id).int()
