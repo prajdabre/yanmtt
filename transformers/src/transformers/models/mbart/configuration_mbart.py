@@ -180,6 +180,7 @@ class MBartConfig(PretrainedConfig):
         num_moe_adaptor_experts=8, ## Argument to indicate how many experts we want for moe adaptors. The adaptor hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         ia3_adaptors=False, ## Argument to indicate whether we should use ia3 adaptors or not.
         softmax_bias_tuning=False, ## Argument to indicate whether we should do softmax bias tuning or not.
+        embed_low_rank_dim=0, ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -264,6 +265,7 @@ class MBartConfig(PretrainedConfig):
         self.ia3_adaptors = ia3_adaptors ## Argument to indicate whether we should use ia3 adaptors or not.
         self.softmax_bias_tuning = softmax_bias_tuning ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
+        self.embed_low_rank_dim = embed_low_rank_dim ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
         
     @property
     def num_attention_heads(self) -> int:

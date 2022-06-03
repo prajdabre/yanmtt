@@ -1115,7 +1115,7 @@ class MBartEncoder(MBartPreTrainedModel):
         embed_tokens (torch.nn.Embedding): output embedding
     """
 
-    def __init__(self, config: MBartConfig, embed_tokens: Optional[nn.Embedding] = None):
+    def __init__(self, config: MBartConfig, embed_tokens: Optional[nn.Embedding] = None, embed_projection: Optional[nn.Linear] = None):
         super().__init__(config)
 
         self.dropout = config.dropout
@@ -1131,6 +1131,8 @@ class MBartEncoder(MBartPreTrainedModel):
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, embed_dim, self.padding_idx)
         
+        self.embed_projection = embed_projection
+
         ## Modified by Raj Dabre. Start.
         if config.features_vocab_sizes is not None: ### Set up embedders for features
             self.features_embed_tokens = [nn.Embedding(feature_vocab_size, feature_embed_dim, self.padding_idx) for feature_vocab_size, feature_embed_dim in zip(config.features_vocab_sizes, config.features_embed_dims)]
@@ -1252,7 +1254,10 @@ class MBartEncoder(MBartPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
+            if self.embed_projection is not None: # Project the embeddings to hidden_size
+                inputs_embeds = self.embed_projection(inputs_embeds)
+            inputs_embeds = inputs_embeds * self.embed_scale
             input_shape = inputs_embeds.size()[:-1]
             if prompt_params is not None:
                 prompt_shape = prompt_params[0][0].size()[:-1]
@@ -1405,7 +1410,7 @@ class MBartDecoder(MBartPreTrainedModel):
         embed_tokens (torch.nn.Embedding): output embedding
     """
 
-    def __init__(self, config: MBartConfig, embed_tokens: Optional[nn.Embedding] = None):
+    def __init__(self, config: MBartConfig, embed_tokens: Optional[nn.Embedding] = None, embed_projection: Optional[nn.Linear] = None):
         super().__init__(config)
         self.dropout = config.dropout
         self.layerdrop = config.decoder_layerdrop
@@ -1418,6 +1423,8 @@ class MBartDecoder(MBartPreTrainedModel):
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
         
+        self.embed_projection = embed_projection
+
         if config.no_positional_encoding_decoder:
             print("Using no positional encodings for decoder")
             self.embed_positions = 0
@@ -1588,7 +1595,10 @@ class MBartDecoder(MBartPreTrainedModel):
         # past_key_values_length
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
+            if self.embed_projection is not None: # Project embeddings to hidden_size
+                inputs_embeds = self.embed_projection(inputs_embeds)
+            inputs_embeds = inputs_embeds * self.embed_scale
         
         if prompt_params is not None: ## During training past_key_values_length will always be 0 so it needs to be increased to get a proper causal decoder. Of course we need the input embeds to be augmented with the prompt info. During evaluation, this does not matter at all but we need the input embeds to be augmented with the prompt info during the first generation step.
             past_key_values_length += num_prompts
@@ -1810,10 +1820,16 @@ class MBartModel(MBartPreTrainedModel):
         super().__init__(config)
 
         padding_idx, vocab_size = config.pad_token_id, config.vocab_size
-        self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
+        if config.embed_low_rank_dim > 0: # Use low rank embeddings.
+            print("Using low rank embeddings.")
+            self.shared = nn.Embedding(vocab_size, config.embed_low_rank_dim, padding_idx)
+            self.shared_proj = nn.Linear(config.embed_low_rank_dim, config.d_model, bias=False)
+        else:
+            self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
+            self.shared_proj = None
 
-        self.encoder = MBartEncoder(config, self.shared)
-        self.decoder = MBartDecoder(config, self.shared)
+        self.encoder = MBartEncoder(config, self.shared, self.shared_proj)
+        self.decoder = MBartDecoder(config, self.shared, self.shared_proj)
         
         ## Modified by Raj Dabre. Start.
         if self.config.multi_source and config.multi_source_method == "additional_source_attention":
@@ -2460,8 +2476,11 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         super().__init__(config)
         self.model = MBartModel(config)
         self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
-        self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
-        
+        if config.embed_low_rank_dim > 0:
+            self.lm_head = nn.Linear(config.embed_low_rank_dim, self.model.shared.num_embeddings, bias=False)
+        else:
+            self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+
         if config.multilayer_softmaxing is not None:
             config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
         
@@ -2617,6 +2636,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
+            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head. Note that we cant create a linear layer whose weight is the transpose of the up projection layer of the encoder and decoder embeddings. This is why we resort to this approach. DIS IS DA WAE!
+                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T) ## Note the assignment is done with a string as key but when accesing it can be done with an integer index. Bizzarre!
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 lm_logits = lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
@@ -2647,6 +2668,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
+            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+                additional_outputs["last_hidden_state"] = torch.nn.functional.linear(additional_outputs[0], self.model.shared_proj.weight.T)
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 additional_source_lm_logits = additional_source_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
@@ -2679,6 +2702,8 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
+            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T)
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 lm_logits = lm_logits/self.softmax_temperature
@@ -2687,6 +2712,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         if self.config.multilayer_softmaxing is not None:
             for layer_id in self.config.multilayer_softmaxing: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 lm_representation = outputs.decoder_hidden_states[layer_id]
+                if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+                    lm_representation = torch.nn.functional.linear(lm_representation, self.model.shared_proj.weight.T)
+
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
                 if self.config.temperature_calibration:
                     additional_lm_logits[-1] = additional_lm_logits[-1]/self.softmax_temperature ## The softmax_temperature config param should be 1.0

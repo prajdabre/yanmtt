@@ -88,12 +88,13 @@ class EWC(object):
         
         for n, p in deepcopy(self.params).items():
             self._means[n] = torch.tensor(p.detach().cpu().numpy()).to(gpu)
+            self._means[n].requires_grad = False
 
     def _diag_fisher(self):
         precision_matrices = {}
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
-            precision_matrices[n] = torch.tensor(p.detach().cpu().numpy()).to(self.gpu)
+            precision_matrices[n] = torch.tensor(p.detach().cpu().numpy()).to(self.gpu)            
 
         self.model.eval()
         num_samples = 0
@@ -110,9 +111,15 @@ class EWC(object):
             loss.backward()
 
             for n, p in self.model.named_parameters():
-                precision_matrices[n].data += p.grad.data ** 2 / num_samples
-
+                precision_matrices[n].data += p.grad.data ** 2
+        
+        for n, p in self.model.named_parameters():
+            precision_matrices[n].data = precision_matrices[n].data / num_samples
+        
         precision_matrices = {n: p for n, p in precision_matrices.items()}
+        for n, p in precision_matrices.items():
+            precision_matrices[n].requires_grad = False
+            
         self.model.train()
         return precision_matrices
 
