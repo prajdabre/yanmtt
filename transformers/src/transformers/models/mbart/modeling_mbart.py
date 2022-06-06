@@ -2636,7 +2636,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
-            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head. Note that we cant create a linear layer whose weight is the transpose of the up projection layer of the encoder and decoder embeddings. This is why we resort to this approach. DIS IS DA WAE!
+            if self.config.embed_low_rank_dim > 0: ## Downproject the LM head. Note that we cant create a linear layer whose weight is the transpose of the up projection layer of the encoder and decoder embeddings. This is why we resort to this approach. DIS IS DA WAE!
                 outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T) ## Note the assignment is done with a string as key but when accesing it can be done with an integer index. Bizzarre!
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2668,7 +2668,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
-            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+            if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
                 additional_outputs["last_hidden_state"] = torch.nn.functional.linear(additional_outputs[0], self.model.shared_proj.weight.T)
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2702,7 +2702,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 parallel_adaptors=self.config.parallel_adaptors,
                 moe_adaptors=self.config.moe_adaptors,
             )
-            if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+            if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
                 outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T)
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
@@ -2712,7 +2712,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         if self.config.multilayer_softmaxing is not None:
             for layer_id in self.config.multilayer_softmaxing: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 lm_representation = outputs.decoder_hidden_states[layer_id]
-                if self.config.embed_low_rank_dim is not None: ## Downproject the LM head
+                if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
                     lm_representation = torch.nn.functional.linear(lm_representation, self.model.shared_proj.weight.T)
 
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
