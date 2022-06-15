@@ -163,6 +163,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n manually
             config.ia3_adaptors = args.ia3_adaptors ## We should set ia3_adaptors info manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info manually
+            config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["MBartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
@@ -174,11 +175,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             config.activation_dropout = args.activation_dropout ## We should set dropouts manually
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
+            config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
             model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["BartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: # We are going to manually specify a config for our locally trained model.
-        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, softmax_bias_tuning=args.softmax_bias_tuning, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, softmax_bias_tuning=args.softmax_bias_tuning, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
         config.architectures = ["MBartForConditionalGeneration"]
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         model = MBartForConditionalGeneration(config)
@@ -219,11 +221,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                 parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
             else:
                 parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
+            del parent_checkpoint_dict
             
         parent_model.train()
 
     torch.cuda.set_device(gpu) ## Set the device to the current GPU. This is different from the rank so keep this in mind.
-    
+    torch.cuda.empty_cache()
+
     if args.freeze_embeddings: ## If we wish to freeze the model embeddings. This may be useful when fine-tuning a pretrained model.
         print("Freezing embeddings")
         freeze_embeds(model)
@@ -237,8 +241,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     ### NOTE: Please freeze params before wrapping the model in DDP. Mandem almost had a stoke trying to figure this out.
 
     model.cuda(gpu) ## Move the model to the GPU.
+    print("Memory consumed after moving model to GPU", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
     model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
-
+    print("Memory consumed after wrapping with DDP", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
@@ -252,6 +257,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     ] ## We suppose that weight decay will be used except for biases and layer norm weights.
 
     print("Optimizing", [n for n, p in model.named_parameters() if p.requires_grad])
+    if args.gradient_checkpointing:
+        print("Using gradient checkpointing")
     num_params_to_optimize = sum(p.numel() for p in model.parameters() if p.requires_grad)
     num_model_params = sum(p.numel() for p in model.parameters())
     print("Number of model parameters:", num_model_params)
@@ -262,7 +269,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     if args.prompt_tuning:
         print("Although the percentage of parameters to be optimized is high, during training the number of actual params during decoding are way way lower.")
         
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=1e-09) ## Our glorious optimizer.
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
     
     model.train()
     
@@ -300,6 +307,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             ctr = 0
+        del checkpoint_dict
     else:
         if args.use_official_pretrained:
             print("Training from official pretrained model")
@@ -319,6 +327,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         optimizer.load_state_dict(checkpoint_dict['optimizer'])
         scheduler.load_state_dict(checkpoint_dict['scheduler'])
         ctr = checkpoint_dict['ctr']
+        del checkpoint_dict
+        torch.cuda.empty_cache()
         
     model.train()
         
@@ -417,15 +427,16 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                                 print("Decoding batch from a pool of", len(inps[dev_pair]), "examples")
                             with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
                                 translations = model.module.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int((len(dev_input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(dev_input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([tlang if args.use_official_pretrained else "<2"+tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, additional_input_ids=dev_input_ids_parent if args.multi_source else None, additional_input_ids_mask=dev_input_masks_parent if args.multi_source else None) ## We translate the batch. 
-                            dev_input_ids = dev_input_ids.to('cpu') ## Move to cpu. Not needed but its a safe step.
-                            dev_input_masks = dev_input_masks.to('cpu') ## Move to cpu. Not needed but its a safe step.
-                            translations=translations.to('cpu') ## Move to cpu. Not needed but its a safe step.
+                            del dev_input_ids ## Delete to avoid retention.
+                            del dev_input_masks ## Delete to avoid retention.
+                            translations = translations.to('cpu') ## Delete to avoid retention.
                             if args.multi_source:
-                                dev_input_ids_parent = dev_input_ids_parent.to('cpu') ## Move to cpu. Not needed but its a safe step.
-                                dev_input_masks_parent = dev_input_masks_parent.to('cpu') ## Move to cpu. Not needed but its a safe step.
+                                del dev_input_ids_parent ## Delete to avoid retention.
+                                del dev_input_masks_parent ## Delete to avoid retention.
                             for translation in translations:
                                 translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
                                 hyp[dev_pair].append(translation)
+                            del translations ## Delete to avoid retention.
                         if args.use_rouge: ## Get the evaluation metric score.
                             scores = 0
                             for curr_ref, curr_pred in zip(refs[dev_pair][0], hyp[dev_pair]):
@@ -440,7 +451,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             scorertool = 'SacreBLEU'
                         individual_sbleu_history[dev_pair].append([sbleu, ctr]) ## Update the score history for this pair.
                         sbleus[dev_pair] = sbleu
-                        print(metric, "score using", scorertool, "after", ctr, "iterations is", sbleu, "for language pair", dev_pair)
+                        print(metric, "score using", scorertool, "after", ctr, "iterations is", round(sbleu, 2), "for language pair", dev_pair)
                         writer.add_scalar(dev_pair+" bleu/rouge", sbleu, ctr)
                         if sbleu > max_individual_sbleu[dev_pair]: ## Update the best score and step number. If the score has improved then save a model copy for this pair. Although we will stop on the global score (average across scores over all pairs) we save these models if we want a model that performs the best on a single pair.
                             max_individual_sbleu[dev_pair] = sbleu
@@ -455,7 +466,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     ## Global stats
                     sbleu = sum(sbleus.values())/len(sbleus) ## The global score.
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
-                    print("Global", metric, "score using", scorertool, "after", ctr, "iterations is:", sbleu)
+                    print("Global", metric, "score using", scorertool, "after", ctr, "iterations is:", round(sbleu, 2))
                     writer.add_scalar("global bleu/rouge", sbleu, ctr)
                     if sbleu > max_global_sbleu: ## Update the best score and step number. If this has improved then save a copy for the model. Note that this model MAY NOT be the model that gives the best performance for all pairs.
                         max_global_sbleu = sbleu
@@ -481,8 +492,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         else: ## Convergence has been reached and we stop and report the final metrics.
                             print("We have seemingly converged as", metric, "failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
                             print("Terminating training")
-                            print("Global dev", metric, "history:", global_sbleu_history)
-                            print("Individual", metric, "history:", individual_sbleu_history )
+                            print("Global dev", metric, "history:", [round(global_sbleu_history[i],2) for i in global_sbleu_history])
+                            print("Individual", metric, "history:", {i:[round(k,2) for k in individual_sbleu_history[i]] for i in individual_sbleu_history})
                             with open(args.model_path + ".quitflag", "w") as f:
                                 f.write("1")
                     curr_eval_step += 1
@@ -524,6 +535,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             model.load_state_dict(checkpoint_dict['model'])
             optimizer.load_state_dict(checkpoint_dict['optimizer'])
             scheduler.load_state_dict(checkpoint_dict['scheduler'])
+            del checkpoint_dict
+            torch.cuda.empty_cache()
             
         dist.barrier()
         if args.cross_distillation or args.multi_source: ## The returned input ids and input masks are actually a list of two items each. The first item is to be fed to the parent model and the second item is to be fed to the child model.
@@ -547,7 +560,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         input_masks=input_masks.to(gpu) ## Move to gpu
         decoder_input_ids=decoder_input_ids.to(gpu) ## Move to gpu
         labels=labels.to(gpu) ## Move to gpu
-        optimizer.zero_grad() ## Empty the gradients before any computation.
+        if num_batches_this_optimizer_step == 0: ## If this is the first batch then we need to initialize the optimizer.
+            optimizer.zero_grad(set_to_none=True) ## Empty the gradients before any computation.
         if rank == 0:
             writer.add_scalar("learning rate", scheduler.get_lr()[0], ctr)
         if args.mixed_wait_k:
@@ -711,20 +725,23 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
                 loss += moe_loss
 
-        input_ids=input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
-        input_masks=input_masks.to('cpu') ## Move to CPU. May not be needed but its a safety net.
-        decoder_input_ids=decoder_input_ids.to('cpu') ## Move to CPU. May not be needed but its a safety net.
-        labels=labels.to('cpu') ## Move to CPU. May not be needed but its a safety net.
+        del input_ids ## Delete to avoid retention.
+        del input_masks ## Delete to avoid retention.
+        del decoder_input_ids ## Delete to avoid retention.
+        del labels ## Delete to avoid retention.
         if args.cross_distillation or args.multi_source:
-            input_ids_parent=input_ids_parent.to('cpu') ## Move to CPU. May not be needed but its a safety net.
-            input_masks_parent=input_masks_parent.to('cpu') ## Move to CPU. May not be needed but its a safety net.
+            del input_ids_parent ## Delete to avoid retention.
+            del input_masks_parent ## Delete to avoid retention.
         
+        if ctr % 100 == 0 and rank  % 8 == 0:
+            fwd_memory = round(torch.cuda.memory_allocated(gpu)/(1024**3), 2)
+
         ## Optimization part of the model from this point forward.
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation. ## With FP16/AMP computation we need to unscale gradients before clipping them. We then optimize and update the scaler.
             loss = loss/args.multistep_optimizer_steps
             scaler.scale(loss).backward()
             num_batches_this_optimizer_step += 1
-            losses += loss
+            losses += loss.detach().cpu().numpy()
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
@@ -736,19 +753,20 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             loss = loss/args.multistep_optimizer_steps
             loss.backward()
             num_batches_this_optimizer_step += 1
-            losses += loss
+            losses += loss.detach().cpu().numpy()
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step() ## Advance the scheduler to get to the next value of LR.
-        lv = losses.detach().cpu().numpy() ## Detach the loss in order to report it.
+        lv = losses ## Detach the loss in order to report it.
         losses = 0
         num_batches_this_optimizer_step = 0
         if ctr % 100 == 0 and rank  % 8 == 0: ## Print the current loss every 10 batches but only for the master/prime process.
+            bwd_memory=round(torch.cuda.memory_allocated(gpu)/(1024**3), 2)
             end = time.time()
-            print(ctr, lv, end-start, "seconds for 100 batches")
+            print(ctr, round(lv.item(),2), round(end-start, 2), "seconds for 100 batches. Memory used post forward / backward passes:", fwd_memory, "/", bwd_memory, "GB.")
             start = time.time()
             sys.stdout.flush()
         
@@ -767,7 +785,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         # All processes should see same parameters as they all start from same
         # random parameters and gradients are synchronized in backward passes.
         # Therefore, saving it in one process is sufficient.
-        print("The best",metric, "using", scorertool,"was:", max_global_sbleu)
+        print("The best",metric, "using", scorertool,"was:", round(max_global_sbleu, 2))
         print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
@@ -808,6 +826,7 @@ def run_demo():
     parser.add_argument('--weight_decay', default=0.0001, type=float, help="The value for weight decay")
     parser.add_argument('--init_std', default=0.02, type=float, help="The standard deviation of the initial weights")
     parser.add_argument('--lr', default=7e-4, type=float, help="The value for the learning rate")
+    parser.add_argument('--adam_eps', default=1e-9, type=float, help="The value for the learning rate")
     parser.add_argument('--layerdrop', default=0.0, type=float, help="The value for layerdrop which indicates the probability that a whole layer will be bypassed via an identity transformation.")
     parser.add_argument('--dropout', default=0.1, type=float, help="The value for embedding dropout")
     parser.add_argument('--attention_dropout', default=0.1, type=float, help="The value for attention dropout")
@@ -829,6 +848,8 @@ def run_demo():
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--decoder_tying_config', default=None, type=str,
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
+    parser.add_argument('--gradient_checkpointing', action='store_true', 
+                        help='Should we do gradient checkpointing during training? If yes, then the encoder and decoder layer activations will be recomputed during backprop.')
     parser.add_argument('--softmax_temperature', default=1.0, type=float, help="The value for the softmax temperature")
     parser.add_argument('--distillation_temperature', default=1.0, type=float, help="The value for the softmax temperature during distillation")
     parser.add_argument('--temperature_calibration', action='store_true', 

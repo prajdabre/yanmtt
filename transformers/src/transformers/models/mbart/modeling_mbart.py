@@ -1718,8 +1718,8 @@ class MBartDecoder(MBartPreTrainedModel):
                     attention_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
-                    head_mask[idx] if head_mask is not None else None,
-                    encoder_head_mask[idx] if encoder_head_mask is not None else None,
+                    (head_mask[idx] if head_mask is not None else None),
+                    (encoder_head_mask[idx] if encoder_head_mask is not None else None),
                     None,
                 )
             else:

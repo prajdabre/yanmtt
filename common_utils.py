@@ -99,7 +99,7 @@ class EWC(object):
         self.model.eval()
         num_samples = 0
         for input_ids, input_masks, decoder_input_ids, labels in self.dataset:
-            self.model.zero_grad()
+            self.model.zero_grad(set_to_none=True)
             input_ids = input_ids.to(self.gpu)
             input_masks = input_masks.to(self.gpu)
             decoder_input_ids = decoder_input_ids.to(self.gpu)
@@ -109,6 +109,7 @@ class EWC(object):
             lprobs = torch.nn.functional.log_softmax(output.logits, dim=-1) ## Softmax tempering of logits if needed.
             loss = label_smoothed_nll_loss(lprobs, labels, self.label_smoothing, self.ignore_index)
             loss.backward()
+            loss.detach()
 
             for n, p in self.model.named_parameters():
                 precision_matrices[n].data += p.grad.data ** 2
@@ -119,7 +120,8 @@ class EWC(object):
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         for n, p in precision_matrices.items():
             precision_matrices[n].requires_grad = False
-            
+        
+        self.model.zero_grad(set_to_none=True)    
         self.model.train()
         return precision_matrices
 
