@@ -492,7 +492,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                         else: ## Convergence has been reached and we stop and report the final metrics.
                             print("We have seemingly converged as", metric, "failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
                             print("Terminating training")
-                            print("Global dev", metric, "history:", [round(global_sbleu_history[i],2) for i in global_sbleu_history])
+                            print("Global dev", metric, "history:", [round(i,2) for i in global_sbleu_history])
                             print("Individual", metric, "history:", {i:[round(k,2) for k in individual_sbleu_history[i]] for i in individual_sbleu_history})
                             with open(args.model_path + ".quitflag", "w") as f:
                                 f.write("1")
