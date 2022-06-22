@@ -107,7 +107,15 @@ def model_create_load_run_save(gpu, args, files, train_files):
 
     if args.fp16: ## Although the code supports FP16/AMP training, it tends to be unstable in distributed setups so use this carefully.
         print("We will do fp16 training")
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.cuda.amp.GradScaler(args.init_scale)
+        # Get scaler info
+        scaler_info = scaler.get_info()
+        # Print scaler info neatly
+        print("AMP scaler info:")
+        for key, value in scaler_info.items():
+            print(f"{key}: {value}")
+        # Store current scale value
+        scale_value = scaler.get_scale()
     else:
         print("We will do fp32 training")
     
@@ -617,6 +625,11 @@ def model_create_load_run_save(gpu, args, files, train_files):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             scaler.step(optimizer)
             scaler.update()
+            current_scale_value = scaler.get_scale()
+            # If the scale value changed then print it.
+            if current_scale_value != scale_value:
+                print("Gradient scale value changed from {} to {}".format(scale_value, current_scale_value))
+                scale_value = current_scale_value
         else: ## With FP32, we just do regular backpropagation, gradient clipping and then step the optimizer.
             loss = loss/args.multistep_optimizer_steps
             loss.backward()
@@ -767,6 +780,7 @@ def run_demo():
                         help='Use this flag if you want to sort the corpus by target length before batching. This helps reduce the number of padding tokens substatially.')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
+    parser.add_argument('--init_scale', default=65536.0, type=float, help="FP16 gradient scaler's initial value.")
     parser.add_argument('--adam_eps', default=1e-9, type=float, help="The value for the learning rate")
     parser.add_argument('--weight_decay', default=0.00001, type=float, help="The value for weight decay")
     parser.add_argument('--init_std', default=0.02, type=float, help="The standard deviation of the initial weights")
