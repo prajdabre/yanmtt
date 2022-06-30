@@ -112,10 +112,12 @@ class EWC(object):
             loss.detach()
 
             for n, p in self.model.named_parameters():
-                precision_matrices[n].data += p.grad.data ** 2
+                if p.requires_grad:
+                    precision_matrices[n].data += p.grad.data ** 2
         
         for n, p in self.model.named_parameters():
-            precision_matrices[n].data = precision_matrices[n].data / num_samples
+            if p.requires_grad
+                precision_matrices[n].data = precision_matrices[n].data / num_samples
         
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         for n, p in precision_matrices.items():
@@ -128,8 +130,9 @@ class EWC(object):
     def penalty(self, model):
         loss = 0
         for n, p in model.named_parameters():
-            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
-            loss += _loss.sum()
+            if p.requires_grad:
+                _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
+                loss += _loss.sum()
         return loss
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None):
