@@ -90,7 +90,7 @@ def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_
     Make causal mask used for bi-directional self-attention.
     """
     bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), -1e10) ## Changed here to -1e10 float("-inf") ## Modified by Raj Dabre.
+    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min) ## Changed here to -1e10 float("-inf") ## Modified by Raj Dabre.
     mask_cond = torch.arange(mask.size(-1))
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
@@ -117,7 +117,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
             expanded_mask = torch.tril(expanded_mask, (curr_decode_length-1) + (wait_k-1)) ## This causes the attention mask to be lower triangular to mask future tokens. If wait-k is k then the diagonal shift should be k-1. This is used during decoding time as tgt_len will always be 1 so we need to shift the triangle by an appropriate amount.
     inverted_mask = 1.0 - expanded_mask
 
-    return inverted_mask.masked_fill(inverted_mask.bool(), -1e10) # torch.finfo(dtype).min
+    return inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min) # torch.finfo(dtype).min -1e10
 
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
