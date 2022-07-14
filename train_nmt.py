@@ -114,7 +114,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         print("We will do fp16 training")
         scaler = torch.cuda.amp.GradScaler(args.init_scale) ## Gradient scaler which will be used with torch's automatic mixed precision
         # Get scaler info
-        scaler_info = scaler.get_info()
+        scaler_info = scaler.state_dict()
         # Print scaler info neatly
         print("AMP scaler info:")
         for key, value in scaler_info.items():

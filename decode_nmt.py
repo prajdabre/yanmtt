@@ -147,10 +147,13 @@ def model_create_load_decode(gpu, args):
     
     
     if args.use_official_pretrained and args.locally_fine_tuned_model_path is None: ## If we want to directly decode an official model.
+        print("Decoding an official model directly. No need to load a locally fine-tuned model.")
         pass
     else:
+        print("Loading a locally fine-tuned model.")
         if args.use_official_pretrained and args.locally_fine_tuned_model_path is not None: ## If we want to decode a locally fine-tuned version of an official model.
             args.model_path = args.locally_fine_tuned_model_path
+            print("The locally fine-tuned model is based on an official model. Hence, we will use the same config as the official model.")
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
