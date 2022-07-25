@@ -799,8 +799,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         # All processes should see same parameters as they all start from same
         # random parameters and gradients are synchronized in backward passes.
         # Therefore, saving it in one process is sufficient.
-        print("The best",metric, "using", scorertool,"was:", round(max_global_sbleu, 2))
-        print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
+        if not args.no_eval:
+            print("The best",metric, "using", scorertool,"was:", round(max_global_sbleu, 2))
+            print("The corresponding step was:", max_global_sbleu_step*args.eval_every)
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
