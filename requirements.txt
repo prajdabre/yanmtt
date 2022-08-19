@@ -1,4 +1,4 @@
-absl-py==1.0.0
+absl-py==0.9
 astunparse==1.6.3
 backcall==0.2.0
 bleach==1.5.0
@@ -55,7 +55,7 @@ ptyprocess==0.7.0
 pyasn1==0.4.8
 pyasn1-modules==0.2.8
 Pygments==2.11.2
-pyparsing==3.0.8
+pyparsing==2.4.2
 python-dateutil==2.8.2
 pytz==2022.1
 regex==2022.3.15

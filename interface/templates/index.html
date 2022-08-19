@@ -277,6 +277,7 @@
                     $("#copyTransButton").hide()
                     $("#attinfo").html("");
                     $("#attinfo").hide();
+                    $("#embed").attr('src', "");
                     $("#myFile").click();
 				});
 			});
@@ -785,7 +786,7 @@
                     <textarea rows="5" cols="5" class="form-control" id="textareasource" placeholder="Enter text (preferably one sentence)" name="rawtext" required>{{ source_text }}</textarea>
                     <br />
                     <button id ="translate" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp;Translate</button>
-                    <button id ="upload" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp;Upload</button>
+                    <button id ="upload" type="button" class="btn btn-info" ><i class="fa fa-database"></i> &nbsp;&nbsp;&nbsp; Visualize File via TensorBoard (Upload File)</button>
                     <input type="file" id="myFile" name="filename" style="display: none">
                 </div>
             </form>
@@ -817,7 +818,8 @@
                 </div>
             </div>
             <div class="container ui stackable equal width grid"></div>
-            <iframe id="embed" src="" width="100%" height="500px" frameborder="0"></iframe>
+            <iframe id="embed" class="responsive-iframe" src=""></iframe>
+            
         </div>
 
         <!-- Footer -->
