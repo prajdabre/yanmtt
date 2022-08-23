@@ -136,7 +136,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         writer = SummaryWriter(args.model_path+".tflogs")
     
     if args.use_official_pretrained:
-        if "mbart" in args.pretrained_model or "IndicBART" in args.model_path:
+        if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             config = MBartConfig.from_pretrained(args.pretrained_model)
             config.init_std = args.init_std # We should set the init_std to be different when using adaptors or newer params.
             config.dropout = args.dropout ## We should set dropouts manually
@@ -197,7 +197,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
-            if "mbart" in args.parent_pretrained_model or "IndicBART" in args.model_path:
+            if "mbart" in args.parent_pretrained_model or "IndicBART" in args.pretrained_model:
                 parent_config = MBartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
                 parent_config.attention_dropout = args.parent_attention_dropout ## We should set dropouts manually

@@ -80,7 +80,7 @@ def model_create_load_decode(gpu, args):
             if "50" in args.model_path:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
             elif "IndicBART" in args.model_path:
-                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+                tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
             else:
                 tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
         else:
