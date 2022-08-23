@@ -87,7 +87,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
             elif "IndicBART" in args.pretrained_model:
-                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+                tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
             else:
                 tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
         else:
@@ -363,11 +363,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         if args.use_denoising_prediction_for_fisher:
             print("Using denoising objective for computing Fisher coefficients.")
             print("We will select sentences for each language.") ## Be careful here as languages with the same ids will end up with only one set of sentences among all. Change this to your liking by merging corpora.
-            files_tmp = {}
-            for k in files:
-                slang, tlang = k.split("-")
-                files_tmp[slang+"-"+slang] = [files[k][0], files[k][0]]
-                files_tmp[tlang+"-"+tlang] = [files[k][1], files[k][1]]
+            files_tmp = []
+            for lang, file_content in files:
+                slang, tlang = lang.split("-")
+                files_tmp.append([slang+"-"+slang, [file_content[0], file_content[0]]])
+                files_tmp.append([tlang+"-"+tlang, [file_content[1], file_content[1]]])
             files = files_tmp
         else:
             print("Using regular seq2seq objective for computing Fisher coefficients.")
@@ -381,16 +381,16 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     global_sbleu_history = [] ## To save the global evaluation metric history.
     max_global_sbleu = 0 ## Maximum global evaluation metric score.
     max_global_sbleu_step = 0 ## Step at which we achieved the maximum global evaluation metric score.
-    individual_sbleu_history = {dev_pair: [] for dev_pair in dev_files} ## For multilingual NMT settings we suppose that we will keep a track of the histories for individual language pairs being evaluated and this dictionary keeps track of the history.
-    max_individual_sbleu = {dev_pair: 0 for dev_pair in dev_files} ## The maximum score per pair.
-    max_individual_sbleu_step = {dev_pair: 0 for dev_pair in dev_files} ## The step at which maximum score was achieved per pair.
+    individual_sbleu_history = [[dev_pair, []] for dev_pair in dev_files] ## For multilingual NMT settings we suppose that we will keep a track of the histories for individual language pairs being evaluated and this dictionary keeps track of the history.
+    max_individual_sbleu = [[dev_pair, 0] for dev_pair in dev_files] ## The maximum score per pair.
+    max_individual_sbleu_step = [[dev_pair, 0] for dev_pair in dev_files] ## The step at which maximum score was achieved per pair.
     curr_eval_step = 0
     annealing_attempt = 0 ## We use this to limit the number of times annealing will take place. When we anneal the LR is divided by a factor. How this is achieved will be explained below.
-    inps = {dev_pair: [inpline.strip() for inpline in open(dev_files[dev_pair][0])][:args.max_eval_batches*args.dev_batch_size] for dev_pair in dev_files} ## Get all inputs for each pair. Select up to args.max_eval_batches*args.dev_batch_size examples.
+    inps = [[dev_pair, [inpline.strip() for inpline in open(dev_pair_info[0])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair, dev_pair_info in dev_files] ## Get all inputs for each pair. Select up to args.max_eval_batches*args.dev_batch_size examples.
     if args.is_summarization: ## Slight data structure difference for summarization vs translation when computing the evaluation metric. For summarization the metric is Rouge.
-        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair in dev_files} ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
+        refs = [[dev_pair, [[refline.strip() for refline in open(dev_pair_info[1])][:args.max_eval_batches*args.dev_batch_size]]] for dev_pair, dev_pair_info in dev_files] ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
     else:
-        refs = {dev_pair: [[refline.strip() for refline in open(dev_files[dev_pair][1])][:args.max_eval_batches*args.dev_batch_size]] for dev_pair in dev_files} ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
+        refs = [[dev_pair, [[refline.strip() for refline in open(dev_pair_info[1])][:args.max_eval_batches*args.dev_batch_size]]] for dev_pair, dev_pair_info in dev_files] ## Get all references for each input. Select up to args.max_eval_batches*args.dev_batch_size examples.
     
     start = time.time()
     
@@ -402,11 +402,11 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                     print("Running eval on dev set(s)")
                     if args.mixed_wait_k:
                         model.module.config.wait_k = args.wait_k
-                    hyp = {dev_pair: [] for dev_pair in dev_files}
-                    sbleus = {}
+                    hyp = [[dev_pair, []] for dev_pair, dev_pair_info in dev_files]
+                    sbleus = []
                     model.eval() ## We go to eval mode so that there will be no dropout.
                     checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr} ## This training state will be saved.
-                    for dev_pair in dev_files: ## For each evaluation pair we will decode and compute scores.
+                    for dev_idx, [dev_pair, dev_pair_info] in enumerate(dev_files): ## For each evaluation pair we will decode and compute scores.
                         slangtlang =dev_pair.strip().split("-")
                         if args.multi_source: ## In case we do multisource NMT
                             slang=slangtlang[0]+"-"+slangtlang[1] ## This will be split in the generate_batches_eval function as we expect a triplet. 
@@ -415,7 +415,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             slang=slangtlang[0]
                             tlang=slangtlang[1]
                         eval_batch_counter = 0
-                        for dev_input_ids, dev_input_masks in generate_batches_eval_bilingual(tok, args, inps[dev_pair], slang):
+                        for dev_input_ids, dev_input_masks in generate_batches_eval_bilingual(tok, args, inps[dev_idx][1], slang):
                             if args.multi_source:
                                 dev_input_ids_parent = dev_input_ids[1]
                                 dev_input_ids = dev_input_ids[0]
@@ -432,7 +432,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             dev_input_ids = dev_input_ids.to(gpu) ## Move to GPU.
                             dev_input_masks = dev_input_masks.to(gpu) ## Move to GPU.
                             if args.is_summarization: ## Things can be slow so best show progress
-                                print("Decoding batch from a pool of", len(inps[dev_pair]), "examples")
+                                print("Decoding batch from a pool of", len(inps[dev_idx][1]), "examples")
                             with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
                                 translations = model.module.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int((len(dev_input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(dev_input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([tlang if args.use_official_pretrained else "<2"+tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, additional_input_ids=dev_input_ids_parent if args.multi_source else None, additional_input_ids_mask=dev_input_masks_parent if args.multi_source else None) ## We translate the batch. 
                             del dev_input_ids ## Delete to avoid retention.
@@ -443,27 +443,27 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                                 del dev_input_masks_parent ## Delete to avoid retention.
                             for translation in translations:
                                 translation  = tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
-                                hyp[dev_pair].append(translation)
+                                hyp[dev_idx][1].append(translation)
                             del translations ## Delete to avoid retention.
                         if args.use_rouge: ## Get the evaluation metric score.
                             scores = 0
-                            for curr_ref, curr_pred in zip(refs[dev_pair][0], hyp[dev_pair]):
+                            for curr_ref, curr_pred in zip(refs[dev_idx][1][0], hyp[dev_idx][1]):
                                 score = scorer.score(curr_ref, curr_pred)
                                 scores += score['rougeL'].fmeasure
-                            sbleu = scores/len(hyp[dev_pair])
+                            sbleu = scores/len(hyp[dev_idx][1])
                             metric = 'Rouge'
                             scorertool = 'RougeScorer'
                         else:
-                            sbleu = get_sacrebleu(refs[dev_pair], hyp[dev_pair])
+                            sbleu = get_sacrebleu(refs[dev_idx][1], hyp[dev_idx][1])
                             metric = 'BLEU'
                             scorertool = 'SacreBLEU'
-                        individual_sbleu_history[dev_pair].append([sbleu, ctr]) ## Update the score history for this pair.
-                        sbleus[dev_pair] = sbleu
+                        individual_sbleu_history[dev_idx][1].append([sbleu, ctr]) ## Update the score history for this pair.
+                        sbleus.append(sbleu)
                         print(metric, "score using", scorertool, "after", ctr, "iterations is", round(sbleu, 2), "for language pair", dev_pair)
                         writer.add_scalar(dev_pair+" bleu/rouge", sbleu, ctr)
-                        if sbleu > max_individual_sbleu[dev_pair]: ## Update the best score and step number. If the score has improved then save a model copy for this pair. Although we will stop on the global score (average across scores over all pairs) we save these models if we want a model that performs the best on a single pair.
-                            max_individual_sbleu[dev_pair] = sbleu
-                            max_individual_sbleu_step[dev_pair] = curr_eval_step
+                        if sbleu > max_individual_sbleu[dev_idx][1]: ## Update the best score and step number. If the score has improved then save a model copy for this pair. Although we will stop on the global score (average across scores over all pairs) we save these models if we want a model that performs the best on a single pair.
+                            max_individual_sbleu[dev_idx][1] = sbleu
+                            max_individual_sbleu_step[dev_idx][1] = curr_eval_step
                             print("New peak reached for", dev_pair,". Saving.")
                             if args.save_intermediate_checkpoints:
                                 torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+"."+str(ctr))
@@ -472,7 +472,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                                 torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair)
                                 torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+".pure_model") 
                     ## Global stats
-                    sbleu = sum(sbleus.values())/len(sbleus) ## The global score.
+                    sbleu = sum(sbleus)/len(sbleus) ## The global score.
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
                     print("Global", metric, "score using", scorertool, "after", ctr, "iterations is:", round(sbleu, 2))
                     writer.add_scalar("global bleu/rouge", sbleu, ctr)
@@ -501,7 +501,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
                             print("We have seemingly converged as", metric, "failed to increase for the following number of checkpoints:", args.early_stop_checkpoints+annealing_attempt*args.additional_early_stop_checkpoints_per_anneal_step, ". You may want to consider increasing the number of tolerance steps, doing additional annealing or having a lower peak learning rate or something else.")
                             print("Terminating training")
                             print("Global dev", metric, "history:", [[round(x,2), y] for x,y in global_sbleu_history])
-                            print("Individual", metric, "history:", {i:[[round(x,2), y] for x,y in individual_sbleu_history[i]] for i in individual_sbleu_history})
+                            print("Individual", metric, "history:", [[lang_pair, [[round(x,2), y] for x,y in individual_sbleu_info_for_language]] for lang_pair, individual_sbleu_info_for_language in individual_sbleu_history])
                             with open(args.model_path + ".quitflag", "w") as f:
                                 f.write("1")
                     curr_eval_step += 1
@@ -805,6 +805,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## Pure model without any ddp markers or optimizer info.
+        if args.no_eval: # Save the last checkpoint to the deploy folder.
+            os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
     dist.barrier() ## Wait till all processes reach this point so that the prime process saves the final checkpoint.
     dist.destroy_process_group() ## Everything that has a beginning has an end, Neo!
     
@@ -1099,7 +1101,7 @@ def run_demo():
     
     args.world_size = args.gpus * args.nodes                #
     
-    train_files = {}
+    train_files = []
     slangs = args.train_slang.strip().split(",")
     tlangs = args.train_tlang.strip().split(",")
     train_srcs = args.train_src.strip().split(",")
@@ -1112,18 +1114,18 @@ def run_demo():
             if train_domain not in args.train_domains:
                 args.train_domains[train_domain] = domain_idx
                 domain_idx += 1
-        train_files = {slang+"-"+tlang+"-"+train_domain: (train_src, train_tgt, args.train_domains[train_domain]) for slang, tlang, train_src, train_tgt, train_domain in zip(slangs, tlangs, train_srcs, train_tgts, train_domains)}
+        train_files = [(slang+"-"+tlang+"-"+train_domain, (train_src, train_tgt, args.train_domains[train_domain])) for slang, tlang, train_src, train_tgt, train_domain in zip(slangs, tlangs, train_srcs, train_tgts, train_domains)]
     else:
-        train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+        train_files = [(slang+"-"+tlang, (train_src, train_tgt)) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)]
     print("Training files are:", train_files)
     
-    dev_files = {}
+    dev_files = []
     if not args.no_eval:
         slangs = args.dev_slang.strip().split(",")
         tlangs = args.dev_tlang.strip().split(",")
         dev_srcs = args.dev_src.strip().split(",")
         dev_tgts = args.dev_tgt.strip().split(",")
-        dev_files = {slang+"-"+tlang: (dev_src, dev_tgt) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)}
+        dev_files = [(slang+"-"+tlang, (dev_src, dev_tgt)) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)]
     print("Development files are:", dev_files)
     
     os.environ['MASTER_ADDR'] = args.ipaddr              #

@@ -391,13 +391,13 @@ def init_weights(module, in_features, out_features):
 def shard_files_mono(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
-    for lang in files:
-        infile = open(files[lang][0]).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[lang]).readlines()
+    for lang, file_details in files:
+        infile = open(file_details[0]).readlines() if args.num_domains_for_domain_classifier > 1 else open(file_details).readlines()
         num_lines = len(infile)
         lines_per_shard = math.ceil(num_lines/args.world_size)
         print("For language:",lang," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
         for shard_id in range(args.world_size):
-            outfile = open(files[lang][0]+"."+"%02d" % shard_id, "w") if args.num_domains_for_domain_classifier > 1 else open(files[lang]+"."+"%02d" % shard_id, "w")
+            outfile = open(file_details[0]+"."+"%02d" % shard_id, "w") if args.num_domains_for_domain_classifier > 1 else open(file_details+"."+"%02d" % shard_id, "w")
             for line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
                 outfile.write(line)
             outfile.flush()
@@ -425,14 +425,14 @@ def shard_files_mono_lm(files, args):
 def shard_files_bi(files, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
-    for pair in files:
-        infile = list(zip(open(files[pair][0]).readlines(), open(files[pair][1]).readlines()))
+    for pair, file_details in files:
+        infile = list(zip(open(file_details[0]).readlines(), open(file_details[1]).readlines()))
         num_lines = len(infile)
         lines_per_shard = math.ceil(num_lines/args.world_size)
         print("For language pair:",pair," the total number of lines are:", num_lines, "and number of lines per shard are:", lines_per_shard)
         for shard_id in range(args.world_size):
-            srcoutfile = open(files[pair][0]+"."+"%02d" % shard_id, "w")
-            tgtoutfile = open(files[pair][1]+"."+"%02d" % shard_id, "w")
+            srcoutfile = open(file_details[0]+"."+"%02d" % shard_id, "w")
+            tgtoutfile = open(file_details[1]+"."+"%02d" % shard_id, "w")
             for src_line, tgt_line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
                 srcoutfile.write(src_line)
                 tgtoutfile.write(tgt_line)
@@ -537,20 +537,21 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
     elif len(args.token_masking_probs_range) == 2:
         mp_val_or_range = args.token_masking_probs_range
     print("Masking ratio:", mp_val_or_range)
-    language_list = list(files.keys())
+    language_list = [lang for lang, _ in files]
     print("Training for:", language_list)
-    language_file_dict = {}
-    probs = {}
-    for l in language_list:
-        file_content = open(files[l][0]+"."+"%02d" % rank).readlines() if args.num_domains_for_domain_classifier > 1 else open(files[l]+"."+"%02d" % rank).readlines()
-        probs[l] = len(file_content)
-        language_file_dict[l] = yield_corpus_indefinitely_mono(file_content, l, args.sorted_batching)
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    language_file_dict = []
+    probs = []
+    language_indices = [i for i in range(len(language_list))]
+    for lang, file_details in files:
+        file_content = open(file_details[0]+"."+"%02d" % rank).readlines() if args.num_domains_for_domain_classifier > 1 else open(file_details+"."+"%02d" % rank).readlines()
+        probs.append(len(file_content))
+        language_file_dict.append(yield_corpus_indefinitely_mono(file_content, lang, args.sorted_batching))
+    probs_temp = [probval/sum(probs) for probval in probs]
     probs = probs_temp
-    probs_temp = {lang: probs[lang]**(1.0/args.data_sampling_temperature) for lang in probs} ## Temperature sampling probabilities.
+    probs_temp = [probsval**(1.0/args.data_sampling_temperature) for probsval in probs] ## Temperature sampling probabilities.
     probs = probs_temp
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = [probs_temp[lang] for lang in language_list]
+    probs_temp = [probsval/sum(probs) for probsval in probs]
+    probs = probs_temp
     dropped_sentence = "" ## We will save the sentence to be dropped this batch and add it to the next batch.
     dropped_language = "" ## We will save the language to be dropped this batch and add it to the next batch.
     while batch_count != args.num_batches:
@@ -572,8 +573,9 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 dropped_sentence = ""
                 dropped_language = ""
             else:
-                language = random.choices(language_list, probs)[0]
-                sentence = next(language_file_dict[language]).strip()
+                language_index = random.choices(language_indices, probs)[0]
+                language = language_list[language_index]
+                sentence = next(language_file_dict[language_index]).strip()
             if args.num_domains_for_domain_classifier > 1: ## Careful when handling domains for monolingual corpora.
                 lang = language.strip().split("-")[0]
                 lang = lang if args.use_official_pretrained else "<2"+lang+">"
@@ -991,23 +993,24 @@ def generate_batches_bilingual(tok, args, files, rank):
     if not args.is_summarization or args.source_masking_for_bilingual:
         print("Masking ratio:", mp_val_or_range)
 
-    language_list = list(files.keys())
+    language_list = [lang for lang, _ in files]
     print("Training for:", language_list)
-    language_file_dict = {}
-    probs = {}
-    for l in language_list:
-        src_file_content = open(files[l][0]+"."+"%02d" % rank).readlines()
-        tgt_file_content = open(files[l][1]+"."+"%02d" % rank).readlines()
-        probs[l] = len(src_file_content)
+    language_file_dict = []
+    probs = []
+    language_indices = [i for i in range(len(language_list))]
+    for lang, file_details in files:
+        src_file_content = open(file_details[0]+"."+"%02d" % rank).readlines()
+        tgt_file_content = open(file_details[1]+"."+"%02d" % rank).readlines()
+        probs.append(len(src_file_content))
         file_content = list(zip(src_file_content, tgt_file_content))
-        language_file_dict[l] = yield_corpus_indefinitely_bi(file_content, l, args.sorted_batching)
+        language_file_dict.append(yield_corpus_indefinitely_bi(file_content, lang, args.sorted_batching))
     print("Corpora stats:", probs)
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
+    probs_temp = [probval/sum(probs) for probval in probs]
     probs = probs_temp
-    probs_temp = {lang: probs[lang]**(1.0/args.data_sampling_temperature) for lang in probs} ## Temperature sampling probabilities.
+    probs_temp = [probsval**(1.0/args.data_sampling_temperature) for probsval in probs] ## Temperature sampling probabilities.
     probs = probs_temp
-    probs_temp = {lang: probs[lang]/sum(probs.values()) for lang in probs}
-    probs = [probs_temp[lang] for lang in language_list]
+    probs_temp = [probsval/sum(probs) for probsval in probs]
+    probs = probs_temp
     dropped_source_sentence = "" ## We will save the source sentence to be dropped this batch and add it to the next batch.
     dropped_target_sentence = "" ## We will save the target sentence to be dropped this batch and add it to the next batch.
     dropped_language = "" ## We will save the language indicator to be dropped this batch and add it to the next batch.
@@ -1040,8 +1043,9 @@ def generate_batches_bilingual(tok, args, files, rank):
                     src_sent_parent = dropped_source_sentence_parent # Reuse the previous source sentence
                     dropped_source_sentence_parent = ""
             else:
-                language = random.choices(language_list, probs)[0]
-                src_sent, tgt_sent = next(language_file_dict[language])
+                language_index = random.choices(language_indices, probs)[0]
+                language = language_list[language_index]
+                src_sent, tgt_sent = next(language_file_dict[language_index])
                 if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
                     src_sent = src_sent.split("\t")
                     src_sent_parent = src_sent[0].strip() ## This is the sentence for Y

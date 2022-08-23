@@ -82,7 +82,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
             if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
             elif "IndicBART" in args.pretrained_model:
-                tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+                tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
             else:
                 tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
         else:
@@ -663,6 +663,7 @@ def model_create_load_run_save(gpu, args, files, train_files):
         checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
         torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
         torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
+        os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin") ## Copy the model to the deploy directory.
     dist.barrier() ## Wait till all processes reach this point so that the prime process saves the final checkpoint.
     dist.destroy_process_group()
 
@@ -926,6 +927,7 @@ def run_demo():
     
     langs = args.langs.strip().split(",")
     mono_src = args.mono_src.strip().split(",")
+    files = []
     if args.num_domains_for_domain_classifier > 1: ## In case we have to do domain classification
         monolingual_domains = args.monolingual_domains.strip().split(",") ## Should not be empty
         args.train_domains = {} ## We can index the domain indicator this way
@@ -934,14 +936,14 @@ def run_demo():
             if monolingual_domain not in args.train_domains:
                 args.train_domains[monolingual_domain] = domain_idx
                 domain_idx += 1
-        files = {lang+"-"+monolingual_domain: [mono_file, args.train_domains[monolingual_domain]] for lang, mono_file, monolingual_domain in zip(langs, mono_src, monolingual_domains)}
+        files = [(lang+"-"+monolingual_domain, [mono_file, args.train_domains[monolingual_domain]]) for lang, mono_file, monolingual_domain in zip(langs, mono_src, monolingual_domains)]
         
     else:
-        files = {lang: mono_file for lang, mono_file in zip(langs, mono_src)}
+        files = [(lang, mono_file) for lang, mono_file in zip(langs, mono_src)]
     print("Monolingual training files are:", files)
     
     
-    train_files = {}
+    train_files = []
     if args.bilingual_train_frequency != 0.0:
         slangs = args.train_slang.strip().split(",")
         tlangs = args.train_tlang.strip().split(",")
@@ -953,9 +955,9 @@ def run_demo():
                 if train_domain not in args.train_domains:
                     args.train_domains[train_domain] = domain_idx
                     domain_idx += 1
-            train_files = {slang+"-"+tlang+"-"+train_domain: (train_src, train_tgt, args.train_domains[train_domain]) for slang, tlang, train_src, train_tgt, train_domain in zip(slangs, tlangs, train_srcs, train_tgts, train_domains)}
+            train_files = [(slang+"-"+tlang+"-"+train_domain, (train_src, train_tgt, args.train_domains[train_domain])) for slang, tlang, train_src, train_tgt, train_domain in zip(slangs, tlangs, train_srcs, train_tgts, train_domains)]
         else:
-            train_files = {slang+"-"+tlang: (train_src, train_tgt) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)}
+            train_files = [(slang+"-"+tlang, (train_src, train_tgt)) for slang, tlang, train_src, train_tgt in zip(slangs, tlangs, train_srcs, train_tgts)]
         print("Parallel training files are:", train_files)
     
     if args.num_domains_for_domain_classifier > 1: ## In case we have to do domain classification
