@@ -44,6 +44,12 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
+try:
+    import bitsandbytes as bnb
+except:
+    bnb=None
+    print("Bits and bytes not installed. Dont use the flag --adam_8bit")
+
 ##
 
 ## Our imports
@@ -82,7 +88,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             f.write("0")
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
-    if args.use_official_pretrained:
+    if args.use_official_pretrained_tokenizer or args.use_official_pretrained: # If we use an official model then we are using its tokenizer by default.
         if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             if "50" in args.pretrained_model:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
@@ -276,8 +282,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
 
     if args.prompt_tuning:
         print("Although the percentage of parameters to be optimized is high, during training the number of actual params during decoding are way way lower.")
-        
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
+
+    if args.adam_8bit:
+        print("Using an 8-bit AdamW optimizer.")
+        optimizer = bnb.optim.AdamW8bit(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps, betas=(0.9, 0.995)) # Our glorious 8 bit optimizer. All hail our lord and savior Tim Dettmers.
+    else:
+        print("Using an 32-bit AdamW optimizer.")
+        optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
     
     model.train()
     
@@ -288,11 +299,13 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         scheduler.step()
     print("Initial LR is:", scheduler.get_lr()[0])
     
-    if args.pretrained_model != "" and not args.use_official_pretrained: ## Here we load a pretrained NMT model or a previous checkpoint in case training crashed.
+    if args.pretrained_model != "" and (not args.use_official_pretrained or args.locally_fine_tuned_model_path is not None): ## Here we load a pretrained NMT model or a previous checkpoint in case training crashed. Note the args.locally_fine_tuned_model_path. This is in case we were tuning an official mbart or indicbart or bart model but want to further tine tune it or it crashed and we want to resume training it.
         print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys or if we use prompt or adaptor tuning, they will be ignored when layer remapping or component selection is done. In case of prompt and adaptor tuning, new params are added to the model and hence strict matching of keys is not possible.")
         dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+        if args.locally_fine_tuned_model_path is not None: ## Now that the pretrained_model argument was used to instantiate the model, it can be replaced with the local model path. Remember to specify pure model or the model with the optimizer and scheduler states depending on your requirement by relying on the flag --no_reload_optimizer_ctr_and_scheduler.
+            args.pretrained_model = args.locally_fine_tuned_model_path
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
             model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.softmax_bias_tuning) else False)
@@ -836,6 +849,8 @@ def run_demo():
                         help='Should we scale embeddings?')
     parser.add_argument('--no_scale_attention_embedding', action='store_true', 
                         help='Should we scale attention embeddings?')
+    parser.add_argument('--adam_8bit', action='store_true', 
+                        help='Should we use 8-bit ADAM?')
     parser.add_argument('--multistep_optimizer_steps', default=1, type=int, help="In case you want to simulate a larger batch you should set this to a higher value.")
     parser.add_argument('--encoder_layers', default=6, type=int, help="The value for number of encoder layers")
     parser.add_argument('--decoder_layers', default=6, type=int, help="The value for number of decoder layers")
@@ -894,7 +909,11 @@ def run_demo():
     parser.add_argument('--no_eval_save_every', default=10000, type=int, help="The number of iterations after which a model must be force saved in case evaluation is not done.")
     parser.add_argument('--max_gradient_clip_value', default=1.0, type=float, help="The max value for gradient norm value")
     parser.add_argument('--use_official_pretrained', action='store_true', 
-                        help='Use this flag if you want the argument "pretrained_model" to specify a pretrained model created by someone else.')
+                        help='Use this flag if you want the argument "pretrained_model" to specify a pretrained model created by someone else. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
+    parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
+                        help='In case you fine-tuned an official model and have a local checkpoint you want to further train or if the run crashed then specifiy it here. If you did not fine-tune an official model but did your own thing then specify it using --pretrained_model argument. Dont bother looking at this if you are not dealing with officially pretrained models.')
+    parser.add_argument('--use_official_pretrained_tokenizer', action='store_true', 
+                        help='Use this flag if you want the argument "tokenizer_name_or_path" to specify a pretrained tokenizer created by someone else which is usually going to be a part of an official pre-trained model as well.')
     parser.add_argument('--pretrained_model', default='', type=str, 
                         help='Path to the pretrained model.')
     parser.add_argument('--no_reload_optimizer_ctr_and_scheduler', action='store_true',

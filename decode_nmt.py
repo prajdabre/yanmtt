@@ -75,7 +75,7 @@ def model_create_load_decode(gpu, args):
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size. This need not be done using DDP but I am leaving it as is for consistency with my other code. In the future, I plan to support sharding the decoding data into multiple shards which will then be decoded in a distributed fashion.
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    if args.use_official_pretrained:
+    if args.use_official_pretrained_tokenizer or args.use_official_pretrained: # If we use an official model then we are using its tokenizer by default.
         if "mbart" in args.model_path or "IndicBART" in args.model_path:
             if "50" in args.model_path:
                 tok = MBart50Tokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
@@ -374,6 +374,8 @@ def run_demo():
                         help='Port main node')
     parser.add_argument('--use_official_pretrained', action='store_true', 
                         help='Use this flag if you want the config to be the same as an official pre-trained model. This is just to avoid manually setting the config. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
+    parser.add_argument('--use_official_pretrained_tokenizer', action='store_true', 
+                        help='Use this flag if you want the argument "tokenizer_name_or_path" to specify a pretrained tokenizer created by someone else which is usually going to be a part of an official pre-trained model as well. Again, this is hacky so double sue me.')
     parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
                         help='In case you fine-tuned an official model and have a local checkpoint then specifiy it here. If you did not fine-tune an official model but did your own thing then specify it using model_path.')
     parser.add_argument('-m', '--model_path', default='pytorch.bin', type=str, 

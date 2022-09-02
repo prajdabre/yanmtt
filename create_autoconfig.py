@@ -46,7 +46,7 @@ else:
 
 tokenizer.save_pretrained(sys.argv[1])
 
-os.rename(sys.argv[1]+"/tokenizer_config.json",sys.argv[1]+"/config.json")
+os.system("cp "+sys.argv[1]+"/tokenizer_config.json " + sys.argv[1]+"/config.json") ## This is so that the tokenizer can be loaded using AutoConfig and then AutoTokenizer. To be honest this is not needed at all if you plan to use YANMTT for training models from scratch because the training code assumes explicitly an ALBERT or MBART tokenizer. This does not need any model config file which is config.json. The only reason why I added this is so that if you ever plan to share your tokenizers with someone in the future AutoTokenizer is the convenient thing to do if you want to let them continue to use Auto classes. Regardless, this is unnecessary if you dont intend to work with AutoClasses.
 
 config = AutoConfig.from_pretrained(sys.argv[1])
 config.save_pretrained(sys.argv[1])
