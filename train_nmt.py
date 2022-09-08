@@ -71,7 +71,7 @@ from prefetch_generator import BackgroundGenerator
 torch.manual_seed(621311)
 ##
 
-def model_create_load_run_save(gpu, args, train_files, dev_files):
+def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size.
@@ -80,8 +80,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
     
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_bi(train_files, args)
-        if args.use_dev_for_fisher:
-            shard_files_bi(dev_files, args)
+        if args.ewc_importance != 0.0:
+            shard_files_bi(ewc_files, args)
     
     if rank == 0:
         with open(args.model_path + ".quitflag", "w") as f:
@@ -164,6 +164,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             config.deep_adaptor_tuning = args.deep_adaptor_tuning ## We should set deep_adaptor_tuning_info manually
             config.deep_adaptor_tuning_ffn_only = args.deep_adaptor_tuning_ffn_only ## We should set deep_adaptor_tuning_info manually
             config.adaptor_dropout = args.adaptor_dropout ## We should set adaptor_dropout manually
+            config.adaptor_activation_function = args.adaptor_activation_function ## We should set adaptor_activation_function manually
             config.parallel_adaptors = args.parallel_adaptors ## We should set parallel_adaptors_info manually
             config.layernorm_adaptor_input = args.layernorm_adaptor_input ## We should set layernorm_adaptor_input_info manually
             config.adaptor_scaling_factor = args.adaptor_scaling_factor ## We should set adaptor_scaling_factor_info manually
@@ -176,6 +177,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             config.hypercomplex = args.hypercomplex ## We should set hypercomplex manually
             config.hypercomplex_n = args.hypercomplex_n ## We should set hypercomplex_n manually
             config.ia3_adaptors = args.ia3_adaptors ## We should set ia3_adaptors info manually
+            config.lora_adaptors = args.lora_adaptors ## We should set lora_adaptors info manually
+            config.lora_adaptor_rank = args.lora_adaptor_rank ## We should set lora_adaptor_rank info manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info manually
             config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
@@ -194,7 +197,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             config.architectures = ["BartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: # We are going to manually specify a config for our locally trained model.
-        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, softmax_bias_tuning=args.softmax_bias_tuning, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, adaptor_activation_function=args.adaptor_activation_function, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
         config.architectures = ["MBartForConditionalGeneration"]
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         model = MBartForConditionalGeneration(config)
@@ -308,7 +311,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             args.pretrained_model = args.locally_fine_tuned_model_path
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.softmax_bias_tuning) else False)
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
@@ -324,7 +327,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
             else:
                 ctr = 0
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.softmax_bias_tuning) else False)
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             ctr = 0
@@ -367,23 +370,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files):
         num_batches_tmp = args.num_batches
         args.num_batches = args.ewc_samples
         print("Learning Fisher coefficients.")
-        if args.use_dev_for_fisher:
-            print("Using dev set for computing Fisher coefficients.")
-            files = dev_files
-        else:
-            print("Using train set for computing Fisher coefficients.")
-            files = train_files
-        if args.use_denoising_prediction_for_fisher:
-            print("Using denoising objective for computing Fisher coefficients.")
-            print("We will select sentences for each language.") ## Be careful here as languages with the same ids will end up with only one set of sentences among all. Change this to your liking by merging corpora.
-            files_tmp = []
-            for lang, file_content in files:
-                slang, tlang = lang.split("-")
-                files_tmp.append([slang+"-"+slang, [file_content[0], file_content[0]]])
-                files_tmp.append([tlang+"-"+tlang, [file_content[1], file_content[1]]])
-            files = files_tmp
-        else:
-            print("Using regular seq2seq objective for computing Fisher coefficients.")
+        files = ewc_files
         datagenerator = generate_batches_bilingual(tok, args, files, rank)
         ewc_loss = EWC(model, datagenerator, gpu, args.label_smoothing, ignore_index=tok.pad_token_id)
         args.num_batches = num_batches_tmp
@@ -1004,14 +991,18 @@ def run_demo():
                         help='Should we use ROUGE for evaluation?')
     parser.add_argument('--max_ent_weight', type=float, default=-1.0, 
                         help='Should we maximize softmax entropy? If the value is anything between 0 and 1 then yes. If its -1.0 then no maximization will be done.')
+    parser.add_argument('--ewc_slang', default='en', type=str, 
+                        help='Source language(s) for EWC weights')
+    parser.add_argument('--ewc_tlang', default='hi', type=str, 
+                        help='Target language(s) for EWC weights')
+    parser.add_argument('--ewc_src', default='', type=str, 
+                        help='Source language(s) sentences for EWC')
+    parser.add_argument('--ewc_tgt', default='', type=str, 
+                        help='Target language(s) sentences for EWC')
     parser.add_argument('--ewc_importance', type=float, default=0.0, 
                         help='Should we do elastic weight consolidation? If the value is 0 then we dont do any EWC else we use this as the importance weight in the part "NLL LOSS + ewc_importance*ewc_loss(model,datasetiterator)".')
     parser.add_argument('--ewc_samples', type=int, default=200, 
                         help='How many batches of training data should we run on to do EWC.')
-    parser.add_argument('--use_dev_for_fisher', action='store_true', 
-                        help='Should we use the dev set for the fisher matrix?')
-    parser.add_argument('--use_denoising_prediction_for_fisher', action='store_true', 
-                        help='Should we use the denoising objective to compute the fisher matrix?')
     parser.add_argument('--num_domains_for_domain_classifier', type=int, default=1, 
                         help='If we have multiple domains then we should set this to a value higher than one.')
     parser.add_argument('--gradient_reversal_for_domain_classifier', action='store_true', 
@@ -1089,6 +1080,8 @@ def run_demo():
     parser.add_argument('--deep_adaptor_tuning_ffn_only', action='store_true', 
                         help='Should we use deep lightweight adaptors? (Applied to each FFN layer)')
     parser.add_argument('--adaptor_dropout', default=0.1, type=float, help="The value for adaptor dropout")
+    parser.add_argument('--adaptor_activation_function', default='gelu', type=str, 
+                        help='Activation function for adaptors. gelu is default. We can use relu or others. Identity may be used to simulate LORA.')
     parser.add_argument('--parallel_adaptors', action='store_true', 
                         help='Should we use parallel adaptors instead of sequential ones?')
     parser.add_argument('--layernorm_adaptor_input', action='store_true', 
@@ -1108,7 +1101,11 @@ def run_demo():
                         help='Should we use hypercomplex adaptors?')
     parser.add_argument('--hypercomplex_n', default=2, type=int, help="What is the scaling factor for hypercomplex params?")
     parser.add_argument('--ia3_adaptors', action='store_true', 
-                        help='Should we use ia3 adaptors from https://arxiv.org/pdf/2205.05638.pdf?')                    
+                        help='Should we use ia3 adaptors from https://arxiv.org/pdf/2205.05638.pdf?')
+    parser.add_argument('--lora_adaptors', action='store_true', 
+                        help='Should we use lora adaptors from https://arxiv.org/pdf/2106.09685.pdf?')
+    parser.add_argument('--lora_adaptor_rank', default=2, type=int, 
+                        help='LORA adapter rank')
     parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     ###
     ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for fine tuning. These flags are here because the common_utils.py methods assume the existence of these args for when joint mbart training and regular NMT training is done. TODO: Modify code to avoid the need for these flags in this script.
@@ -1147,9 +1144,18 @@ def run_demo():
         dev_files = [(slang+"-"+tlang, (dev_src, dev_tgt)) for slang, tlang, dev_src, dev_tgt in zip(slangs, tlangs, dev_srcs, dev_tgts)]
     print("Development files are:", dev_files)
     
+    ewc_files = []
+    if args.ewc_importance != 0.0:
+        slangs = args.ewc_slang.strip().split(",")
+        tlangs = args.ewc_tlang.strip().split(",")
+        ewc_srcs = args.ewc_src.strip().split(",")
+        ewc_tgts = args.ewc_tgt.strip().split(",")
+        ewc_files = [(slang+"-"+tlang, (ewc_src, ewc_tgt)) for slang, tlang, ewc_src, ewc_tgt in zip(slangs, tlangs, ewc_srcs, ewc_tgts)]
+    print("Development files are:", ewc_files)
+
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files))         #
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,train_files, dev_files, ewc_files))         #
     
 if __name__ == "__main__":
     run_demo()

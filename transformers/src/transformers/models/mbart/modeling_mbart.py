@@ -220,6 +220,12 @@ class MBartLearnedPositionalEmbedding(nn.Embedding):
         )
         return super().forward(positions + self.offset)
 
+def get_lora_matrices(embed_dim, lora_dim, std):
+    w1 = torch.zeros(embed_dim, lora_dim)
+    w1.normal_(mean=0.0, std=std)
+    w2 = torch.zeros(lora_dim, embed_dim)
+    return w1, w2
+
 
 # Copied from transformers.models.bart.modeling_bart.BartAttention with Bart->MBart
 class MBartAttention(nn.Module):
@@ -235,6 +241,8 @@ class MBartAttention(nn.Module):
         multi_source_method = None,
         no_scale_attention_embedding = False,
         ia3_adaptors = False,
+        lora_adaptors = False,
+        lora_adaptor_rank = 2,
         init_std = 0.02,
     ):
         super().__init__()
@@ -272,6 +280,21 @@ class MBartAttention(nn.Module):
             ia3_zeroes.normal_(0.0, init_std)
             self.ia3_adaptor_value = nn.Parameter(ia3_zeroes)
         self.ia3_adaptors = ia3_adaptors
+
+        if lora_adaptors:
+            w1, w2 = get_lora_matrices(self.embed_dim, lora_adaptor_rank, init_std)
+            self.lora_adapter_down_q_proj = nn.Parameter(w1)
+            self.lora_adapter_up_q_proj = nn.Parameter(w2)
+            w1, w2 = get_lora_matrices(self.embed_dim, lora_adaptor_rank, init_std)
+            self.lora_adapter_down_k_proj = nn.Parameter(w1)
+            self.lora_adapter_up_k_proj = nn.Parameter(w2)
+            w1, w2 = get_lora_matrices(self.embed_dim, lora_adaptor_rank, init_std)
+            self.lora_adapter_down_v_proj = nn.Parameter(w1)
+            self.lora_adapter_up_v_proj = nn.Parameter(w2)
+            w1, w2 = get_lora_matrices(self.embed_dim, lora_adaptor_rank, init_std)
+            self.lora_adapter_down_out_proj = nn.Parameter(w1)
+            self.lora_adapter_up_out_proj = nn.Parameter(w2)
+        self.lora_adaptors = lora_adaptors
         ## Modified by Raj Dabre. End.
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
@@ -300,6 +323,8 @@ class MBartAttention(nn.Module):
 
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
+        if self.lora_adaptors:
+            query_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_q_proj), self.lora_adapter_up_q_proj) * self.scaling
         # get key, value proj
         ## Modified by Raj Dabre. Start.
         if is_cross_attention and past_key_value is not None:
@@ -313,12 +338,16 @@ class MBartAttention(nn.Module):
         elif is_cross_attention:
             # cross_attentions
             key_states = self.k_proj(key_value_states)
+            if self.lora_adaptors:
+                key_states += torch.matmul(torch.matmul(key_value_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
             key_states = key_states * self.ia3_adaptor_key if self.ia3_adaptors else key_states
             key_states = self._shape(key_states, -1, bsz)
             if prompt_params is not None:
                 prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
                 key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
             value_states = self.v_proj(key_value_states)
+            if self.lora_adaptors:
+                value_states += torch.matmul(torch.matmul(key_value_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
             value_states = value_states * self.ia3_adaptor_value if self.ia3_adaptors else value_states
             value_states = self._shape(value_states, -1, bsz)
             if prompt_params is not None:
@@ -327,12 +356,16 @@ class MBartAttention(nn.Module):
             ## Modified by Raj Dabre. Start.
             if self.multi_source: # additional_past_key_value is not None
                 additional_key_states = self.k_proj(additional_key_value_states)
+                if self.lora_adaptors:
+                    additional_key_states += torch.matmul(torch.matmul(additional_key_value_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
                 additional_key_states = additional_key_states * self.ia3_adaptor_key if self.ia3_adaptors else additional_key_states
                 additional_key_states = self._shape(additional_key_states, -1, bsz)
                 if prompt_params is not None:
                     prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
                     additional_key_states = torch.cat([prompt_params_expanded, additional_key_states], dim=2)
                 additional_value_states = self.v_proj(additional_key_value_states)
+                if self.lora_adaptors:
+                    additional_value_states += torch.matmul(torch.matmul(additional_key_value_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
                 additional_value_states = additional_value_states * self.ia3_adaptor_value if self.ia3_adaptors else additional_value_states
                 additional_value_states = self._shape(additional_value_states, -1, bsz)
                 if prompt_params is not None:
@@ -342,9 +375,13 @@ class MBartAttention(nn.Module):
         elif past_key_value is not None:
             # reuse k, v, self_attention
             key_states = self.k_proj(hidden_states)
+            if self.lora_adaptors:
+                key_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
             key_states = key_states * self.ia3_adaptor_key if self.ia3_adaptors else key_states
             key_states = self._shape(key_states, -1, bsz)
             value_states = self.v_proj(hidden_states)
+            if self.lora_adaptors:
+                value_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
             value_states = value_states * self.ia3_adaptor_value if self.ia3_adaptors else value_states
             value_states = self._shape(value_states, -1, bsz)
             key_states = torch.cat([past_key_value[0], key_states], dim=2)
@@ -352,12 +389,16 @@ class MBartAttention(nn.Module):
         else:
             # self_attention
             key_states = self.k_proj(hidden_states)
+            if self.lora_adaptors:
+                key_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
             key_states = key_states * self.ia3_adaptor_key if self.ia3_adaptors else key_states
             key_states = self._shape(key_states, -1, bsz)
             if prompt_params is not None:
                 prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
                 key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
             value_states = self.v_proj(hidden_states)
+            if self.lora_adaptors:
+                value_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
             value_states = value_states * self.ia3_adaptor_value if self.ia3_adaptors else value_states
             value_states = self._shape(value_states, -1, bsz)
             if prompt_params is not None:
@@ -493,8 +534,10 @@ class MBartAttention(nn.Module):
             .transpose(1, 2)
             .reshape(bsz, tgt_len, embed_dim)
         )
-
-        attn_output = self.out_proj(attn_output)
+        attn_input = attn_output
+        attn_output = self.out_proj(attn_input)
+        if self.lora_adaptors:
+            attn_output += torch.matmul(torch.matmul(attn_input, self.lora_adapter_down_out_proj), self.lora_adapter_up_out_proj)
         
         ## Modified by Raj Dabre. Start.
         if self.multi_source:
@@ -515,6 +558,8 @@ class MBartEncoderLayer(nn.Module):
             dropout=config.attention_dropout,
             no_scale_attention_embedding=config.no_scale_attention_embedding,
             ia3_adaptors=config.ia3_adaptors,
+            lora_adaptors=config.lora_adaptors,
+            lora_adaptor_rank=config.lora_adaptor_rank,
             init_std=config.init_std,
         ) ## An if else condition to either return the sann or a FFT. The FFT will be implemented via a method which pre-generates a bunch of matrices and returns a closure which uses the right matrix during runtime. 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
@@ -666,6 +711,8 @@ class MBartDecoderLayer(nn.Module):
             is_decoder=True,
             no_scale_attention_embedding=config.no_scale_attention_embedding,
             ia3_adaptors=config.ia3_adaptors,
+            lora_adaptors=config.lora_adaptors,
+            lora_adaptor_rank=config.lora_adaptor_rank,
             init_std=config.init_std,
         )
         self.dropout = config.dropout
@@ -681,6 +728,8 @@ class MBartDecoderLayer(nn.Module):
             multi_source_method=config.multi_source_method,
             no_scale_attention_embedding=config.no_scale_attention_embedding,
             ia3_adaptors=config.ia3_adaptors,
+            lora_adaptor_rank=config.lora_adaptor_rank,
+            lora_adaptors=config.lora_adaptors,
             init_std=config.init_std,
         )
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
@@ -1909,6 +1958,7 @@ class MBartModel(MBartPreTrainedModel):
         if decoder_input_ids is None and decoder_inputs_embeds is None:
             decoder_input_ids = shift_tokens_right(input_ids, self.config.pad_token_id)
 
+    
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
@@ -2296,7 +2346,7 @@ class EncoderDecoderPrompts(nn.Module):
 class Adaptor(nn.Module):
     """Custom Pytorch model for adaptor FFNs. We will pass these to the model and optimize and save them separately.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4, adaptor_activation_function="gelu"):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2324,7 +2374,7 @@ class Adaptor(nn.Module):
             experts = Experts(dim = d_model,
                               num_experts = num_experts,
                               hidden_dim = hidden,
-                              activation = torch.nn.GELU(),
+                              activation = torch.nn.GELU() if adaptor_activation_function=="gelu" else torch.nn.Identity(),
                               activation_dropout = dropout,
                               std = init_std)
             self.moe = MoE(
@@ -2347,7 +2397,7 @@ class Adaptor(nn.Module):
             ffn2.normal_(mean=0.0, std=init_std)
             self.ffn2 = torch.nn.Parameter(ffn2)
         
-        self.activation = torch.nn.GELU()
+        self.activation = torch.nn.GELU() if adaptor_activation_function=="gelu" else torch.nn.Identity()
         if use_layernorm:
             self.layer_norm = nn.LayerNorm(d_model)
         else: # Identity
@@ -2379,12 +2429,12 @@ class Adaptor(nn.Module):
 class EncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will only be applied to the top encoder and decoder layer.
     """
-    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4):
+    def __init__(self, d_model, hidden, init_std=0.02, hypercomplex=False, hypercomplex_n=2, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4, adaptor_activation_function="gelu"):
         
         super().__init__()
         # initialize weights with random numbers
-        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts)
-        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts)
+        self.encoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function)
+        self.decoder_adaptor = Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function)
         if hypercomplex:
             print("Hypercomplex adaptors will be used.")
             print("Number of additional parameters during training are:", (d_model*hidden*2*2)/hypercomplex_n + hypercomplex_n**3)
@@ -2404,7 +2454,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
     """Custom Pytorch model for creating encoder-decoder adaptors. These adaptors will be applied after each layer.
     The adaptors should be lightweight with small hidden params.
     """
-    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2, ffn_only=False, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4):
+    def __init__(self, d_model, hidden, encoder_layers, decoder_layers, encoder_adaptor_tying_config=None, decoder_adaptor_tying_config=None, init_std=0.02, hypercomplex=False, hypercomplex_n=2, ffn_only=False, use_layernorm=False, adaptor_scaling_factor=1.0, residual_connection=False, dropout=0.0, moe_adaptors=False, num_experts=4, adaptor_activation_function="gelu"):
         
         super().__init__()
         # initialize weights with random numbers
@@ -2412,7 +2462,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
             print("Tied Encoder adaptors with config", encoder_adaptor_tying_config)
             layer_idxs = encoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts) for _ in range(len(unique_idxs)*(1 if ffn_only else 2))])
+            self.unique_encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function) for _ in range(len(unique_idxs)*(1 if ffn_only else 2))])
             self.encoder_adaptors = []
             for idx in layer_idxs:
                 if ffn_only:
@@ -2421,13 +2471,13 @@ class DeepEncoderDecoderAdaptors(nn.Module):
                     self.encoder_adaptors.extend([self.unique_encoder_adaptors[(int(idx)-1)*2], self.unique_encoder_adaptors[(int(idx)-1)*2+1]])
             unique_encoder_adaptors_count = len(self.unique_encoder_adaptors)
         else:
-            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts) for _ in range(encoder_layers*(1 if ffn_only else 2))])
+            self.encoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function) for _ in range(encoder_layers*(1 if ffn_only else 2))])
             unique_encoder_adaptors_count = len(self.encoder_adaptors)
         if decoder_adaptor_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             print("Tied Decoder adaptors with config", decoder_adaptor_tying_config)
             layer_idxs = decoder_adaptor_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts) for _ in range(len(unique_idxs)*(1 if ffn_only else 3))])
+            self.unique_decoder_adaptors = nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function) for _ in range(len(unique_idxs)*(1 if ffn_only else 3))])
             self.decoder_adaptors = []
             for idx in layer_idxs:
                 if ffn_only:
@@ -2436,7 +2486,7 @@ class DeepEncoderDecoderAdaptors(nn.Module):
                     self.decoder_adaptors.extend([self.unique_decoder_adaptors[(int(idx)-1)*3], self.unique_decoder_adaptors[(int(idx)-1)*3+1], self.unique_decoder_adaptors[(int(idx)-1)*3+2]])
             unique_decoder_adaptors_count = len(self.unique_decoder_adaptors)
         else:
-            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts) for _ in range(decoder_layers*(1 if ffn_only else 3))])
+            self.decoder_adaptors = torch.nn.ModuleList([Adaptor(d_model, hidden, init_std=init_std, hypercomplex=hypercomplex, hypercomplex_n=hypercomplex_n, use_layernorm=use_layernorm, adaptor_scaling_factor=adaptor_scaling_factor, residual_connection=residual_connection, dropout=dropout, moe_adaptors=moe_adaptors, num_experts=num_experts, adaptor_activation_function=adaptor_activation_function) for _ in range(decoder_layers*(1 if ffn_only else 3))])
             unique_decoder_adaptors_count = len(self.decoder_adaptors)
         
         if hypercomplex:
@@ -2468,8 +2518,6 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         r"encoder\.version",
         r"decoder\.version",
         r"lm_head\.weight",
-        r"prompt_params",
-        r"adaptor_layers",
     ]
 
     def __init__(self, config: MBartConfig):
@@ -2502,12 +2550,12 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         
         if config.adaptor_tuning:
             print("Shallow adaptor tuning will be done.")
-            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout, config.moe_adaptors, config.num_moe_adaptor_experts)
+            self.adaptor_layers = EncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.init_std, config.hypercomplex, config.hypercomplex_n, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout, config.moe_adaptors, config.num_moe_adaptor_experts, config.adaptor_activation_function)
         elif config.deep_adaptor_tuning or config.deep_adaptor_tuning_ffn_only:
             print("Deep adaptor tuning will be done.")
             if config.parallel_adaptors:
                 print("Parallel adaptors will be used.")
-            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout, config.moe_adaptors, config.num_moe_adaptor_experts)
+            self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout, config.moe_adaptors, config.num_moe_adaptor_experts, config.adaptor_activation_function)
                 
         
         if config.softmax_bias_tuning:
@@ -2516,6 +2564,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
         
         if config.ia3_adaptors:
             print("(IA)3 adaptors will be used.")
+
+        if config.lora_adaptors:
+            print("LORA adaptors will be used. The rank of the LORA matrices is:", config.lora_adaptor_rank)
 
         self.init_weights()
 

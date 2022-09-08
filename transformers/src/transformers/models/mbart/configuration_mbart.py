@@ -168,6 +168,7 @@ class MBartConfig(PretrainedConfig):
         deep_adaptor_tuning=False, ## Argument to indicate whether we should do deep adaptor tuning or not.
         deep_adaptor_tuning_ffn_only=False, ## Argument to indicate whether we should do deep adaptor tuning for FFNs only or not.
         adaptor_dropout=0.0, ## Argument to indicate the dropout for adaptor tuning.
+        adaptor_activation_function="gelu", ## Argument to indicate the activation function for adaptors.
         parallel_adaptors=False, ## Argument to indicate whether we should do parallel adaptors or not.
         adaptor_init_std=0.02, ## Argument to indicate the standard deviation of the truncated normal initializer for the embeddings.
         layernorm_adaptor_input=False, ## Argument to indicate whether we should do layer normalization of adaptor input or not.
@@ -179,6 +180,8 @@ class MBartConfig(PretrainedConfig):
         moe_adaptors=False, ## Argument to indicate whether we should use mixtures of experts for adaptors or not.
         num_moe_adaptor_experts=8, ## Argument to indicate how many experts we want for moe adaptors. The adaptor hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         ia3_adaptors=False, ## Argument to indicate whether we should use ia3 adaptors or not.
+        lora_adaptors=False, ## Argument to indicate whether we should use lora adaptors or not.
+        lora_adaptor_rank=2, ## Argument to indicate the lora adaptors rank.
         softmax_bias_tuning=False, ## Argument to indicate whether we should do softmax bias tuning or not.
         embed_low_rank_dim=0, ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
         ## Modified by Raj Dabre. End.
@@ -252,6 +255,7 @@ class MBartConfig(PretrainedConfig):
         self.deep_adaptor_tuning = deep_adaptor_tuning ## Argument to indicate whether we should do deep adaptor tuning or not.
         self.deep_adaptor_tuning_ffn_only = deep_adaptor_tuning_ffn_only ## Argument to indicate whether we should do deep adaptor tuning only for FFN or not.
         self.adaptor_dropout = adaptor_dropout ## Argument to indicate the amount of adaptor dropout.
+        self.adaptor_activation_function=adaptor_activation_function ## Argument to indicate the activation function for adaptors.
         self.parallel_adaptors = parallel_adaptors ## Argument to indicate whether we should do parallel adaptors or not.
         self.adaptor_init_std = adaptor_init_std ## Argument to indicate the initial standard deviation for the adaptors.
         self.layernorm_adaptor_input = layernorm_adaptor_input ## Argument to indicate whether we should do layer normalization of adaptor input or not.
@@ -263,6 +267,8 @@ class MBartConfig(PretrainedConfig):
         self.moe_adaptors = moe_adaptors ## Argument to indicate whether we should use mixtures of experts for adaptors or not.
         self.num_moe_adaptor_experts = num_moe_adaptor_experts ## Argument to indicate how many experts we want for adaptors. The adaptor hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         self.ia3_adaptors = ia3_adaptors ## Argument to indicate whether we should use ia3 adaptors or not.
+        self.lora_adaptors = lora_adaptors ## Argument to indicate whether we should use lora adaptors or not.
+        self.lora_adaptor_rank=lora_adaptor_rank ## Argument to indicate the lora adaptors rank.
         self.softmax_bias_tuning = softmax_bias_tuning ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         self.embed_low_rank_dim = embed_low_rank_dim ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
