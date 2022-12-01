@@ -71,7 +71,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * flask v2.0.3 (for GUI) <br>
     * See requirements.txt and interface/requirements.txt for all requirements. <br>
 
-**How to install:**
+**How to install:** <br>
 0. Please use virtualenv for installation. There are some issues with Conda installation.
 1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
 2. Create a virtual environment with python3.6 via and activate it via: "virtualenv -p /usr/bin/python3.6 py36 && source py36/bin/activate"

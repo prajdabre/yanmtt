@@ -51,11 +51,27 @@ try:
 except:
     bnb=None
     print("Bits and bytes not installed. Dont use the flag --adam_8bit")
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP, MixedPrecision, FullStateDictConfig, ShardingStrategy
+from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType, FullStateDictConfig, LocalStateDictConfig
+from torch.distributed._shard.checkpoint import (
+    FileSystemReader,
+    FileSystemWriter,
+    save_state_dict,
+    load_state_dict,
+)
+from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
+from functools import partial
+from torchdistx import deferred_init
+
 ##
 
 ## Our imports
 from common_utils import *
-from prefetch_generator import BackgroundGenerator
 ##
 
 ## Other imports
@@ -79,6 +95,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
         shard_files_mono(files, args)
         shard_files_bi(train_files, args)
+        if args.ewc_importance != 0.0:
+            shard_files_bi(ewc_files, args)
     
     dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
@@ -112,7 +130,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
 
     if args.fp16: ## Although the code supports FP16/AMP training, it tends to be unstable in distributed setups so use this carefully.
         print("We will do fp16 training")
-        scaler = torch.cuda.amp.GradScaler(args.init_scale)
+        if args.use_fsdp:
+            scaler = ShardedGradScaler(args.init_scale) ## This is the scaler for FSDP. It is different from the one in torch.cuda.amp.
+        else:
+            scaler = torch.cuda.amp.GradScaler(args.init_scale) ## Gradient scaler which will be used with torch's automatic mixed precision
         # Get scaler info
         scaler_info = scaler.state_dict()
         # Print scaler info neatly
@@ -121,8 +142,27 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             print(f"{key}: {value}")
         # Store current scale value
         scale_value = scaler.get_scale()
+        mixed_precision_policy = MixedPrecision(
+            # Param precision
+            param_dtype=torch.float16,
+            # Gradient communication precision.
+            reduce_dtype=torch.float16,
+            
+        )
     else:
         print("We will do fp32 training")
+        mixed_precision_policy = None
+    
+    if args.use_fsdp:
+        fullstate_save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        from transformers.models.mbart.modeling_mbart import MBartEncoderLayer, MBartDecoderLayer
+        mbart_auto_wrap_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={
+            MBartEncoderLayer, MBartDecoderLayer,
+        },
+        )
+        sharding_strategy: ShardingStrategy = ShardingStrategy.SHARD_GRAD_OP if args.zero_stage_2 else ShardingStrategy.FULL_SHARD #for SHARD_GRAD_OP Zero2 and FULL_SHARD for Zero3
     
     if args.encoder_tying_config is not None:
         print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
@@ -175,6 +215,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.lora_adaptor_rank = args.lora_adaptor_rank ## We should set lora_adaptor_rank info manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info manually
             config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
+            config.sparsify_attention = args.sparsify_attention
+            config.sparsify_ffn = args.sparsify_ffn
+            config.num_sparsify_blocks = args.num_sparsify_blocks
+            config.sparsification_temperature = args.sparsification_temperature
             model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["MBartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
@@ -191,7 +235,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.architectures = ["BartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: ## We are going to manually specify our own model config.
-        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, sparsify_attention=args.sparsify_attention, sparsify_ffn=args.sparsify_ffn, num_sparsify_blocks=args.num_sparsify_blocks, sparsification_temperature=args.sparsification_temperature, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
         config.architectures = ["MBartForConditionalGeneration"]
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         model = MBartForConditionalGeneration(config)
@@ -221,30 +265,59 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
         else: ## We are going to manually specify our own parent model config.
-            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
-            parent_model = MBartForConditionalGeneration(config)
-        parent_model.cuda(gpu)
+            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
+            parent_model = MBartForConditionalGeneration(parent_config)
+        
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
-        parent_model = DistributedDataParallel(parent_model, device_ids=[gpu], output_device=gpu)
+        if not args.use_fsdp:
+            parent_model.cuda(gpu) ## Move the model to the GPU.
+            print("Memory consumed after moving parent model to GPU", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
+        else:
+            print("When FSDP is used, the parent model is not moved to the GPU. This is because FSDP does not support moving the model to the GPU. Instead, it moves the model to the CPU and then to the GPU. This is done to save memory. This is done in the FSDP wrapper itself.")
+        
+        if args.use_fsdp:
+            parent_model = FSDP(parent_model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy)
+        else:
+            parent_model = DistributedDataParallel(parent_model, device_ids=[gpu], output_device=gpu)
+        
         print("Loading a parent model from which distillation will be done.")
         dist.barrier()
         # configure map_location properly
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-        if not args.use_official_parent_pretrained:
+        if not args.use_official_parent_pretrained: # Fix for FSDP
             parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
             if type(parent_checkpoint_dict) == dict:
                 parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
             else:
                 parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
             del parent_checkpoint_dict
+    
+    torch.cuda.empty_cache()
     freeze_params(model, args.freeze_exception_list)
 
     ### NOTE: Please freeze params before wrapping the model in DDP. Mandem almost had a stoke trying to figure this out.
 
-    model.cuda(gpu) ## Move the model to the GPU.
-    print("Memory consumed after moving model to GPU", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
-    model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
-    print("Memory consumed after wrapping model in DDP", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
+    if not args.use_fsdp:
+        model.cuda(gpu) ## Move the model to the GPU.
+        print("Memory consumed after moving model to GPU", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
+    else:
+        print("When FSDP is used, the model is not moved to the GPU. This is because FSDP does not support moving the model to the GPU. Instead, it moves the model to the CPU and then to the GPU. This is done to save memory. This is done in the FSDP wrapper itself.")
+
+    print("Optimizing", [n for n, p in model.named_parameters() if p.requires_grad])
+    if args.gradient_checkpointing:
+        print("Using gradient checkpointing")
+    num_params_to_optimize = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    num_model_params = sum(p.numel() for p in model.parameters())
+    print("Number of model parameters:", num_model_params)
+    print("Total number of params to be optimized are: ", num_params_to_optimize)
+
+    print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
+
+    if args.use_fsdp:
+        model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy) ## This wrapper around the model will enable sharded distributed training.
+    else:
+        model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
+    print("Memory consumed after wrapping with DDP/FSDP", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
@@ -257,14 +330,6 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         },
     ] ## We suppose that weight decay will be used except for biases and layer norm weights.
 
-    print("Optimizing", [n for n, p in model.named_parameters() if p.requires_grad])
-    num_params_to_optimize = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    num_model_params = sum(p.numel() for p in model.parameters())
-    print("Number of model parameters:", num_model_params)
-    print("Total number of params to be optimized are: ", num_params_to_optimize)
-
-    print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
-
     if args.prompt_tuning:
         print("Although the percentage of parameters to be optimized is high, during training the number of actual params during decoding are way way lower.")
     
@@ -275,8 +340,6 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         print("Using an 32-bit AdamW optimizer.")
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
         
-    if args.gradient_checkpointing:
-        print("Using gradient checkpointing.") 
     model.train()
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
@@ -291,7 +354,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             args.pretrained_model = args.locally_fine_tuned_model_path
         checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning) else False)
+            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
@@ -307,7 +370,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             else:
                 ctr = 0
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning) else False)
+            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                 model.module.initialize_prompt_params_with_random_embeddings()
             ctr = 0
@@ -320,20 +383,61 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         else:
             print("Training from scratch")
         CHECKPOINT_PATH = args.model_path
-        if rank == 0:
-            checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
-            torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
-            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
+        if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
+            shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+            save_state_dict(state_dict, shard_writer)
+            del state_dict
+            state_dict = None
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+                state_dict = model.state_dict()
+            optim_state = FSDP.full_optim_state_dict(model, optimizer)
+            if rank == 0:
+                torch.save(state_dict, CHECKPOINT_PATH)
+                torch.save(optim_state, CHECKPOINT_PATH + "_optim")
+                scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+                torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                del scheduler_and_ctr
+            del state_dict
+            del optim_state    
+        else:
+            if rank == 0:
+                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
+                torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
+                torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
+                os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                del checkpoint_dict
         dist.barrier()
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-        checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
-        model.load_state_dict(checkpoint_dict['model'])
-        optimizer.load_state_dict(checkpoint_dict['optimizer'])
-        scheduler.load_state_dict(checkpoint_dict['scheduler'])
-        ctr = checkpoint_dict['ctr']
-        del checkpoint_dict
+        if args.use_fsdp: ## This is consuming CPU ram. Need an optimization here. We need to make a decision whether we are going to go for a full state dict or a local state dict. If we are going to go for a full state dict, we need to make sure that we are not going to run out of memory.
+            reader = FileSystemReader(CHECKPOINT_PATH + "_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+                load_state_dict(state_dict, reader)
+                model.load_state_dict(state_dict)
+            full_optimizer = None
+            if rank == 0:
+                full_optimizer = torch.load(CHECKPOINT_PATH+ "_optim")  ## We now load only the optimizer and scheduler.
+            sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
+            optimizer.load_state_dict(sharded_optimizer)
+            scheduler_and_ctr = torch.load(CHECKPOINT_PATH + "_scheduler_and_ctr")
+            scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
+            ctr = scheduler_and_ctr['ctr']
+            del scheduler_and_ctr
+            del sharded_optimizer
+            del full_optimizer
+            del state_dict
+        else:
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+            checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
+            model.load_state_dict(checkpoint_dict['model'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer'])
+            scheduler.load_state_dict(checkpoint_dict['scheduler'])
+            ctr = checkpoint_dict['ctr']
+            del checkpoint_dict
         torch.cuda.empty_cache()
-
+    dist.barrier()
     model.train()
     print("Using label smoothing of", args.label_smoothing)
     print("Using gradient clipping norm of", args.max_gradient_clip_value)
@@ -362,35 +466,54 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         
         if ctr % args.save_every == 0 and num_batches_this_optimizer_step == 0: ## We have to evaluate our model every save_every steps. Since there is no evaluation data during pretraining this means our model is saved every save_every steps.
             CHECKPOINT_PATH = args.model_path
-            if rank == 0:
-                print("Saving the model")
-                sys.stdout.flush()
-                # All processes should see same parameters as they all start from same
-                # random parameters and gradients are synchronized in backward passes.
-                # Therefore, saving it in one process is sufficient.
-                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-                torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every save_every steps. This model will be saved with the same file name each time.
-                torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
-                if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints: ## If no evaluation will be done then I consider it prudent to save the model every 10000 checkpoints by default. Change this to whatever value you want.
-                    print("Saving an intermediate checkpoint")
-                    torch.save(checkpoint_dict, CHECKPOINT_PATH + "."+str(ctr)) 
-                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+ "."+str(ctr)+".pure_model")
-                    ## Copy the long saved model deploy folder.
-                    os.system("cp "+CHECKPOINT_PATH+"."+str(ctr)+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
-                    start = time.time()
+            if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
+                shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                    shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_sharded")
+                    save_state_dict(state_dict, shard_writer)
+                shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+                save_state_dict(state_dict, shard_writer)
+                del state_dict
+                state_dict = None
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+                    state_dict = model.state_dict()
+                optim_state = FSDP.full_optim_state_dict(model, optimizer)
+                if rank == 0:
+                    print("Saving the model")
+                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                        print("Saving an intermediate checkpoint")
+                        torch.save(state_dict, CHECKPOINT_PATH+"."+str(ctr))
+                    sys.stdout.flush()
+                    torch.save(state_dict, CHECKPOINT_PATH)
+                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                        torch.save(optim_state, CHECKPOINT_PATH + "."+str(ctr)+"_optim")
+                        torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "."+str(ctr)+"_scheduler_and_ctr")
+                    torch.save(optim_state, CHECKPOINT_PATH + "_optim")
+                    torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                    
+                    os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                    del scheduler_and_ctr
+                del state_dict
+                del optim_state  
+            else:
+                if rank == 0:
+                    print("Saving the model")
+                    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
+                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                        print("Saving an intermediate checkpoint")
+                        torch.save(checkpoint_dict, CHECKPOINT_PATH+"."+str(ctr))
+                    torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
+                    torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
+                    os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                    del checkpoint_dict
+                
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
-            # configure map_location properly
-            print("Loading from checkpoint")
-            map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-            sys.stdout.flush()
-            checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
-            model.load_state_dict(checkpoint_dict['model'])
-            optimizer.load_state_dict(checkpoint_dict['optimizer'])
-            scheduler.load_state_dict(checkpoint_dict['scheduler'])
-            del checkpoint_dict
-            torch.cuda.empty_cache()
+            start = time.time() ## All eval and ckpt saving is done here so start counting from here.
             
         if args.num_domains_for_domain_classifier > 1: ## The label will contain the label as well as the domain indicator
             domain_classifier_labels=labels[1] ## This is not a tensor yet
@@ -411,7 +534,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             encoder_pad = torch.ones(input_shape[0], args.num_prompts).clone().detach()
             input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             
-        if args.fp16: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
+        if args.fp16 and not args.use_fsdp: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
             with torch.cuda.amp.autocast():
                 if is_bilingual and args.unify_encoder:
                     source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
@@ -501,6 +624,11 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                         if rank == 0:
                             writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
                         loss += moe_loss
+                    if args.sparsify_attention or args.sparsify_ffn: ## add sparsification losses too.
+                        sparsification_loss = torch.sum(torch.stack(mod_compute.encoder_sparsification_l0_losses)) + torch.sum(torch.stack(mod_compute.decoder_sparsification_l0_losses))
+                        if rank == 0:
+                            writer.add_scalar("sparsification loss", sparsification_loss.detach().cpu().numpy(), ctr)
+                        loss += sparsification_loss * args.sparsification_lambda
                         
                     if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
                         batch_size = decoder_input_ids.size()[0]
@@ -604,6 +732,11 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     if rank == 0:
                         writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
                     loss += moe_loss
+                if args.sparsify_attention or args.sparsify_ffn: ## add sparsification losses too.
+                    sparsification_loss = torch.sum(torch.stack(mod_compute.encoder_sparsification_l0_losses)) + torch.sum(torch.stack(mod_compute.decoder_sparsification_l0_losses))
+                    if rank == 0:
+                        writer.add_scalar("sparsification loss", sparsification_loss.detach().cpu().numpy(), ctr)
+                    loss += sparsification_loss * args.sparsification_lambda
                 if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
                     batch_size = decoder_input_ids.size()[0]
                     shuffle_indices = torch.randperm(batch_size)
@@ -676,10 +809,36 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         ctr += 1
     
     if rank == 0:
-        checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
-        torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save one last time.
-        torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model") ## We will distribute this model and/or use it for fine tuning.
-        os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin") ## Copy the model to the deploy directory.
+        print("Saving the model after the final step")
+    
+    if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
+        print("Since we are saving the final model, we will save the sharded as well as the unsharded model.")
+        shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+        with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+            state_dict = model.state_dict()
+        save_state_dict(state_dict, shard_writer)
+        del state_dict
+        state_dict = None
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+            state_dict = model.state_dict()
+        optim_state = FSDP.full_optim_state_dict(model, optimizer)
+        if rank == 0:
+            torch.save(state_dict, CHECKPOINT_PATH)
+            scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+            torch.save(optim_state, CHECKPOINT_PATH + "_optim")
+            torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+            os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+            del scheduler_and_ctr
+        del state_dict
+        del optim_state  
+    else:
+        if rank == 0:
+            checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
+            torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
+            torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
+            os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+            del checkpoint_dict
+
     dist.barrier() ## Wait till all processes reach this point so that the prime process saves the final checkpoint.
     dist.destroy_process_group()
 
@@ -774,6 +933,10 @@ def run_demo():
                         help='This assumes that we dont use positional encodings for encoder')
     parser.add_argument('--no_positional_encoding_decoder', action='store_true', 
                         help='This assumes that we dont use positional encodings for decoder')
+    parser.add_argument('--postnorm_encoder', action='store_true', 
+                        help='This assumes that we want to use a postnorm encoder.')
+    parser.add_argument('--postnorm_decoder', action='store_true',
+                        help='This assumes that we want to use a postnorm decoder.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
@@ -888,7 +1051,7 @@ def run_demo():
     parser.add_argument('--save_weights_and_gradeint_info', action='store_true', 
                         help='Saving gradient information is time consuming. We should make this optional.')
     parser.add_argument('--use_moe', action='store_true', 
-                        help='Should we use mixtures of experts instead of regular FFNs?".')
+                        help='Should we use mixtures of experts instead of regular FFNs?')
     parser.add_argument('--num_experts', default=8, type=int, help="How many MOE experts should we use?")
     parser.add_argument('--expert_ffn_size', default=128, type=int, help="What is the hidden size of the MOE?")
     parser.add_argument('--prompt_tuning', action='store_true', 
@@ -941,7 +1104,21 @@ def run_demo():
                         help='Should we use lora adaptors from https://arxiv.org/pdf/2106.09685.pdf?')
     parser.add_argument('--lora_adaptor_rank', default=2, type=int, 
                         help='LORA adapter rank')
+    parser.add_argument('--sparsify_attention', action='store_true', 
+                        help='Should we sparsify the attention mechanism by automatically learning which heads are ok to prune?')
+    parser.add_argument('--sparsify_ffn', action='store_true', 
+                        help='Should we sparsify the attention mechanism by automatically learning which heads are ok to prune?')
+    parser.add_argument('--num_sparsify_blocks', default=8, type=int, 
+                        help='The number of blocks to divide the sparsification into. A higher number means smaller chunks of the matrices to sparsify. Note that the number of blocks to sparsify for attention is number of heads.')
+    parser.add_argument('--sparsification_temperature', default=3.0, type=float, 
+                        help='The sparsification temperature.')
+    parser.add_argument('--sparsification_lambda', default=0.5, type=float, 
+                        help='The sparsification lambda.')
     parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
+    parser.add_argument('--use_fsdp', action='store_true', 
+                        help='Should we use FSDP instead of DDP? FSDP is like DDPs big brother and can handle mega large models.')
+    parser.add_argument('--zero_stage_2', action='store_true', 
+                        help='Should we use ZERO stage 2? If yes then SHARD_GRAD_OP will be done which means gradients will be sharded along with model but optimizer will still be full. Dont recommend this for extremely large models.')
     ###
     ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. These flags are here because the common_utils.py methods assume the existence of these args for when joint mbart training and regular NMT training is done. TODO: Modify code to avoid the need for these flags in this script.
     parser.add_argument('--multi_source', action='store_true', 
@@ -979,7 +1156,7 @@ def run_demo():
         langs = args.ewc_langs.strip().split(",")
         mono_src = args.ewc_mono_src.strip().split(",")
         ewc_files = [(lang, mono_file) for lang, mono_file in zip(langs, mono_src)]
-        print("EWC training files are:", ewc_files)
+        print("EWC Fisher Coefficient learning data is from the following files:", ewc_files)
     
     train_files = []
     if args.bilingual_train_frequency != 0.0:

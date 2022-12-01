@@ -492,9 +492,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin):
         """
         output_embeddings = self.get_output_embeddings()
         if output_embeddings is not None and self.config.tie_word_embeddings:
-            self._tie_or_clone_weights(output_embeddings, self.get_input_embeddings())
+            self._tie_or_clone_weights(output_embeddings, self.get_input_embeddings()[1] if self.config.target_vocab_size != 0 else self.get_input_embeddings())
 
-        if self.config.is_encoder_decoder and self.config.tie_encoder_decoder:
+        if self.config.is_encoder_decoder and self.config.tie_encoder_decoder: ## This will likely never be done.
             if hasattr(self, self.base_model_prefix):
                 self = getattr(self, self.base_model_prefix)
             self._tie_encoder_decoder_weights(self.encoder, self.decoder, self.base_model_prefix)
@@ -621,7 +621,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin):
 
         return model_embeds
 
-    def _resize_token_embeddings(self, new_num_tokens):
+    def _resize_token_embeddings(self, new_num_tokens): ## This method will have to be fixed in order to handle separate encoder and decoder embeddings
         old_embeddings = self.get_input_embeddings()
         new_embeddings = self._get_resized_embeddings(old_embeddings, new_num_tokens)
         self.set_input_embeddings(new_embeddings)

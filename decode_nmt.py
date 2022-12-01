@@ -88,11 +88,21 @@ def model_create_load_decode(gpu, args):
     else:
         if "albert" in args.tokenizer_name_or_path:
             tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+            if args.tgt_tokenizer_name_or_path is not None:
+                tgt_tok = AlbertTokenizer.from_pretrained(args.tgt_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+            else:
+                tgt_tok = None
         elif "mbart" in args.tokenizer_name_or_path:
             tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+            if args.tgt_tokenizer_name_or_path is not None:
+                tgt_tok = MBartTokenizer.from_pretrained(args.tgt_tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
+            else:
+                tgt_tok = None
         ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
 
     print("Tokenizer is:", tok)
+    if args.tgt_tokenizer_name_or_path is not None:
+        print("Target tokenizer is:", tgt_tok)
 
     print(f"Running DDP checkpoint example on rank {rank}.")
     
@@ -134,13 +144,17 @@ def model_create_load_decode(gpu, args):
             config.lora_adaptors = args.lora_adaptors ## We should set lora_adaptors info manually
             config.lora_adaptor_rank = args.lora_adaptor_rank ## We should set lora_adaptor_rank info manually
             config.softmax_bias_tuning = args.softmax_bias_tuning ## We should set softmax_bias_tuning_info manually
+            config.sparsify_attention = args.sparsify_attention
+            config.sparsify_ffn = args.sparsify_ffn
+            config.num_sparsify_blocks = args.num_sparsify_blocks
+            config.sparsification_temperature = args.sparsification_temperature
             model = MBartForConditionalGeneration.from_pretrained(args.model_path, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
             
         elif "bart" in args.model_path:
             config = BartConfig.from_pretrained(args.model_path)
             model = BartForConditionalGeneration.from_pretrained(args.model_path, force_bos_token_to_be_generated=True, config=config) ## This is only to avoid having to specify the hyperparams manually assuming you fine-tuned an official model. If you know the hyperparams then dont use this.
     else: ## Its a locally trained model. You should know the config.
-        config = MBartConfig(vocab_size=len(tok), encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,  encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, prompt_projection_hidden_size=args.prompt_projection_hidden_size, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning) ## Configuration.
+        config = MBartConfig(vocab_size=len(tok), target_vocab_size=len(tgt_tok) if tgt_tok is not None else 0, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,  encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, additional_source_wait_k=args.additional_source_wait_k, unidirectional_encoder=args.unidirectional_encoder, multi_source=args.multi_source, multi_source_method=args.multi_source_method, mid_fusion_layers=args.mid_fusion_layers, bottleneck_mid_fusion_tokens=args.bottleneck_mid_fusion_tokens, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, num_prompts=args.num_prompts, prompt_projection_hidden_size=args.prompt_projection_hidden_size, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, sparsify_attention=args.sparsify_attention, sparsify_ffn=args.sparsify_ffn, num_sparsify_blocks=args.num_sparsify_blocks, sparsification_temperature=args.sparsification_temperature) ## Configuration.
         model = MBartForConditionalGeneration(config)
     model.eval()
     torch.cuda.set_device(gpu)
@@ -160,9 +174,9 @@ def model_create_load_decode(gpu, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         checkpoint_dict = torch.load(args.model_path, map_location=map_location)
         if type(checkpoint_dict) == dict:
-            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.lora_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.lora_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning and not args.sparsify_attention) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
         else:
-            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.lora_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
+            model.module.load_state_dict(prune_weights(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), args.prune_ratio), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.ia3_adaptors and not args.lora_adaptors and not args.deep_adaptor_tuning_ffn_only and not args.softmax_bias_tuning and not args.sparsify_attention) else False) ## Modification needed if we want to load a partial model trained using multilayer softmaxing.
     model.eval()        
     ctr = 0
     outf = open(args.test_tgt, 'w')
@@ -417,6 +431,10 @@ def run_demo():
                         help='This assumes that we dont use positional encodings for encoder')
     parser.add_argument('--no_positional_encoding_decoder', action='store_true', 
                         help='This assumes that we dont use positional encodings for decoder')
+    parser.add_argument('--postnorm_encoder', action='store_true', 
+                        help='This assumes that we want to use a postnorm encoder.')
+    parser.add_argument('--postnorm_decoder', action='store_true',
+                        help='This assumes that we want to use a postnorm decoder.')
     parser.add_argument('--decoder_ffn_dim', default=2048, type=int, help="The value for decoder ff hidden dim")
     parser.add_argument('--encoder_ffn_dim', default=2048, type=int, help="The value for encoder ff hidden dim")
     parser.add_argument('--d_model', default=512, type=int, help="The value for model hidden size")
@@ -457,8 +475,10 @@ def run_demo():
                         help='One of decode, score, force_align, get_enc_representation, get_dec_representation, teacher_forced_decoding or get_attention. When getting representations or attentions you must specify the index of the layer which you are interested in. By default the last layer is considered.')
     parser.add_argument('--tokenizer_name_or_path', default='ai4bharat/indic-bert', type=str, 
                         help='Name of or path to the tokenizer')
+    parser.add_argument('--tgt_tokenizer_name_or_path', default=None, type=str, 
+                        help='Name of or path to the tokenizer for target language. If not specified then the same tokenizer as source language will be used.')
     parser.add_argument('--pretrained_tokenizer_name_or_path', default=None, type=str, 
-                        help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')
+                        help='Name of or path to the tokenizer of the pretrained model if its different from the current model. This tokenizer will be used for remapping embeddings so as to reuse as many pretrained embeddings as possible.')  ## TODO: See if we want to deal with remapping in case of separate tokenizers for src and tgt.
     parser.add_argument('--tlang', default='hi', type=str, 
                         help='Target language')
     parser.add_argument('--activation_function', default='gelu', type=str, 
@@ -542,6 +562,14 @@ def run_demo():
                         help='Should we use lora adaptors from https://arxiv.org/pdf/2106.09685.pdf?')
     parser.add_argument('--lora_adaptor_rank', default=2, type=int, 
                         help='LORA adapter rank')
+    parser.add_argument('--sparsify_attention', action='store_true', 
+                        help='Should we sparsify the attention mechanism by automatically learning which heads are ok to prune?".')
+    parser.add_argument('--sparsify_ffn', action='store_true', 
+                        help='Should we sparsify the attention mechanism by automatically learning which heads are ok to prune?".')
+    parser.add_argument('--num_sparsify_blocks', default=8, type=int, 
+                        help='The number of blocks to divide the sparsification into. A higher number means smaller chunks of the matrices to sparsify. Note that the number of blocks to sparsify for attention is number of heads.')
+    parser.add_argument('--sparsification_temperature', default=3.0, type=float, 
+                        help='The sparsification temperature.')
     parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     
     args = parser.parse_args()

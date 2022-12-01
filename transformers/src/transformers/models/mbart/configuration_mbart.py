@@ -130,6 +130,7 @@ class MBartConfig(PretrainedConfig):
         bos_token_id=0,
         eos_token_id=2,
         ## Modified by Raj Dabre. Start.
+        target_vocab_size=0, ## Argument to control the size of the target vocabulary. If the value is 0, then the source and target vocabularies are the same. Use this when the source and target languages are distant.
         decoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         encoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
         features_vocab_sizes=None, ## Argument to control feature based NMT. According to my paper with Abhisek.
@@ -184,6 +185,12 @@ class MBartConfig(PretrainedConfig):
         lora_adaptor_rank=2, ## Argument to indicate the lora adaptors rank.
         softmax_bias_tuning=False, ## Argument to indicate whether we should do softmax bias tuning or not.
         embed_low_rank_dim=0, ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
+        sparsify_attention=False, ## Argument to indicate if we want to learn which attention heads we can sparsify.
+        sparsify_ffn=False, ## Argument to indicate if we want to learn which FFN layer blocks we can sparsify.
+        num_sparsify_blocks=8, ## Argument to indicate how many blocks we are going to divide our linear layers into. We wont need it for attention since number of heads decides this.
+        sparsification_temperature=3.0, ## Argument to indicate what temperature we want to use for sparsification.
+        postnorm_encoder=False, ## Argument to indicate whether we should do post normalization for encoder or not.
+        postnorm_decoder=False, ## Argument to indicate whether we should do post normalization for decoder or not.
         ## Modified by Raj Dabre. End.
         **kwargs
     ):
@@ -217,6 +224,7 @@ class MBartConfig(PretrainedConfig):
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
         ## Modified by Raj Dabre. Start.
+        self.target_vocab_size = target_vocab_size ## Argument to indicate the target vocabulary size.
         self.encoder_tying_config = encoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         self.decoder_tying_config = decoder_tying_config ## Argument to control parameter tying in decoder. According to my RSNMT paper. 
         self.features_vocab_sizes = features_vocab_sizes  ## Argument to control feature based NMT. According to my paper with Abhisek. 
@@ -272,6 +280,12 @@ class MBartConfig(PretrainedConfig):
         self.softmax_bias_tuning = softmax_bias_tuning ## Argument to indicate whether we should do softmax bias tuning or not.
         ## Modified by Raj Dabre. End.
         self.embed_low_rank_dim = embed_low_rank_dim ## Argument to indicate the low rank embedding dimension. This will be projected to d_model.
+        self.sparsify_attention = sparsify_attention ## Argument to indicate if we want to learn which attention heads we can sparsify.
+        self.sparsify_ffn = sparsify_ffn ## Argument to indicate if we want to learn which FFN layer blocks we can sparsify.
+        self.num_sparsify_blocks = num_sparsify_blocks ## Argument to indicate how many blocks we are going to divide our linear layers into. We wont need it for attention since number of heads decides this.
+        self.sparsification_temperature = sparsification_temperature ## Argument to indicate what temperature we want to use for sparsification.
+        self.postnorm_encoder = postnorm_encoder ## Argument to indicate whether we want to do post normalization for encoder or not.
+        self.postnorm_decoder = postnorm_decoder ## Argument to indicate whether we want to do post normalization for decoder or not.
         
     @property
     def num_attention_heads(self) -> int:

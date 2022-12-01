@@ -46,7 +46,8 @@ class BaseModelOutput(ModelOutput):
     last_hidden_state: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
-    moe_losses: Optional[Tuple[torch.FloatTensor]] = None
+    moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
 
 
 @dataclass
@@ -246,6 +247,7 @@ class BaseModelOutputWithPastAndCrossAttentions(ModelOutput):
     cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
     additional_cross_attentions: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre. 
 
 
 @dataclass
@@ -315,6 +317,8 @@ class Seq2SeqModelOutput(ModelOutput):
     context_encoder_representations: torch.FloatTensor = None
     encoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     decoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    encoder_sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    decoder_sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     ## Modified by Raj Dabre. End.
 
 
@@ -565,6 +569,8 @@ class Seq2SeqLMOutput(ModelOutput):
     domain_classifier_logits: Optional[torch.FloatTensor] = None
     encoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     decoder_moe_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    encoder_sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
+    decoder_sparsification_l0_losses: Optional[Tuple[torch.FloatTensor]] = None ## Modified by Raj Dabre.
     ## Modified by Raj Dabre. End.
 
 @dataclass

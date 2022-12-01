@@ -29,6 +29,7 @@ from torch.nn import CrossEntropyLoss
 ## Modified by Raj Dabre. Start.
 from torch.autograd import Function
 from mixture_of_experts import MoE
+from math import log
 ## Modified by Raj Dabre. End.
 
 from ...activations import ACT2FN
@@ -164,6 +165,54 @@ class Experts(nn.Module):
         return out
 
 
+class HardConcreteGate(nn.Module):
+    def __init__(self, 
+                 chunks=1,
+                 stretch_limits=(-0.1, 1.1), 
+                 init_std=0.01,
+                 temperature=3.0,
+                 eps=1e-6):
+                 
+        super().__init__() 
+        self.stretch_limits, self.chunks, self.temperature, self.eps = stretch_limits, chunks, 1/temperature, eps
+        self.loc = nn.Parameter(torch.zeros((1, chunks)).normal_(0, init_std))
+
+
+    def forward(self, values, dim=None):
+        gates = self.get_gates(reps=values.size()[-1]//self.chunks, dim=-1)
+        l0_reg = self.get_penalty(values=values, dim=dim) if self.training else 0
+        return (values*gates, l0_reg) 
+
+
+    def get_gates(self, reps=None, dim=None):
+        """ samples gate activations in [0, 1] interval """
+        low, high = self.stretch_limits
+        if self.training:
+            noise = torch.rand(self.loc.size(), device="cuda")
+            concrete = torch.sigmoid((torch.log(noise) - torch.log(1 - noise) + self.loc) / self.temperature)
+        else:
+            concrete = torch.sigmoid(self.loc)
+
+        stretched_concrete = (concrete * (high - low)) + low
+        clipped_concrete = torch.clamp(stretched_concrete, 0, 1)
+        hard_concrete = torch.gt(clipped_concrete, 0.5).float()
+        clipped_concrete += nn.Parameter((hard_concrete - clipped_concrete), requires_grad=False)
+        return clipped_concrete if reps is None else torch.repeat_interleave(clipped_concrete, repeats=reps, dim=dim)
+
+
+    def get_penalty(self, values=None, dim=None):
+        low, high = self.stretch_limits
+        assert low < 0.0, "p_gate_closed can be computed only if lower stretch limit is negative"
+        p_open = torch.sigmoid(self.loc - self.temperature * log(-low/high))
+        p_open = torch.clamp(p_open, self.eps, 1.0-self.eps)
+        l0_reg = torch.mean(torch.sum(p_open, dim=dim))
+        return l0_reg
+
+
+    def get_sparsity_rate(self):
+        """ Computes the fraction of gates which are now zero """
+        return torch.mean(torch.eq(self.get_gates(dim=-1), 0.0).float())
+
 class MBartSinusoidalPositionalEmbedding(nn.Embedding):
     """This module produces sinusoidal positional embeddings of any length."""
 
@@ -244,6 +293,9 @@ class MBartAttention(nn.Module):
         lora_adaptors = False,
         lora_adaptor_rank = 2,
         init_std = 0.02,
+        sparsify_attention = False,
+        sparsification_temperature = 3.0,
+
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -260,6 +312,13 @@ class MBartAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        
+        if sparsify_attention:
+            self.sparsification_gate = HardConcreteGate(chunks=num_heads, temperature=sparsification_temperature)
+            self.sparsify_attention = True
+        else:
+            self.sparsify_attention = False
+
         ## Modified by Raj Dabre. Start.
         if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or multi_source_method == "merge_after_attention_with_context_relevance_only" or multi_source_method == "mid_fusion_merge_after_attention" or multi_source_method == "bottleneck_mid_fusion_merge_after_attention": ## We pass the attentions through a gating method. X and Y are combined as w*x+(1-w)*Y where w=sigmoid(W[X:Y]) where [X:Y] is the concatenation of X and Y along hidden axis.
             if multi_source_method == "merge_after_attention" or multi_source_method == "self_relevance_and_merge_after_attention" or multi_source_method == "mid_fusion_merge_after_attention" or multi_source_method == "bottleneck_mid_fusion_merge_after_attention":
@@ -500,6 +559,7 @@ class MBartAttention(nn.Module):
         
         attn_probs = F.dropout(attn_weights, p=self.dropout, training=self.training)
 
+
         attn_output = torch.bmm(attn_probs, value_states)
         
         assert attn_output.size() == (
@@ -534,16 +594,26 @@ class MBartAttention(nn.Module):
             .transpose(1, 2)
             .reshape(bsz, tgt_len, embed_dim)
         )
+
+        if self.sparsify_attention:
+            attn_output, sparsification_l0_loss = self.sparsification_gate(attn_output, dim=-1)
+        
         attn_input = attn_output
         attn_output = self.out_proj(attn_input)
         if self.lora_adaptors:
             attn_output += torch.matmul(torch.matmul(attn_input, self.lora_adapter_down_out_proj), self.lora_adapter_up_out_proj)
         
         ## Modified by Raj Dabre. Start.
-        if self.multi_source:
-            return attn_output, attn_weights_reshaped, additional_attn_weights_reshaped, past_key_value, additional_past_key_value
+        if self.sparsify_attention:
+            if self.multi_source:
+                return [attn_output, sparsification_l0_loss], attn_weights_reshaped, additional_attn_weights_reshaped, past_key_value, additional_past_key_value
+            else:
+                return [attn_output, sparsification_l0_loss], attn_weights_reshaped, past_key_value
         else:
-            return attn_output, attn_weights_reshaped, past_key_value
+            if self.multi_source:
+                return attn_output, attn_weights_reshaped, additional_attn_weights_reshaped, past_key_value, additional_past_key_value
+            else:
+                return attn_output, attn_weights_reshaped, past_key_value
         ## Modified by Raj Dabre. End.
 
 class MBartEncoderLayer(nn.Module):
@@ -561,6 +631,8 @@ class MBartEncoderLayer(nn.Module):
             lora_adaptors=config.lora_adaptors,
             lora_adaptor_rank=config.lora_adaptor_rank,
             init_std=config.init_std,
+            sparsify_attention=config.sparsify_attention,
+            sparsification_temperature=config.sparsification_temperature,
         ) ## An if else condition to either return the sann or a FFT. The FFT will be implemented via a method which pre-generates a bunch of matrices and returns a closure which uses the right matrix during runtime. 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.dropout = config.dropout
@@ -597,6 +669,10 @@ class MBartEncoderLayer(nn.Module):
                 self.ia3_adaptor_linear = nn.Parameter(ia3_zeroes)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
+        if config.sparsify_ffn:
+            self.sparsification_gate = HardConcreteGate(chunks=config.num_sparsify_blocks, temperature=config.sparsification_temperature)
+
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -624,7 +700,10 @@ class MBartEncoderLayer(nn.Module):
         """
         total_moe_adaptor_loss = 0 if moe_adaptors else None
         residual = hidden_states
-        hidden_states = self.self_attn_layer_norm(hidden_states)
+        
+        if not self.config.postnorm_encoder:
+            hidden_states = self.self_attn_layer_norm(hidden_states)
+        
         hidden_states, attn_weights, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -633,8 +712,19 @@ class MBartEncoderLayer(nn.Module):
             prompt_params=prompt_params,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
         )
+        
+        if self.config.sparsify_attention or self.config.sparsify_ffn:
+            sparsification_l0_loss = 0
+            
+        if self.config.sparsify_attention:
+            hidden_states, attention_sparsification_l0_loss = hidden_states
+            sparsification_l0_loss += attention_sparsification_l0_loss
+        
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        if self.config.postnorm_encoder:
+            hidden_states = self.self_attn_layer_norm(hidden_states + residual)
+        else:
+            hidden_states = residual + hidden_states
 
         if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
             if parallel_adaptors:
@@ -651,16 +741,23 @@ class MBartEncoderLayer(nn.Module):
                 hidden_states = adaptor_output
             
         residual = hidden_states
-        hidden_states = self.final_layer_norm(hidden_states)
+        if not self.config.postnorm_encoder:
+            hidden_states = self.final_layer_norm(hidden_states)
         if self.config.use_moe:
             hidden_states, moe_loss = self.moe(hidden_states)
         else:
             hidden_states = self.activation_fn(self.fc1(hidden_states))
             hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
             hidden_states = hidden_states * self.ia3_adaptor_linear if self.config.ia3_adaptors else hidden_states
+            if self.config.sparsify_ffn: ## Sparsify the FFN blocks. A zero means the connecting FFN chunks will be zeroed.
+                hidden_states, ffn_sparsification_l0_loss = self.sparsification_gate(hidden_states, dim=-1)
+                sparsification_l0_loss += ffn_sparsification_l0_loss
             hidden_states = self.fc2(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        if self.config.postnorm_encoder:
+            hidden_states = self.final_layer_norm(hidden_states + residual)
+        else:
+            hidden_states = residual + hidden_states
 
         if adaptor_layers is not None and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only):
             if parallel_adaptors:
@@ -691,7 +788,10 @@ class MBartEncoderLayer(nn.Module):
         elif moe_adaptors:
             outputs = ([hidden_states, total_moe_adaptor_loss],)
         else:
-            outputs = (hidden_states,)
+            if self.config.sparsify_attention or self.config.sparsify_ffn: ## We are never going to use MOEs and sparsification mechanisms together becasue MOEs are sparse by nature. Aint no one got time for that.
+                outputs = ([hidden_states, sparsification_l0_loss],)
+            else:
+                outputs = (hidden_states,)
 
         if output_attentions:
             outputs += (attn_weights,)
@@ -714,6 +814,8 @@ class MBartDecoderLayer(nn.Module):
             lora_adaptors=config.lora_adaptors,
             lora_adaptor_rank=config.lora_adaptor_rank,
             init_std=config.init_std,
+            sparsify_attention=config.sparsify_attention,
+            sparsification_temperature=config.sparsification_temperature,
         )
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
@@ -731,6 +833,8 @@ class MBartDecoderLayer(nn.Module):
             lora_adaptor_rank=config.lora_adaptor_rank,
             lora_adaptors=config.lora_adaptors,
             init_std=config.init_std,
+            sparsify_attention=config.sparsify_attention,
+            sparsification_temperature=config.sparsification_temperature,
         )
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         if config.use_moe:
@@ -763,6 +867,9 @@ class MBartDecoderLayer(nn.Module):
                 self.ia3_adaptor_linear = nn.Parameter(ia3_zeroes)
             self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+        if config.sparsify_ffn:
+            self.sparsification_gate = HardConcreteGate(chunks=config.num_sparsify_blocks, temperature=config.sparsification_temperature)
         
     def forward(
         self,
@@ -803,7 +910,8 @@ class MBartDecoderLayer(nn.Module):
                 returned tensors for more detail.
         """
         residual = hidden_states
-        hidden_states = self.self_attn_layer_norm(hidden_states)
+        if not self.config.postnorm_decoder:
+            hidden_states = self.self_attn_layer_norm(hidden_states)
         total_moe_adaptor_loss = 0 if moe_adaptors else None
         # Self Attention
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
@@ -819,8 +927,19 @@ class MBartDecoderLayer(nn.Module):
             prompt_params=[prompt_params[0], prompt_params[1]] if prompt_params is not None else None,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
         )
+
+        if self.config.sparsify_attention or self.config.sparsify_ffn:
+            sparsification_l0_loss = 0
+
+        if self.config.sparsify_attention:
+            hidden_states, attention_sparsification_l0_loss = hidden_states
+            sparsification_l0_loss += attention_sparsification_l0_loss
+
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        if self.config.postnorm_decoder:
+            hidden_states = self.self_attn_layer_norm(hidden_states+residual)
+        else:
+            hidden_states = residual + hidden_states
 
         if adaptor_layers is not None and deep_adaptor_tuning: # Apply adaptor layer to current layer's output.
             if parallel_adaptors:
@@ -846,7 +965,9 @@ class MBartDecoderLayer(nn.Module):
 
         if encoder_hidden_states is not None:
             residual = hidden_states
-            hidden_states = self.encoder_attn_layer_norm(hidden_states)
+
+            if not self.config.postnorm_decoder:
+                hidden_states = self.encoder_attn_layer_norm(hidden_states)
             
             ## Modified by Raj Dabre. Start.
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
@@ -866,6 +987,7 @@ class MBartDecoderLayer(nn.Module):
                     prompt_params=[prompt_params[2], prompt_params[3]] if prompt_params is not None else None,
                     adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
                 )
+                
                 #print(hidden_states.size() if hidden_states is not None else 1, attention_mask.size() if attention_mask is not None else 1)
             else:
                 cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
@@ -879,11 +1001,19 @@ class MBartDecoderLayer(nn.Module):
                     prompt_params=[prompt_params[2], prompt_params[3]] if prompt_params is not None else None,
                     adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
                 )
+            
+            
 
+            if self.config.sparsify_attention:
+                hidden_states, attention_sparsification_l0_loss = hidden_states
+                sparsification_l0_loss += attention_sparsification_l0_loss
             ## Modified by Raj Dabre. End.
             
             hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-            hidden_states = residual + hidden_states
+            if self.config.postnorm_decoder:
+                hidden_states = self.encoder_attn_layer_norm(hidden_states+residual)
+            else:
+                hidden_states = residual + hidden_states
             
             ## Modified by Raj Dabre. Start.
             # add cross-attn to positions 3,4 of present_key_value tuple
@@ -910,16 +1040,25 @@ class MBartDecoderLayer(nn.Module):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.final_layer_norm(hidden_states)
+        
+        if not self.config.postnorm_decoder:
+            hidden_states = self.final_layer_norm(hidden_states)
+            
         if self.config.use_moe:
             hidden_states, moe_loss = self.moe(hidden_states)
         else:
             hidden_states = self.activation_fn(self.fc1(hidden_states))
             hidden_states = F.dropout(hidden_states, p=self.activation_dropout, training=self.training)
             hidden_states = hidden_states * self.ia3_adaptor_linear if self.config.ia3_adaptors else hidden_states
+            if self.config.sparsify_ffn: ## Sparsify the FFN blocks. A zero means the connecting FFN chunks will be zeroed.
+                hidden_states, ffn_sparsification_l0_loss = self.sparsification_gate(hidden_states, dim=-1)
+                sparsification_l0_loss += ffn_sparsification_l0_loss
             hidden_states = self.fc2(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        if self.config.postnorm_decoder:
+            hidden_states = self.final_layer_norm(hidden_states+residual)
+        else:
+            hidden_states = residual + hidden_states
         
         if adaptor_layers is not None and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only):
             if parallel_adaptors:
@@ -945,7 +1084,10 @@ class MBartDecoderLayer(nn.Module):
         elif moe_adaptors:
             outputs = ([hidden_states, total_moe_adaptor_loss],)
         else:
-            outputs = (hidden_states,)
+            if self.config.sparsify_attention or self.config.sparsify_ffn: ## We are never going to use MOEs and sparsification mechanisms together becasue MOEs are sparse by nature. Aint no one got time for that.
+                outputs = ([hidden_states, sparsification_l0_loss],)
+            else:
+                outputs = (hidden_states,)
 
         if output_attentions:
             outputs += (self_attn_weights, cross_attn_weights)
@@ -1225,7 +1367,10 @@ class MBartEncoder(MBartPreTrainedModel):
         if config.multi_source and (config.multi_source_method == "mid_fusion_merge_before_attention" or config.multi_source_method == "mid_fusion_merge_after_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
             pass
         else:
-            self.layer_norm = nn.LayerNorm(config.d_model)
+            if not config.postnorm_encoder: ## In a post norm setting a norm is always applied at the end so we don't need to apply it here.
+                self.layer_norm = nn.LayerNorm(config.d_model)
+            else:
+                print("Using postnorm encoder")
 
         self.init_weights()
 
@@ -1368,6 +1513,7 @@ class MBartEncoder(MBartPreTrainedModel):
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
         moe_losses = () if self.config.use_moe or moe_adaptors else None
+        sparsification_l0_losses = () if self.config.sparsify_attention or self.config.sparsify_ffn else None
 
         # check if head_mask has a correct number of layers specified if desired
         if head_mask is not None:
@@ -1414,6 +1560,9 @@ class MBartEncoder(MBartPreTrainedModel):
                 if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
                     hidden_states, moe_loss = layer_outputs[0]
                     moe_losses += (moe_loss,)
+                elif self.config.sparsify_attention or self.config.sparsify_ffn:
+                    hidden_states, sparsification_l0_loss = layer_outputs[0]
+                    sparsification_l0_losses += (sparsification_l0_loss,)
                 else:
                     hidden_states = layer_outputs[0]
                     
@@ -1439,14 +1588,15 @@ class MBartEncoder(MBartPreTrainedModel):
         if self.config.multi_source and (self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"): # No layer norm because the fusion layers have not been processed yet.
             pass
         else:
-            hidden_states = self.layer_norm(hidden_states)
+            if not self.config.postnorm_encoder:
+                hidden_states = self.layer_norm(hidden_states)
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
         
         if not return_dict:
-            return tuple(v for v in [hidden_states, encoder_states, all_attentions, moe_losses] if v is not None)
+            return tuple(v for v in [hidden_states, encoder_states, all_attentions, moe_losses, sparsification_l0_losses] if v is not None)
         return BaseModelOutput(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions, moe_losses=moe_losses
+            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions, moe_losses=moe_losses, sparsification_l0_losses=sparsification_l0_losses,
         )
 
 
@@ -1503,7 +1653,10 @@ class MBartDecoder(MBartPreTrainedModel):
         ## Modified by Raj Dabre. End.
         if not config.no_embed_norm:
             self.layernorm_embedding = nn.LayerNorm(config.d_model)
-        self.layer_norm = nn.LayerNorm(config.d_model)
+        if not config.postnorm_decoder:
+            self.layer_norm = nn.LayerNorm(config.d_model)
+        else:
+            print("Using postnorm decoder")
 
         self.init_weights()
 
@@ -1720,6 +1873,7 @@ class MBartDecoder(MBartPreTrainedModel):
         all_self_attns = () if output_attentions else None
         all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
         moe_losses = () if self.config.use_moe or moe_adaptors else None
+        sparsification_l0_losses = () if self.config.sparsify_attention or self.config.sparsify_ffn else None
         ## Modified by Raj Dabre. Start.
         additional_all_cross_attentions = () if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention") and output_attentions and additional_encoder_hidden_states is not None else None
         next_decoder_cache = () if use_cache else None
@@ -1796,6 +1950,9 @@ class MBartDecoder(MBartPreTrainedModel):
             if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
                 hidden_states, moe_loss = layer_outputs[0]
                 moe_losses += (moe_loss,)
+            elif self.config.sparsify_attention or self.config.sparsify_ffn:
+                    hidden_states, sparsification_l0_loss = layer_outputs[0]
+                    sparsification_l0_losses += (sparsification_l0_loss,)
             else:
                 hidden_states = layer_outputs[0]
             
@@ -1826,8 +1983,9 @@ class MBartDecoder(MBartPreTrainedModel):
             if moe_adaptors:
                 hidden_states, moe_loss = hidden_states
                 moe_losses += (moe_loss,)
-            
-        hidden_states = self.layer_norm(hidden_states)
+        
+        if not self.config.postnorm_decoder:
+            hidden_states = self.layer_norm(hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1839,13 +1997,13 @@ class MBartDecoder(MBartPreTrainedModel):
             if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention"):
                 return tuple(
                     v
-                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, additional_all_cross_attentions, moe_losses]
+                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, additional_all_cross_attentions, moe_losses, sparsification_l0_losses]
                     if v is not None
                 )
             else:
                 return tuple(
                     v
-                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, moe_losses]
+                    for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions, moe_losses, sparsification_l0_losses]
                     if v is not None
                 )
         return BaseModelOutputWithPastAndCrossAttentions(
@@ -1856,6 +2014,7 @@ class MBartDecoder(MBartPreTrainedModel):
             cross_attentions=all_cross_attentions,
             additional_cross_attentions=additional_all_cross_attentions, 
             moe_losses = moe_losses,
+            sparsification_l0_losses = sparsification_l0_losses,
         )
         ## Modified by Raj Dabre. End.
 
@@ -1869,16 +2028,36 @@ class MBartModel(MBartPreTrainedModel):
         super().__init__(config)
 
         padding_idx, vocab_size = config.pad_token_id, config.vocab_size
+        if config.target_vocab_size != 0:
+            target_vocab_size = config.target_vocab_size
+            print("Using separate encoder and decoder vocab sizes: {} and {}".format(vocab_size, target_vocab_size))
+        
         if config.embed_low_rank_dim > 0: # Use low rank embeddings.
             print("Using low rank embeddings.")
-            self.shared = nn.Embedding(vocab_size, config.embed_low_rank_dim, padding_idx)
-            self.shared_proj = nn.Linear(config.embed_low_rank_dim, config.d_model, bias=False)
+            if config.target_vocab_size != 0:
+                self.encoder_embed = nn.Embedding(vocab_size, config.embed_low_rank_dim, padding_idx=padding_idx)
+                self.decoder_embed = nn.Embedding(target_vocab_size, config.embed_low_rank_dim, padding_idx=padding_idx)
+                self.encoder_proj = nn.Linear(config.embed_low_rank_dim, config.d_model, bias=False)
+                self.decoder_proj = nn.Linear(config.embed_low_rank_dim, config.d_model, bias=False)
+            else:
+                self.shared = nn.Embedding(vocab_size, config.embed_low_rank_dim, padding_idx)
+                self.shared_proj = nn.Linear(config.embed_low_rank_dim, config.d_model, bias=False)
         else:
-            self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
-            self.shared_proj = None
+            if config.target_vocab_size != 0:
+                self.encoder_embed = nn.Embedding(vocab_size, config.d_model, padding_idx=padding_idx)
+                self.decoder_embed = nn.Embedding(target_vocab_size, config.d_model, padding_idx=padding_idx)
+                self.encoder_proj = None
+                self.decoder_proj = None
+            else:
+                self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
+                self.shared_proj = None
 
-        self.encoder = MBartEncoder(config, self.shared, self.shared_proj)
-        self.decoder = MBartDecoder(config, self.shared, self.shared_proj)
+        if config.target_vocab_size != 0:
+            self.encoder = MBartEncoder(config, self.encoder_embed, self.encoder_proj)
+            self.decoder = MBartDecoder(config, self.decoder_embed, self.decoder_proj)
+        else:
+            self.encoder = MBartEncoder(config, self.shared, self.shared_proj)
+            self.decoder = MBartDecoder(config, self.shared, self.shared_proj)
         
         ## Modified by Raj Dabre. Start.
         if self.config.multi_source and config.multi_source_method == "additional_source_attention":
@@ -1897,12 +2076,21 @@ class MBartModel(MBartPreTrainedModel):
         self.init_weights()
 
     def get_input_embeddings(self):
-        return self.shared
-
+        if self.config.target_vocab_size != 0:
+            return (self.encoder_embed, self.decoder_embed)
+        else:
+            return self.shared
+    
     def set_input_embeddings(self, value):
-        self.shared = value
-        self.encoder.embed_tokens = self.shared
-        self.decoder.embed_tokens = self.shared
+        if self.config.target_vocab_size != 0: # We assume that a tuple is passed
+            self.encoder_embed = value[0]
+            self.decoder_embed = value[1]
+            self.encoder.embed_tokens = self.encoder_embed
+            self.decoder.embed_tokens = self.decoder_embed
+        else:
+            self.shared = value
+            self.encoder.embed_tokens = self.shared
+            self.decoder.embed_tokens = self.shared
 
     def get_encoder(self):
         return self.encoder
@@ -2005,7 +2193,10 @@ class MBartModel(MBartPreTrainedModel):
                 )
                 if self.config.use_moe or moe_adaptors: ## Add the additional encoder MOE losses to the main encoder.
                     encoder_outputs[3] = encoder_outputs[3] + additional_encoder_outputs[3]
-
+                
+                if self.config.sparsify_attention or self.config.sparsify_ffn: ## Add the additional encoder sparsification losses to the main encoder.
+                    encoder_outputs[4] = encoder_outputs[4] + additional_encoder_outputs[4]
+                
                 self.config.wait_k = main_source_wait_k
             # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
             elif return_dict and not isinstance(additional_encoder_outputs, BaseModelOutput):
@@ -2059,6 +2250,9 @@ class MBartModel(MBartPreTrainedModel):
                         if self.config.use_moe or moe_adaptors:
                             hidden_states, moe_loss = layer_outputs[0]
                             encoder_outputs[3] = encoder_outputs[3] + moe_loss
+                        elif self.config.sparsify_attention or self.config.sparsify_ffn: ## Add the additional encoder sparsification losses to the main encoder.
+                            hidden_states, sparsification_l0_loss = layer_outputs[0]
+                            encoder_outputs[4] = encoder_outputs[4] + sparsification_l0_loss
                         else:
                             hidden_states = layer_outputs[0]
                         
@@ -2123,6 +2317,10 @@ class MBartModel(MBartPreTrainedModel):
                             combined_hidden_states, moe_loss = layer_outputs[0]
                             combined_additional_hidden_states, additional_moe_loss = additional_layer_outputs[0]
                             encoder_outputs[3] = encoder_outputs[3] + moe_loss + additional_moe_loss
+                        elif self.config.sparsify_attention or self.config.sparsify_ffn: ## Add the additional encoder sparsification losses to the main encoder.
+                            combined_hidden_states, sparsification_l0_loss = layer_outputs[0]
+                            combined_additional_hidden_states, additional_sparsification_l0_loss = additional_layer_outputs[0]
+                            encoder_outputs[4] = encoder_outputs[4] + sparsification_l0_loss + additional_sparsification_l0_loss
                         else:
                             combined_hidden_states = layer_outputs[0]
                             combined_additional_hidden_states = additional_layer_outputs[0]
@@ -2227,7 +2425,9 @@ class MBartModel(MBartPreTrainedModel):
             additional_cross_attentions=decoder_outputs.additional_cross_attentions if self.config.multi_source and (self.config.multi_source_method == "merge_after_attention" or self.config.multi_source_method == "self_relevance_and_merge_after_attention" or self.config.multi_source_method == "merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only" or self.config.multi_source_method == "mid_fusion_merge_after_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention") else (),
             context_encoder_representations = context_encoder_representations if self.config.multi_source and (self.config.multi_source_method == "additional_source_attention" or self.config.multi_source_method == "mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_before_attention" or self.config.multi_source_method == "bottleneck_mid_fusion_merge_after_attention" or self.config.multi_source_method == "mid_fusion_merge_after_attention") else None, ## Find a way to return all contents of context_encoder_representations in the future.
             encoder_moe_losses = encoder_outputs.moe_losses, 
-            decoder_moe_losses = decoder_outputs.moe_losses, 
+            decoder_moe_losses = decoder_outputs.moe_losses,
+            encoder_sparsification_l0_losses = encoder_outputs.sparsification_l0_losses,
+            decoder_sparsification_l0_losses = decoder_outputs.sparsification_l0_losses,
         )
         ## Modified by Raj Dabre. End.
 
@@ -2523,11 +2723,11 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
     def __init__(self, config: MBartConfig):
         super().__init__(config)
         self.model = MBartModel(config)
-        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings if config.target_vocab_size == 0 else config.target_vocab_size)))
         if config.embed_low_rank_dim > 0:
-            self.lm_head = nn.Linear(config.embed_low_rank_dim, self.model.shared.num_embeddings, bias=False)
+            self.lm_head = nn.Linear(config.embed_low_rank_dim, self.model.shared.num_embeddings if config.target_vocab_size == 0 else config.target_vocab_size, bias=False)
         else:
-            self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+            self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings if config.target_vocab_size == 0 else config.target_vocab_size, bias=False)
 
         if config.multilayer_softmaxing is not None:
             config.multilayer_softmaxing = [int(layer_id) for layer_id in config.multilayer_softmaxing.split(",")]
@@ -2557,10 +2757,15 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 print("Parallel adaptors will be used.")
             self.adaptor_layers = DeepEncoderDecoderAdaptors(config.d_model, config.adaptor_hidden_size, config.encoder_layers, config.decoder_layers, config.encoder_adaptor_tying_config, config.decoder_adaptor_tying_config, config.init_std, config.hypercomplex, config.hypercomplex_n, config.deep_adaptor_tuning_ffn_only, config.layernorm_adaptor_input, config.adaptor_scaling_factor, config.residual_connection_adaptor, config.adaptor_dropout, config.moe_adaptors, config.num_moe_adaptor_experts, config.adaptor_activation_function)
                 
+        if config.sparsify_attention:
+            print("Sparsifying attention. Be careful.")
+
+        if config.sparsify_ffn:
+            print("Sparsifying FFNs. Be careful.")
         
         if config.softmax_bias_tuning:
             print("Softmax bias tuning will be done. Replacing the final logits bias with a learnable parameter.")
-            self.final_logits_bias = nn.Parameter(torch.zeros(self.model.shared.num_embeddings).normal_(mean=0.0, std=config.init_std))
+            self.final_logits_bias = nn.Parameter(torch.zeros(self.model.shared.num_embeddings if config.target_vocab_size == 0 else config.target_vocab_size).normal_(mean=0.0, std=config.init_std))
         
         if config.ia3_adaptors:
             print("(IA)3 adaptors will be used.")
@@ -2688,7 +2893,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 moe_adaptors=self.config.moe_adaptors,
             )
             if self.config.embed_low_rank_dim > 0: ## Downproject the LM head. Note that we cant create a linear layer whose weight is the transpose of the up projection layer of the encoder and decoder embeddings. This is why we resort to this approach. DIS IS DA WAE!
-                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T) ## Note the assignment is done with a string as key but when accesing it can be done with an integer index. Bizzarre!
+                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T if self.config.target_vocab_size == 0 else self.model.decoder_proj.weight.T) ## Note the assignment is done with a string as key but when accesing it can be done with an integer index. Bizzarre!
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 lm_logits = lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
@@ -2720,7 +2925,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 moe_adaptors=self.config.moe_adaptors,
             )
             if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
-                additional_outputs["last_hidden_state"] = torch.nn.functional.linear(additional_outputs[0], self.model.shared_proj.weight.T)
+                additional_outputs["last_hidden_state"] = torch.nn.functional.linear(additional_outputs[0], self.model.shared_proj.weight.T if self.config.target_vocab_size == 0 else self.model.decoder_proj.weight.T)
             additional_source_lm_logits = (self.lm_head(additional_outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 additional_source_lm_logits = additional_source_lm_logits/self.softmax_temperature ## The softmax_temperature config param should be 1.0
@@ -2754,7 +2959,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
                 moe_adaptors=self.config.moe_adaptors,
             )
             if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
-                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T)
+                outputs["last_hidden_state"] = torch.nn.functional.linear(outputs[0], self.model.shared_proj.weight.T if self.config.target_vocab_size == 0 else self.model.decoder_proj.weight.T)
             lm_logits = (self.lm_head(outputs[0]) + self.final_logits_bias)/self.config.softmax_temperature ## Divide the logits by a temperature to get a smoothed softmax.
             if self.config.temperature_calibration:
                 lm_logits = lm_logits/self.softmax_temperature
@@ -2764,7 +2969,7 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             for layer_id in self.config.multilayer_softmaxing: ## We count the embedding layer too. Who knows what may happen? However we wont do anything for the final layer as its already dealt with.
                 lm_representation = outputs.decoder_hidden_states[layer_id]
                 if self.config.embed_low_rank_dim > 0: ## Downproject the LM head
-                    lm_representation = torch.nn.functional.linear(lm_representation, self.model.shared_proj.weight.T)
+                    lm_representation = torch.nn.functional.linear(lm_representation, self.model.shared_proj.weight.T if self.config.target_vocab_size == 0 else self.model.decoder_proj.weight.T)
 
                 additional_lm_logits.append((self.lm_head(lm_representation) + self.final_logits_bias)/self.config.softmax_temperature) ## The additional logits will be collected here and then returned to my main code. Divide the logits by a temperature to get a smoothed softmax.
                 if self.config.temperature_calibration:
@@ -2807,7 +3012,9 @@ class MBartForConditionalGeneration(MBartPreTrainedModel):
             softmax_temperature = self.softmax_temperature if self.config.temperature_calibration else None,
             domain_classifier_logits = domain_classifier_logits if self.config.num_domains_for_domain_classifier > 1 else None,
             encoder_moe_losses = outputs.encoder_moe_losses, 
-            decoder_moe_losses = outputs.decoder_moe_losses, 
+            decoder_moe_losses = outputs.decoder_moe_losses,
+            encoder_sparsification_l0_losses = outputs.encoder_sparsification_l0_losses,
+            decoder_sparsification_l0_losses = outputs.decoder_sparsification_l0_losses,
         )
 
     def prepare_inputs_for_generation(
