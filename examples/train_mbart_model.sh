@@ -48,6 +48,8 @@ python pretrain_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/mbart_model
 # Note 5: If you want to use MASS or mT5 style denosing then look at the --span_prediction. For a reversed objective look at --span_to_sentence_prediction.
 # Note 5: If you want a contrastive objective  where negative examples are taken from the same batch then look at --contrastive_decoder_training.
 # Note 6: Look at the --save_every and --long_save_every arguments to choose how often and which major checkpoints are to be saved, respectively.
+# Note 7: Use --use_fsdp to use FSDP for model parallelism. This is currently only supported for MBART.
+# Note 8: Use --adam_8bit to use 8 bit optimizers. This cant be used with --use_fsdp.
 
 
 ## Train a very small MBART model on a single GPU but simulate a 8-gpu setup. The argument --multistep_optimizer_steps is to be used.

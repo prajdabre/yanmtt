@@ -80,7 +80,6 @@ import sacrebleu
 from rouge_score import rouge_scorer
 import gc
 import functools
-from prefetch_generator import BackgroundGenerator
 from contextlib import nullcontext
 ##
 
@@ -196,7 +195,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
     
     if rank == 0:
         writer = SummaryWriter(args.model_path+".tflogs")
-    
+    dist.barrier()
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             config = MBartConfig.from_pretrained(args.pretrained_model)
@@ -274,7 +273,6 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config) if args.use_fsdp else MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
- ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
                 parent_config = BartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
@@ -303,15 +301,24 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
         print("Loading a parent model from which distillation will be done.")
         dist.barrier()
         # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-        if not args.use_official_parent_pretrained: ### FIXME for FSDP
-            parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
-            if type(parent_checkpoint_dict) == dict:
-                parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
+        if not args.use_official_parent_pretrained:
+            if args.use_fsdp:
+                reader = FileSystemReader(args.parent_pretrained_model + "_sharded")
+                with FSDP.state_dict_type(parent_model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = parent_model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    parent_model.load_state_dict(state_dict)
+                del state_dict
             else:
-                parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
-            del parent_checkpoint_dict
+                map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+                parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
+                if type(parent_checkpoint_dict) == dict:
+                    parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
+                else:
+                    parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
+                del parent_checkpoint_dict
             
+        dist.barrier()
         parent_model.train()
 
     torch.cuda.empty_cache()
@@ -374,37 +381,61 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
         print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys or if we use prompt or adaptor tuning, they will be ignored when layer remapping or component selection is done. In case of prompt and adaptor tuning, new params are added to the model and hence strict matching of keys is not possible.")
         dist.barrier()
         # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         if args.locally_fine_tuned_model_path is not None: ## Now that the pretrained_model argument was used to instantiate the model, it can be replaced with the local model path. Remember to specify pure model or the model with the optimizer and scheduler states depending on your requirement by relying on the flag --no_reload_optimizer_ctr_and_scheduler.
             args.pretrained_model = args.locally_fine_tuned_model_path
-        checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
-        if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+        if args.use_fsdp: # With FSDP models I would rather not risk pruning or layer remapping. So I am not going to do it. I am going to load the model as it is. Consider doing this externally before loading the model.
+            reader = FileSystemReader(args.pretrained_model + "_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+                load_state_dict(state_dict, reader)
+                model.load_state_dict(state_dict)  # Check if strict loading is required here. We ideally dont want it to be so if we add prompts or adaptors.
+            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings: # This might fail for FSDP so please check. TODO.
                 model.module.initialize_prompt_params_with_random_embeddings()
-            if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
-                if 'optimizer' in checkpoint_dict:
-                    print("Reloading optimizer")
-                    optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
-                if 'scheduler' in checkpoint_dict:
-                    print("Reloading scheduler")
-                    scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
-                if 'ctr' in checkpoint_dict:
-                    print("Reloading ctr. This means we resume training.")
-                    ctr = checkpoint_dict['ctr']
+            if not args.no_reload_optimizer_ctr_and_scheduler:
+                full_optimizer = None
+                if rank == 0:
+                    full_optimizer = torch.load(args.pretrained_model+ "_optim")  ## We now load only the optimizer and scheduler.
+                sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
+                optimizer.load_state_dict(sharded_optimizer)
+                scheduler_and_ctr = torch.load(args.pretrained_model + "_scheduler_and_ctr")
+                scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
+                ctr = scheduler_and_ctr['ctr']
+                del scheduler_and_ctr
+                del sharded_optimizer
+                del full_optimizer
             else:
                 ctr = 0
+            del state_dict
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
-            ctr = 0
-        del checkpoint_dict
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+            checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
+            if type(checkpoint_dict) == dict:
+                model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+                    model.module.initialize_prompt_params_with_random_embeddings()
+                if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder == '' and args.remap_decoder == '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
+                    if 'optimizer' in checkpoint_dict:
+                        print("Reloading optimizer")
+                        optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+                    if 'scheduler' in checkpoint_dict:
+                        print("Reloading scheduler")
+                        scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+                    if 'ctr' in checkpoint_dict:
+                        print("Reloading ctr. This means we resume training.")
+                        ctr = checkpoint_dict['ctr']
+                else:
+                    ctr = 0
+            else:
+                model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+                    model.module.initialize_prompt_params_with_random_embeddings()
+                ctr = 0
+            del checkpoint_dict
     else:
         if args.use_official_pretrained:
             print("Training from official pretrained model")
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
+                model.module.initialize_prompt_params_with_random_embeddings() ## This might fail for FSDP so we need to check. TODO.
         else:
             print("Training from scratch")
         CHECKPOINT_PATH = args.model_path

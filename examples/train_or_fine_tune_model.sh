@@ -43,6 +43,8 @@ python train_nmt.py -n 1  -nr 0 -g 1 --model_path examples/models/nmt_model --to
 
 # Note 1: If you want to use Rouge as an evaluation metric then use --use_rouge.
 # Note 2: If you wish to use this model with a GUI then look at the supported_languages argument.
+# Note 3: Use --use_fsdp to use FSDP for model parallelism. Ensure that you also pass --no_eval because we dont support FSDP evaluation for now. This is currently only supported for MBART.
+# Note 4: Use --adam_8bit to use 8 bit optimizers. This cant be used with --use_fsdp.
 
 # Train a very small NMT model on a single GPU for a translation direction but simulate a 8-gpu setup. Use the --multistep_optimizer_steps argument.
 

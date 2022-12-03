@@ -28,7 +28,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 
 **List of features:**
 1. **Basic NMT pre-training, fine-tuning, decoding, visualization** <br>
-    * Distributed, mixed precision, multilingual training.<br>
+    * Distributed, mixed precision, multilingual training.<br> 
     * Denoising pre-training in mBART or mT5 style.<br>
     * Fine-tuning your own or official BART-like models like BART, mBART, IndicBART.<br>
     * Joint supervised and unsupervised training using monolingual and parallel corpora.<br>
@@ -39,11 +39,13 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Visualize attention weights at each layer for each head using bertviz.<br>
     * Visualize encoder representations of a set of sentences using tensorflow projector.<br>
 3. **Advanced features**<br>
+    * Multi-billion parameter models can be trained using FSDP. <br>
     * Mixtures-of-experts layers. <br>
     * Tempered softmax training. <br>
     * Softmax calibration. <br>
     * Entropy maximization training.<br>
     * Multi-layer softmax training. <br>
+    * 8-bit optimizers for training large models. <br>
 4. **Light-weight fine-tuning** <br>
     * Adaptor and prompt tuning. <br>
     * Hypercomplex, light-weight adaptors. <br>
@@ -60,21 +62,10 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Various multi-source fusion strategies. <br>
     * Can be combined with wait-k NMT. <br>
     
-**Prerequisites (core):** <br>
-    * Python v3.6.8 <b>IMPORTANT</b><br>
-    * Pytorch v1.7.1 <br>
-    * HuggingFace Transformers v4.3.2 (install the modified copy of the transformers library provided with this toolkit) <br>
-    * tensorflow-gpu v2.3.0 <br>
-    * sentencepiece v0.1.95 (you will need to go to https://github.com/google/sentencepiece and install it as the **spm_train** binary will be used later)<br>
-    * gputil v1.4.0 <br>
-    * cuda 10.0/10.1/10.2 (tested on 10.0) <br>
-    * flask v2.0.3 (for GUI) <br>
-    * See requirements.txt and interface/requirements.txt for all requirements. <br>
-
 **How to install:** <br>
 0. Please use virtualenv for installation. There are some issues with Conda installation.
 1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
-2. Create a virtual environment with python3.6 via and activate it via: "virtualenv -p /usr/bin/python3.6 py36 && source py36/bin/activate"
+2. Create a conda environment with python3.9 via and activate it via: "conda create -n yanmtt python=3.9 && conda activate yanmtt"
 3. Update pip via "pip install pip --upgrade" and then install the required packages via: "pip install -r requirements.txt"
 4. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
 5. Move out of this folder with "cd .." and install sentencepiece v0.1.95 with "git clone --branch v0.1.95 https://github.com/google/sentencepiece.git"<br>
@@ -96,7 +87,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 **Usage:** see examples/create_tokenizer.sh
 
 2. **pretrain_nmt.py**: This is used to train an MBART model. At the very least you need a monolingual corpus for the languages you are interested in and a tokenizer trained for those languages. This script can also be used to do joint MBART style training jointly with regular NMT training although the NMT training is rather basic because there is no evaluation during training. If you want to do advanced NMT training then you should use the "train_nmt.py" script. Ultimately, you should not use the outcome of this script to perform final translations. Additional advanced usages involve: simulated wait-k simultaneous NMT, knowledge distillation, fine-tuning pre-existing MBART models with fine-grained control over what should be initialized, frozen or tuned, etc. Read the code and the command line arguments for a better understanding of the advanced features.  <br>
-**Usage:** see examples/train_mbart_model.sh<br>i
+**Usage:** see examples/train_mbart_model.sh<br>
 **Note 1:** If M is your model name then a folder "M_deploy" is created which you can directly use with AutoTokenizer and AutoModel.<br>
 **Note 2:** If you plan to use this "M_deploy" model with the GUI then remember to use the --supported_languages flag.<br>
 

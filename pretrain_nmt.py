@@ -90,6 +90,7 @@ torch.manual_seed(621313)
 def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
     rank = args.nr * args.gpus + gpu ## The rank of the current process out of the total number of processes indicated by world_size.
+    print("Launching process:", rank)
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
     if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
@@ -172,9 +173,11 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     if args.unidirectional_encoder:
         print("Using unidirectional encoder.")
     
+    torch.cuda.set_device(gpu) ## Set the device to the current GPU. This is different from the rank so keep this in mind.
+
     if rank == 0:
         writer = SummaryWriter(args.model_path+".tflogs")
-    
+    dist.barrier()
     if args.use_official_pretrained:
         if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             config = MBartConfig.from_pretrained(args.pretrained_model)
@@ -219,7 +222,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.sparsify_ffn = args.sparsify_ffn
             config.num_sparsify_blocks = args.num_sparsify_blocks
             config.sparsification_temperature = args.sparsification_temperature
-            model = MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
+            model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config) if args.use_fsdp else MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["MBartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         elif "bart" in args.pretrained_model:
@@ -231,20 +234,16 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
-            model = BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
+            model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config, force_bos_token_to_be_generated=True) if args.use_fsdp else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["BartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: ## We are going to manually specify our own model config.
         config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, sparsify_attention=args.sparsify_attention, sparsify_ffn=args.sparsify_ffn, num_sparsify_blocks=args.num_sparsify_blocks, sparsification_temperature=args.sparsification_temperature, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
         config.architectures = ["MBartForConditionalGeneration"]
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
-        model = MBartForConditionalGeneration(config)
-    torch.cuda.set_device(gpu)
-    torch.cuda.empty_cache()
-
-    model.cuda(gpu)
-    model.train()
+        model = deferred_init.deferred_init(MBartForConditionalGeneration, config) if args.use_fsdp else MBartForConditionalGeneration(config)
     
+    model.train()
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
         print("We will do distillation from a parent model.")
         if args.use_official_parent_pretrained:
@@ -255,7 +254,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-                parent_model = MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config) if args.use_fsdp else MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
                 parent_config = BartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
@@ -263,10 +262,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-                parent_model = BartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) if args.use_fsdp else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
         else: ## We are going to manually specify our own parent model config.
             parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
-            parent_model = MBartForConditionalGeneration(parent_config)
+            parent_model = deferred_init.deferred_init(MBartForConditionalGeneration, parent_config) if args.use_fsdp else MBartForConditionalGeneration(parent_config)
         
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
         if not args.use_fsdp:
@@ -283,16 +282,27 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         print("Loading a parent model from which distillation will be done.")
         dist.barrier()
         # configure map_location properly
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-        if not args.use_official_parent_pretrained: # Fix for FSDP
-            parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
-            if type(parent_checkpoint_dict) == dict:
-                parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
+        if not args.use_official_parent_pretrained:
+            if args.use_fsdp:
+                reader = FileSystemReader(args.parent_pretrained_model + "_sharded")
+                with FSDP.state_dict_type(parent_model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = parent_model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    parent_model.load_state_dict(state_dict)
+                del state_dict
             else:
-                parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
-            del parent_checkpoint_dict
-    
+                map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+                parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
+                if type(parent_checkpoint_dict) == dict:
+                    parent_model.load_state_dict(parent_checkpoint_dict['model']) # We never do any remapping of the parent. We always reuse it as it is.
+                else:
+                    parent_model.module.load_state_dict(parent_checkpoint_dict) # We never do any remapping of the parent. We always reuse it as it is.
+                del parent_checkpoint_dict
+        
+        parent_model.train()
+
     torch.cuda.empty_cache()
+    
     freeze_params(model, args.freeze_exception_list)
 
     ### NOTE: Please freeze params before wrapping the model in DDP. Mandem almost had a stoke trying to figure this out.
@@ -312,7 +322,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     print("Total number of params to be optimized are: ", num_params_to_optimize)
 
     print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
-
+    
     if args.use_fsdp:
         model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy) ## This wrapper around the model will enable sharded distributed training.
     else:
@@ -348,33 +358,58 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     if args.pretrained_model != "" and (not args.use_official_pretrained or args.locally_fine_tuned_model_path is not None): ## Here we load a previous checkpoint in case training crashed. Note the args.locally_fine_tuned_model_path. This is in case we were tuning an official mbart or indicbart or bart model but want to further tine tune it or it crashed and we want to resume training it.
         print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys or if we use prompt or adaptor tuning, they will be ignored when layer remapping or component selection is done. In case of prompt and adaptor tuning, new params are added to the model and hence strict matching of keys is not possible.")
         dist.barrier()
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
         sys.stdout.flush()
         if args.locally_fine_tuned_model_path is not None: ## Now that the pretrained_model argument was used to instantiate the model, it can be replaced with the local model path. Remember to specify pure model or the model with the optimizer and scheduler states depending on your requirement by relying on the flag --no_reload_optimizer_ctr_and_scheduler.
             args.pretrained_model = args.locally_fine_tuned_model_path
-        checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
-        if type(checkpoint_dict) == dict:
-            model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+        if args.use_fsdp: # With FSDP models I would rather not risk pruning or layer remapping. So I am not going to do it. I am going to load the model as it is. Consider doing this externally before loading the model.
+            reader = FileSystemReader(args.pretrained_model + "_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+                load_state_dict(state_dict, reader)
+                model.load_state_dict(state_dict) # Check if strict loading is required here. We ideally dont want it to be so if we add prompts or adaptors.
+            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings: # This might fail for FSDP so please check. TODO.
                 model.module.initialize_prompt_params_with_random_embeddings()
-            if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder is '' and args.remap_decoder is '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
-                if 'optimizer' in checkpoint_dict:
-                    print("Reloading optimizer")
-                    optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
-                if 'scheduler' in checkpoint_dict:
-                    print("Reloading scheduler")
-                    scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
-                if 'ctr' in checkpoint_dict:
-                    print("Reloading ctr. This means we resume training.")
-                    ctr = checkpoint_dict['ctr']
+            if not args.no_reload_optimizer_ctr_and_scheduler:
+                full_optimizer = None
+                if rank == 0:
+                    full_optimizer = torch.load(args.pretrained_model+ "_optim")  ## We now load only the optimizer and scheduler.
+                sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
+                optimizer.load_state_dict(sharded_optimizer)
+                scheduler_and_ctr = torch.load(args.pretrained_model + "_scheduler_and_ctr")
+                scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
+                ctr = scheduler_and_ctr['ctr']
+                del scheduler_and_ctr
+                del sharded_optimizer
+                del full_optimizer
             else:
                 ctr = 0
+            del state_dict
+
         else:
-            model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
-            if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
-                model.module.initialize_prompt_params_with_random_embeddings()
-            ctr = 0
-        del checkpoint_dict
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+            checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
+            if type(checkpoint_dict) == dict:
+                model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+                    model.module.initialize_prompt_params_with_random_embeddings()
+                if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder == '' and args.remap_decoder == '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
+                    if 'optimizer' in checkpoint_dict:
+                        print("Reloading optimizer")
+                        optimizer.load_state_dict(checkpoint_dict['optimizer']) ## Dubious
+                    if 'scheduler' in checkpoint_dict:
+                        print("Reloading scheduler")
+                        scheduler.load_state_dict(checkpoint_dict['scheduler']) ## Dubious
+                    if 'ctr' in checkpoint_dict:
+                        print("Reloading ctr. This means we resume training.")
+                        ctr = checkpoint_dict['ctr']
+                else:
+                    ctr = 0
+            else:
+                model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
+                    model.module.initialize_prompt_params_with_random_embeddings()
+                ctr = 0
+            del checkpoint_dict
     else:
         if args.use_official_pretrained:
             print("Training from official pretrained model")
@@ -1179,7 +1214,7 @@ def run_demo():
         print("Number of unique domains are ", len(args.train_domains))
     os.environ['MASTER_ADDR'] = args.ipaddr              #
     os.environ['MASTER_PORT'] = args.port                      #
-    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,train_files,ewc_files,))         #
+    mp.spawn(model_create_load_run_save, nprocs=args.gpus, args=(args,files,train_files,ewc_files,), join=True)         #
     
 if __name__ == "__main__":
     run_demo()
