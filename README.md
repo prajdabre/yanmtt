@@ -63,7 +63,6 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Can be combined with wait-k NMT. <br>
     
 **How to install:** <br>
-0. Please use virtualenv for installation. There are some issues with Conda installation.
 1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
 2. Create a conda environment with python3.9 via and activate it via: "conda create -n yanmtt python=3.9 && conda activate yanmtt"
 3. Update pip via "pip install pip --upgrade" and then install the required packages via: "pip install -r requirements.txt"
