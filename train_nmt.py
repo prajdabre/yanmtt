@@ -114,6 +114,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                 tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
         else:
             tok = BartTokenizer.from_pretrained(args.tokenizer_name_or_path, use_fast=False)
+        tgt_tok = None
+        decoding_tok = tok
     else:
         if "albert" in args.tokenizer_name_or_path:
             tok = AlbertTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)

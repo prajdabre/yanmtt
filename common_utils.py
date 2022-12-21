@@ -499,20 +499,26 @@ def yield_corpus_indefinitely_bi(corpus, language, sorted_batching):
 def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter, max_length):
     """Here we start at a particular random index and select the rest of the sentences. This is to make sure that we dont always see only the initial part of each document all the time."""
     sentence_split = sentence.split(" "+document_level_sentence_delimiter+" ")
-    sentence_split_length = len(sentence_split)
-    num_delimiters = sentence_split_length - 1
-    start_idx = random.randint(0, sentence_split_length-1)
+    length_histogram = []
+    current_length = 0
+    for sent in sentence_split:
+        current_length += len(sent.split(" "))
+        length_histogram.append(current_length)
+    len_space_sentence_split = length_histogram[-1]
+    if len_space_sentence_split > max_length:
+        max_token_idx = len_space_sentence_split - max_length
+        for idx, token_idx in enumerate(length_histogram):
+            max_last_sentence_idx = idx
+            if token_idx > max_token_idx:
+                break
+    else:
+        max_last_sentence_idx = 0
+    start_idx = random.randint(0, max_last_sentence_idx)
     sentence_split = sentence_split[start_idx:]
-    sentence = (" "+document_level_sentence_delimiter+" ").join(sentence_split)
-    sentence_split = sentence.split(" ")
-    sent_len = len(sentence_split)
-    if sent_len > max_length: ## Initial truncation
-        sentence_split = sentence_split[:max_length]
-        sentence = " ".join(sentence_split)
-        sent_len = max_length
-    sentence_split = sentence.split(" "+document_level_sentence_delimiter+" ")
+    sentence = " ".join(sentence_split)
+    sent_len = len(sentence.split(" "))
     sentence_split_shuffled = random.sample(sentence_split, len(sentence_split))
-    sentence_split_shuffled = (" "+document_level_sentence_delimiter+" ").join(sentence_split_shuffled)
+    sentence_split_shuffled = " ".join(sentence_split_shuffled)
     sentence_split_shuffled = sentence_split_shuffled.split(" ")
     return sentence_split_shuffled, sentence, sent_len
 
