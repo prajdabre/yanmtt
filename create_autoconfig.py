@@ -25,7 +25,7 @@ from transformers import AutoConfig, AlbertTokenizer, AutoTokenizer, MBartTokeni
 import sys
 import os
 
-additional_tokens = sys.argv[4].strip().split(",") if sys.argv[4] is not "." else []
+additional_tokens = sys.argv[4].strip().split(",") if sys.argv[4] != "." else []
 for lang_file in sys.argv[3].strip().split(","):
     lang_tok=lang_file.strip().split(".")[-1] ## Asuuming that the file extension indicates the tgt language
     if "<2"+lang_tok+">" not in additional_tokens:

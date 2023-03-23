@@ -65,6 +65,8 @@ from torch.distributed.fsdp.wrap import (
     enable_wrap,
     wrap,
 )
+from torch.distributed.fsdp import BackwardPrefetch
+
 from functools import partial
 from torchdistx import deferred_init
 
@@ -80,10 +82,12 @@ import numpy as np
 import math
 import sacrebleu
 import functools
+import shutil
+from contextlib import nullcontext
 ##
 
 ## Seed setting here
-torch.manual_seed(621313)
+torch.manual_seed(621311)
 ##
 
 
@@ -118,8 +122,13 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             tok = MBartTokenizer.from_pretrained(args.tokenizer_name_or_path, do_lower_case=False, use_fast=False, keep_accents=True)
         ## Fast tokenizers are not good because their behavior is weird. Accents should be kept or else the segmentation will be messed up on languages with accented characters. No lower case obviously because we want to train on the original case. Set to false if you are ok with the model not dealing with cases.
     tok.save_pretrained(args.model_path+"_deploy") ## Save the tokenizer for future use.
-    print("Tokenizer is:", tok)
+    
+    # Copy the specially_added_tokens file into the deploy folder. This file exists when we arent using official pretrained models. We are not going to support this for separate tokenizers.
+    if os.path.exists(args.tokenizer_name_or_path+"/specially_added_tokens"):
+        shutil.copyfile(args.tokenizer_name_or_path+"/specially_added_tokens", args.model_path+"_deploy/specially_added_tokens")
 
+    print("Tokenizer is:", tok)
+    
     if args.supported_languages is not None:
         args.supported_languages = args.supported_languages.split(",")
         with open(args.model_path+"_deploy/supported_languages.txt", "w") as f:
@@ -164,6 +173,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         },
         )
         sharding_strategy: ShardingStrategy = ShardingStrategy.SHARD_GRAD_OP if args.zero_stage_2 else ShardingStrategy.FULL_SHARD #for SHARD_GRAD_OP Zero2 and FULL_SHARD for Zero3
+        backward_prefetch_policy = BackwardPrefetch.BACKWARD_PRE if args.backward_prefetch else None
+        torch.backends.cuda.matmul.allow_tf32 = args.allow_tf32_matmul
     
     if args.encoder_tying_config is not None:
         print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
@@ -275,7 +286,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             print("When FSDP is used, the parent model is not moved to the GPU. This is because FSDP does not support moving the model to the GPU. Instead, it moves the model to the CPU and then to the GPU. This is done to save memory. This is done in the FSDP wrapper itself.")
         
         if args.use_fsdp:
-            parent_model = FSDP(parent_model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy)
+            parent_model = FSDP(parent_model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy) #, forward_prefetch=args.forward_prefetch
         else:
             parent_model = DistributedDataParallel(parent_model, device_ids=[gpu], output_device=gpu)
         
@@ -324,7 +335,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
     
     if args.use_fsdp:
-        model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy) ## This wrapper around the model will enable sharded distributed training.
+        model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy) ## This wrapper around the model will enable sharded distributed training. , forward_prefetch=args.forward_prefetch
     else:
         model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
     print("Memory consumed after wrapping with DDP/FSDP", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
@@ -354,7 +365,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
         scheduler.step()
-    print("Initial LR is:", scheduler.get_lr()[0])
+    if rank == 0:
+        print("Initial LR is:", scheduler.get_lr()[0], ", max LR is:", args.lr, ", warmup steps are:", args.warmup_steps, ", total number of batches/steps are:", args.num_batches)
     if args.pretrained_model != "" and (not args.use_official_pretrained or args.locally_fine_tuned_model_path is not None): ## Here we load a previous checkpoint in case training crashed. Note the args.locally_fine_tuned_model_path. This is in case we were tuning an official mbart or indicbart or bart model but want to further tine tune it or it crashed and we want to resume training it.
         print("Loading from checkpoint. Strict loading by default but if there are missing or non matching keys or if we use prompt or adaptor tuning, they will be ignored when layer remapping or component selection is done. In case of prompt and adaptor tuning, new params are added to the model and hence strict matching of keys is not possible.")
         dist.barrier()
@@ -494,6 +506,9 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
 
     num_batches_this_optimizer_step = 0
     losses = 0
+    batch_stats = torch.zeros(4, dtype=torch.long, device=gpu) # We want to keep track of batch statistics.
+    avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
+
     start = time.time()
     for (input_ids, input_masks, decoder_input_ids, labels), is_bilingual in generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files): #Batches are generated from here. The argument (0.30, 0.40) is a range which indicates the percentage of the source sentence to be masked in case we want masking during training just like we did during BART pretraining. The argument 3.5 is the lambda to the poisson length sampler which indicates the average length of a word sequence that will be masked. Since this is pretraining we do not do any evaluations even if we train on parallel corpora.
         if num_batches_this_optimizer_step == 0: ## This is the first batch of this optimizer step.
@@ -505,7 +520,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
                 with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
                     state_dict = model.state_dict()
-                if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
                     shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_sharded")
                     save_state_dict(state_dict, shard_writer)
                 shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
@@ -517,13 +532,13 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 optim_state = FSDP.full_optim_state_dict(model, optimizer)
                 if rank == 0:
                     print("Saving the model")
-                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
                         print("Saving an intermediate checkpoint")
                         torch.save(state_dict, CHECKPOINT_PATH+"."+str(ctr))
                     sys.stdout.flush()
                     torch.save(state_dict, CHECKPOINT_PATH)
-                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
-                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
                         torch.save(optim_state, CHECKPOINT_PATH + "."+str(ctr)+"_optim")
                         torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "."+str(ctr)+"_scheduler_and_ctr")
                     torch.save(optim_state, CHECKPOINT_PATH + "_optim")
@@ -536,10 +551,11 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             else:
                 if rank == 0:
                     print("Saving the model")
-                    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
-                    if ctr % args.long_save_every == 0 and args.save_intermediate_checkpoints:
+                    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
                         print("Saving an intermediate checkpoint")
                         torch.save(checkpoint_dict, CHECKPOINT_PATH+"."+str(ctr))
+                    sys.stdout.flush()
                     torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
                     torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
                     os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
@@ -548,7 +564,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             # Use a barrier() to make sure that process 1 loads the model after process
             # 0 saves it.
             dist.barrier()
-            start = time.time() ## All eval and ckpt saving is done here so start counting from here.
+            # start = time.time() ## All eval and ckpt saving is done here so start counting from here.
             
         if args.num_domains_for_domain_classifier > 1: ## The label will contain the label as well as the domain indicator
             domain_classifier_labels=labels[1] ## This is not a tensor yet
@@ -569,115 +585,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             encoder_pad = torch.ones(input_shape[0], args.num_prompts).clone().detach()
             input_masks = torch.cat([encoder_pad, input_masks], dim=1)
             
-        if args.fp16 and not args.use_fsdp: ## The difference between AMP and FP32 is the use of the autocast. The code below is duplicated and can be shrunk. TODO.
-            with torch.cuda.amp.autocast():
-                if is_bilingual and args.unify_encoder:
-                    source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
-                    decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
-                    target_hidden_state_encoder = model.module.get_encoder()(input_ids=decoder_input_ids, attention_mask=decoder_input_masks).last_hidden_state ## Run the encoder for source sentence.
-                    del decoder_input_masks ## Delete to avoid retention.
-                    pad_mask = input_ids.eq(tok.pad_token_id).unsqueeze(2)
-                    source_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
-                    source_hidden_state_encoder = source_hidden_state_encoder.mean(dim=1)
-                    pad_mask = decoder_input_ids.eq(tok.pad_token_id).unsqueeze(2)
-                    target_hidden_state_encoder.masked_fill_(pad_mask, 0.0)
-                    target_hidden_state_encoder = target_hidden_state_encoder.mean(dim=1)
-                    loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
-                    if rank == 0:
-                        writer.add_scalar("encoder unification loss", loss.detach().cpu().numpy(), ctr)
-                else:
-                    mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, label_mask=label_mask if args.num_domains_for_domain_classifier > 1 else None) ## Run the model and get logits.
-                    logits = mod_compute.logits
-                    lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## Softmax tempering of logits if needed.
-                    loss = label_smoothed_nll_loss(
-                        lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                    ) ## Label smoothed cross entropy loss.
-                    loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
-                    if rank == 0:
-                        writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
-                    if args.ewc_importance != 0: ## Update the model with the EWC loss.
-                        ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
-                        if rank == 0:
-                            writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
-                        loss = loss + ewc_loss_current
-                    if args.temperature_calibration: 
-                        loss = loss*mod_compute.softmax_temperature
-                        if rank == 0:
-                            writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
-                            writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
-                    if args.num_domains_for_domain_classifier > 1: ## We augment the main loss with the domain classifier loss
-                        domain_classifier_logits = mod_compute.domain_classifier_logits
-                        domain_classifier_lprobs = torch.nn.functional.log_softmax(domain_classifier_logits, dim=-1) ## Softmax tempering of logits if needed.
-                        domain_classifier_loss = label_smoothed_nll_loss(
-                            domain_classifier_lprobs.view(-1,args.num_domains_for_domain_classifier), domain_classifier_labels.view(-1,1), args.label_smoothing
-                        ) ## Label smoothed cross entropy loss. We are not going to do any temperature related stuff to this.
-                        loss = domain_classifier_loss*args.domain_classifier_loss_weight + loss * (1.0-args.domain_classifier_loss_weight)
-                        if rank == 0:
-                            writer.add_scalar("domain classifier loss", domain_classifier_loss.detach().cpu().numpy(), ctr)
-                            writer.add_scalar("loss with domain classifier loss", loss.detach().cpu().numpy(), ctr)
-                    ## We will do multilayer softmaxing without any consideration for distillation or domain classification.
-                    if mod_compute.additional_lm_logits is not None:
-                        for additional_logits in mod_compute.additional_lm_logits:
-                            lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## Softmax tempering of logits if needed.
-                            loss_extra = label_smoothed_nll_loss(
-                                lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                            ) ## Label smoothed cross entropy loss.
-                            loss_extra = loss_extra*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1. TODO: Perhaps log this too.
-                            if args.temperature_calibration: 
-                                loss_extra = loss_extra*mod_compute.softmax_temperature
-                            loss += loss_extra ## Up scale loss in case of non unitary temperatures. TODO: Perhaps log this too.
-                    if args.max_ent_weight != -1: ## This deals with softmax entropy maximization. The logic is that we compute the softmax entropy of the predictions via -(P(Y/X)*log(P(Y/X))). We then add it to the cross entropy loss with a negative sign as we wish to maximize entropy. This should penalize overconfident predictions. 
-                        assert (args.max_ent_weight >= 0 and args.max_ent_weight <= 1)
-                        logits = logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
-                        if args.temperature_calibration: 
-                            logits = logits*mod_compute.softmax_temperature
-                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1) ## No tempering here
-                        entropy = -(torch.exp(lprobs)*lprobs).mean()
-                        if rank == 0:
-                            writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
-                        if mod_compute.additional_lm_logits is not None:
-                            for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
-                                additional_logits = additional_logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
-                                if args.temperature_calibration: 
-                                    additional_logits = additional_logits*mod_compute.softmax_temperature
-                                lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## No tempering here
-                                entropy_extra = -(torch.exp(lprobs)*lprobs).mean()
-                                entropy += entropy_extra
-                        loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
-                        if rank == 0:
-                            writer.add_scalar("loss with entropy loss", loss.detach().cpu().numpy(), ctr)
-                    if args.distillation: ## Time to distill.
-                        with torch.no_grad(): ## No gradient to avoid memory allocation.
-                            parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
-                        distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
-                        loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
-                        if rank == 0:
-                            writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
-                            writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
-                    if args.use_moe or args.moe_adaptors: ## add MOE losses too.
-                        moe_loss = torch.sum(torch.stack(mod_compute.encoder_moe_losses)) + torch.sum(torch.stack(mod_compute.decoder_moe_losses))
-                        if rank == 0:
-                            writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
-                        loss += moe_loss
-                    if args.sparsify_attention or args.sparsify_ffn: ## add sparsification losses too.
-                        sparsification_loss = torch.sum(torch.stack(mod_compute.encoder_sparsification_l0_losses)) + torch.sum(torch.stack(mod_compute.decoder_sparsification_l0_losses))
-                        if rank == 0:
-                            writer.add_scalar("sparsification loss", sparsification_loss.detach().cpu().numpy(), ctr)
-                        loss += sparsification_loss * args.sparsification_lambda
-                        
-                    if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
-                        batch_size = decoder_input_ids.size()[0]
-                        shuffle_indices = torch.randperm(batch_size)
-                        decoder_input_ids = decoder_input_ids[shuffle_indices]
-                        labels = labels[shuffle_indices]
-                        mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids) ## Run the model and get logits.
-                        logits = mod_compute.logits
-                        lprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-                        contrastive_loss = label_smoothed_nll_loss(
-                            lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
-                        ) ## Label smoothed cross entropy loss.
-                        loss -= contrastive_loss
-        else:
+        with torch.cuda.amp.autocast() if (args.fp16 and not args.use_fsdp) else nullcontext(): ## The difference between AMP and FP32 is the use of the autocast. I am not sure if I should use autocast with FSDP or not. Some people use it. Some dont. In one of the issues on pytorch someone said it shouldnt matter. https://github.com/pytorch/pytorch/issues/76607#issuecomment-1370053227
             if is_bilingual and args.unify_encoder:
                 source_hidden_state_encoder = model.module.get_encoder()(input_ids=input_ids, attention_mask=input_masks).last_hidden_state ## Run the encoder for source sentence.
                 decoder_input_masks = (decoder_input_ids != tok.pad_token_id).int().to(gpu)
@@ -699,7 +607,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 loss = label_smoothed_nll_loss(
                     lprobs, labels, args.label_smoothing, ignore_index=tok.pad_token_id
                 ) ## Label smoothed cross entropy loss.
-                loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures.
+                loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
                 if rank == 0:
                     writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
                 if args.ewc_importance != 0: ## Update the model with the EWC loss.
@@ -715,7 +623,6 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 if args.num_domains_for_domain_classifier > 1: ## We augment the main loss with the domain classifier loss
                     domain_classifier_logits = mod_compute.domain_classifier_logits
                     domain_classifier_lprobs = torch.nn.functional.log_softmax(domain_classifier_logits, dim=-1) ## Softmax tempering of logits if needed.
-#                     print(domain_classifier_labels, domain_classifier_labels.size(), domain_classifier_lprobs, domain_classifier_lprobs.size(), labels, labels.size())
                     domain_classifier_loss = label_smoothed_nll_loss(
                         domain_classifier_lprobs.view(-1,args.num_domains_for_domain_classifier), domain_classifier_labels.view(-1,1), args.label_smoothing
                     ) ## Label smoothed cross entropy loss. We are not going to do any temperature related stuff to this.
@@ -723,7 +630,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     if rank == 0:
                         writer.add_scalar("domain classifier loss", domain_classifier_loss.detach().cpu().numpy(), ctr)
                         writer.add_scalar("loss with domain classifier loss", loss.detach().cpu().numpy(), ctr)
-                ## We will do multilayer softmaxing without any consideration for entropy maximization or distillation.
+                ## We will do multilayer softmaxing without any consideration for distillation or domain classification.
                 if mod_compute.additional_lm_logits is not None:
                     for additional_logits in mod_compute.additional_lm_logits:
                         lprobs = torch.nn.functional.log_softmax(additional_logits, dim=-1) ## Softmax tempering of logits if needed.
@@ -756,8 +663,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                         writer.add_scalar("loss with entropy loss", loss.detach().cpu().numpy(), ctr)
                 if args.distillation: ## Time to distill.
                     with torch.no_grad(): ## No gradient to avoid memory allocation.
-                        parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation) ## Get the parent model's computations.
-                    distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Compute distillation losses.
+                        parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
+                    distillation_loss = compute_distillation_losses(mod_compute, parent_mod_compute, labels, tok.pad_token_id, args) ## Get the parent model's computations.
                     loss = args.distillation_loss_weight*distillation_loss + (1.0 - args.distillation_loss_weight)*loss ## Update the main loss with weighing and adding.
                     if rank == 0:
                         writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
@@ -772,6 +679,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     if rank == 0:
                         writer.add_scalar("sparsification loss", sparsification_loss.detach().cpu().numpy(), ctr)
                     loss += sparsification_loss * args.sparsification_lambda
+                    
                 if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
                     batch_size = decoder_input_ids.size()[0]
                     shuffle_indices = torch.randperm(batch_size)
@@ -785,28 +693,30 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     ) ## Label smoothed cross entropy loss.
                     loss -= contrastive_loss
 
-        del input_ids ## Delete to avoid retention.
-        del input_masks ## Delete to avoid retention.
-        del decoder_input_ids ## Delete to avoid retention.
-        del labels ## Delete to avoid retention.
-        if args.num_domains_for_domain_classifier > 1:
-            del domain_classifier_labels
-            del label_mask
-        
-        if ctr % 100 == 0 and rank  % 8 == 0:
-            fwd_memory = round(torch.cuda.memory_allocated(gpu)/(1024**3), 2)
+        fwd_memory = torch.cuda.memory_allocated(gpu)/(1024**3)
 
+        padding_tokens_enc_dec = (decoder_input_ids == tok.pad_token_id).sum().item() + (input_ids == tok.pad_token_id).sum().item()
+        total_tokens_enc_dec = decoder_input_ids.numel() + input_ids.numel()
+        non_padding_tokens_enc_dec = total_tokens_enc_dec - padding_tokens_enc_dec
+        num_sequences = input_ids.size()[0]
+        batch_stats += torch.tensor([non_padding_tokens_enc_dec, padding_tokens_enc_dec, total_tokens_enc_dec, num_sequences], dtype=torch.long, device=gpu)
+        
         ## Optimization part of the model from this point forward.
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation. ## With FP16/AMP computation we need to unscale gradients before clipping them. We then optimize and update the scaler.
             loss = loss/args.multistep_optimizer_steps
             scaler.scale(loss).backward()
+            bwd_memory = torch.cuda.memory_allocated(gpu)/(1024**3)
+            avg_memory_stats += torch.tensor([fwd_memory, bwd_memory], dtype=torch.float, device=gpu)
             num_batches_this_optimizer_step += 1
             losses += loss.detach().cpu().numpy()
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+                if args.use_fsdp:
+                    model.clip_grad_norm_(args.max_gradient_clip_value)
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             scaler.step(optimizer)
             scaler.update()
             current_scale_value = scaler.get_scale()
@@ -817,24 +727,50 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         else: ## With FP32, we just do regular backpropagation, gradient clipping and then step the optimizer.
             loss = loss/args.multistep_optimizer_steps
             loss.backward()
+            bwd_memory = torch.cuda.memory_allocated(gpu)/(1024**3)
+            avg_memory_stats += torch.tensor([fwd_memory, bwd_memory], dtype=torch.float, device=gpu)
             num_batches_this_optimizer_step += 1
             losses += loss.detach().cpu().numpy()
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
+                if args.use_fsdp:
+                    model.clip_grad_norm_(args.max_gradient_clip_value)
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step() ## Advance the scheduler to get to the next value of LR.
         lv = losses ## Detach the loss in order to report it.
         losses = 0
         num_batches_this_optimizer_step = 0
-        if ctr % 100 == 0 and rank  % 8 == 0: ## Print the current loss every 10 batches but only for the master/prime process.
-            bwd_memory=round(torch.cuda.memory_allocated(gpu)/(1024**3), 2)
+        
+        if ctr % 100 == 0: ## Print the current loss every 100 batches but only for the master/prime process.
+            # All reduce the batch stats.
             end = time.time()
-            print(ctr, round(lv.item(),2), round(end-start, 2), "seconds for 100 batches. Memory used post forward / backward passes:", fwd_memory, "/", bwd_memory, "GB.")
+            torch.distributed.all_reduce(batch_stats)
+            torch.distributed.all_reduce(avg_memory_stats)
+            avg_memory_stats = avg_memory_stats/args.world_size/100/args.multistep_optimizer_steps
+            fwd_memory, bwd_memory = avg_memory_stats.tolist()
+            # Round the memory stats to 2 decimal places.
+            fwd_memory = round(fwd_memory, 2)
+            bwd_memory = round(bwd_memory, 2)
+            non_padding_tokens_enc_dec, padding_tokens_enc_dec, total_tokens_enc_dec, num_sequences = batch_stats.tolist()
+            if rank % args.world_size == 0:
+                print("Step:", ctr, "| Loss:", round(lv.item(),2), " | Time:", round(end-start, 2), "s/100 batches. | Fwd-Bwd (avg):", fwd_memory, ",", bwd_memory, "GB. | Enc-Dec Non-pad, Pad, Total tokens:", non_padding_tokens_enc_dec, ",", padding_tokens_enc_dec, ",", total_tokens_enc_dec, " | Num sequences:", num_sequences)
+                sys.stdout.flush()
+            batch_stats = torch.zeros(4, dtype=torch.long, device=gpu)
+            avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
             start = time.time()
-            sys.stdout.flush()
 
+        del input_ids ## Delete to avoid retention.
+        del input_masks ## Delete to avoid retention.
+        del decoder_input_ids ## Delete to avoid retention.
+        del labels ## Delete to avoid retention.
+        if args.num_domains_for_domain_classifier > 1:
+            del domain_classifier_labels
+            del label_mask
+        
+        
         if ctr % 1000 == 0 and rank == 0 and args.save_weights_and_gradeint_info: ## Save the model weight and gradient info every time this condition is triggered.
             for param_name, param_value in model.named_parameters():
                 if not ("embed_positions" in param_name and args.positional_encodings):
@@ -859,7 +795,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         optim_state = FSDP.full_optim_state_dict(model, optimizer)
         if rank == 0:
             torch.save(state_dict, CHECKPOINT_PATH)
-            scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+            scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
             torch.save(optim_state, CHECKPOINT_PATH + "_optim")
             torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
             os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
@@ -868,7 +804,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         del optim_state  
     else:
         if rank == 0:
-            checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
+            checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
             torch.save(checkpoint_dict, CHECKPOINT_PATH) ## Save a model by default every eval_every steps. This model will be saved with the same file name each time.
             torch.save(model.module.state_dict(), CHECKPOINT_PATH+".pure_model")
             os.system("cp "+CHECKPOINT_PATH+".pure_model "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
@@ -893,8 +829,6 @@ def run_demo():
                         help='Port main node')
     parser.add_argument('-m', '--model_path', default='ddpdefault', type=str, 
                         help='Name of the model')
-    parser.add_argument('--save_intermediate_checkpoints', action='store_true', 
-                        help='Use this flag if you want intermediate checkpoints to be saved. If so then numbers will be attached to the checkpoints.')
     parser.add_argument('--use_official_pretrained', action='store_true', 
                         help='Use this flag if you want the argument "pretrained_model" to specify a pretrained model created by someone else. The actual model parameters will be overwritten if you specified locally_fine_tuned_model_path. This is hacky so sue me.')
     parser.add_argument('--locally_fine_tuned_model_path', default=None, type=str, 
@@ -1003,6 +937,9 @@ def run_demo():
                         help='Should we batch as a fixed number of lines?')
     parser.add_argument('--sorted_batching', action='store_true', 
                         help='Use this flag if you want to sort the corpus by target length before batching. This helps reduce the number of padding tokens substatially.')
+    parser.add_argument('--bucketed_batching', action='store_true', 
+                        help='Use this flag if you want to bucket the corpus by target length before batching. This helps reduce the number of padding tokens substatially.')
+    parser.add_argument('--bucket_intervals', nargs='+', type=int, default=[20, 40, 60, 80, 100], help='The intervals for bucketing. This is only used if bucketed_batching is set to True. Note the writing style, we specify the points at which we want to split the buckets. So if we want to split the buckets at 20, 40, 60, 80, 100 then we specify 20 40 60 80 100. The first bucket will be [0, 20) and the last bucket will be [100, inf).')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
     parser.add_argument('--init_scale', default=65536.0, type=float, help="FP16 gradient scaler's initial value.")
@@ -1072,7 +1009,9 @@ def run_demo():
     parser.add_argument('--distillation_layer_mapping', default='1-1,2-2,3-3,4-4,5-5,6-6', type=str, 
                         help='This indicates the mappings between the parent and child model. The same flag is used for the encoder and the decoder. If you want to map the 2nd parent layer to the first child layer then use 2-1. Note that the layers are not zero indexed as per the description. Ensure that your indices are correct because checking is not done at the moment. If you get weird results then first make sure that your flags are correctly set. If the parent has 6 layers and the child has 3 layers then something like 6-4 will definitely throw an error. User beware! Dokuro mark.')
     parser.add_argument('--save_every', default=1000, type=int, help="The number of iterations after which a model checkpoint must be saved. This is useful for saving the model after every few iterations so that we dont lose the model if the training is interrupted.")
-    parser.add_argument('--long_save_every', default=10000, type=int, help="A large number of iterations after which a model must be force saved assuming we want to see what intermediate checkpoints look like.")
+    parser.add_argument('--save_intermediate_checkpoints', action='store_true', 
+                        help='Use this flag if you want intermediate checkpoints to be saved. If so then numbers will be attached to the checkpoints.')
+    parser.add_argument('--save_intermediate_checkpoints_every', default=10000, type=int, help="A large number of iterations after which a model must be force saved assuming we want to see what intermediate checkpoints look like. This is meant to be used with the flag save_intermediate_checkpoints.")
     parser.add_argument('--parent_encoder_layers', default=3, type=int, help="The value for number of encoder layers")
     parser.add_argument('--parent_decoder_layers', default=3, type=int, help="The value for number of decoder layers")
     parser.add_argument('--parent_dropout', default=0.1, type=float, help="The value for embedding dropout")
@@ -1154,6 +1093,39 @@ def run_demo():
                         help='Should we use FSDP instead of DDP? FSDP is like DDPs big brother and can handle mega large models.')
     parser.add_argument('--zero_stage_2', action='store_true', 
                         help='Should we use ZERO stage 2? If yes then SHARD_GRAD_OP will be done which means gradients will be sharded along with model but optimizer will still be full. Dont recommend this for extremely large models.')
+    parser.add_argument('--backward_prefetch', action='store_true',
+                        help='Should we do backward prefetch in FSDP?')
+    parser.add_argument('--forward_prefetch', action='store_true',
+                        help='Should we do forward prefetch in FSDP?')
+    parser.add_argument('--allow_tf32_matmul', action='store_true',
+                        help='Should we allow TF32 for matmul?')
+
+    ## UL2 flags
+    parser.add_argument('--ul2_denoising', action='store_true', 
+                        help='Should we do UL2 denoising objectives or should we go back to the traditional mbart/mt5 objectives?')
+    parser.add_argument('--ignore_paradigm_token', action='store_true', 
+                        help='Should we ignore the paradigm token to be appended to the beginning of the input?')
+    parser.add_argument('--max_masking_retries', default=20, type=int, 
+                        help='The maximum number of times we try to mask a sentence before we give up.')
+    parser.add_argument('--denoising_styles', nargs='+', type=str, default=["R", "S", "X"], help="The UL2 objectives we want to use.")
+    parser.add_argument('--x_denoising_styles', nargs='+', type=str, default=["LL", "LH", "SH"], help="The UL2 X sub-objectives we want to use.")
+    parser.add_argument('--ul2_r_max_to_mask', type=float, default=0.15, help="The UL2 R objective's maximum percentage of tokens to mask.")
+    parser.add_argument('--ul2_r_spans_std', type=int, default=1, help="The UL2 R objective's mask span's standard deviation.")
+    parser.add_argument('--ul2_r_spans_mean', nargs='+', type=int, default=[3, 8], help="The UL2 R objective's mask span's means.")
+    parser.add_argument('--ul2_s_min_prefix_to_keep', type=float, default=0.25, help="The UL2 S objective's minimum percentage of tokens to keep as prefix.")
+    parser.add_argument('--ul2_s_max_prefix_to_keep', type=float, default=0.75, help="The UL2 S objective's maximum percentage of tokens to keep as prefix.")
+    parser.add_argument('--ul2_x_ll_max_to_mask', type=float, default=0.15, help="The UL2 X large span low ratio objective's maximum percentage of tokens to mask.")
+    parser.add_argument('--ul2_x_ll_span_std', type=int, default=1, help="The UL2 X large span low ratio objective's mask span's standard deviation.")
+    parser.add_argument('--ul2_x_ll_span_mean', type=int, default=20, help="The UL2 X large span low ratio objective's mask span's mean.")
+    parser.add_argument('--ul2_x_lh_max_to_mask', type=float, default=0.50, help="The UL2 X large span high ratio objective's maximum percentage of tokens to mask.")
+    parser.add_argument('--ul2_x_lh_span_std', type=int, default=10.0, help="The UL2 X large span high ratio objective's mask span's standard deviation.")
+    parser.add_argument('--ul2_x_lh_span_mean', type=int, default=30, help="The UL2 X large span high ratio objective's mask span's mean.")
+    parser.add_argument('--ul2_x_sh_max_to_mask', type=float, default=0.50, help="The UL2 X short span high ratio objective's maximum percentage of tokens to mask.")
+    parser.add_argument('--ul2_x_sh_spans_std', type=int, default=1, help="The UL2 X short span high ratio objective's mask span's standard deviation.")
+    parser.add_argument('--ul2_x_sh_spans_mean', nargs='+', type=int, default=[3, 8], help="The UL2 X short span high ratio objective's mask span's mean.")
+    
+
+    ##
     ###
     ### Placeholder flags to prevent code from breaking. These flags are not intended to be used for pretraining. These flags are here because the common_utils.py methods assume the existence of these args for when joint mbart training and regular NMT training is done. TODO: Modify code to avoid the need for these flags in this script.
     parser.add_argument('--multi_source', action='store_true', 
