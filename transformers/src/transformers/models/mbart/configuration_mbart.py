@@ -130,6 +130,7 @@ class MBartConfig(PretrainedConfig):
         bos_token_id=0,
         eos_token_id=2,
         ## Modified by Raj Dabre. Start.
+        initialization_scheme="static", ## Argument to control the initialization scheme. Options can be "static", "xavier", "kaiming" and "depth_scaled_xavier". Xavier uses the uniform distribution and Kaiming uses the normal distribution. Depth scaled means that the variance is scaled by the depth of the layer.
         target_vocab_size=0, ## Argument to control the size of the target vocabulary. If the value is 0, then the source and target vocabularies are the same. Use this when the source and target languages are distant.
         decoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         encoder_tying_config=None, ## Argument to control parameter tying in encoder. According to my RSNMT paper. 
@@ -152,6 +153,8 @@ class MBartConfig(PretrainedConfig):
         num_domains_for_domain_classifier=-1, ## Argument to indicate number of domains for domain classifier.
         gradient_reversal_for_domain_classifier=False, ## Argument to indicate whether we should do gradient reversal for domain classifier.
         positional_encodings=False, ## Argument to indicate whether we should do use positional encodings or embeddings.
+        alibi_encoding=False, ## Argument to indicate whether we should do use alibi encodings .
+        asymmetric_alibi_encoding=False, ## Argument to indicate whether we should do use asymmetric alibi encodings for the encoder self attention.
         use_moe=False, ## Argument to indicate whether we use mixtures of experts instead of FFNs.
         num_experts=8, ## Argument to indicate how many experts we want. The FFN hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         expert_ffn_size=128, ## Argument to indicate the hidden size of the expert.
@@ -224,6 +227,7 @@ class MBartConfig(PretrainedConfig):
         self.gradient_checkpointing = gradient_checkpointing
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
         ## Modified by Raj Dabre. Start.
+        self.initialization_scheme = initialization_scheme ## Argument to indicate the initialization scheme.
         self.target_vocab_size = target_vocab_size ## Argument to indicate the target vocabulary size.
         self.encoder_tying_config = encoder_tying_config ## Argument to control parameter tying in encoder. According to my RSNMT paper.
         self.decoder_tying_config = decoder_tying_config ## Argument to control parameter tying in decoder. According to my RSNMT paper. 
@@ -246,6 +250,8 @@ class MBartConfig(PretrainedConfig):
         self.num_domains_for_domain_classifier = num_domains_for_domain_classifier ## Argument to indicate number of domains for domain classifier.
         self.gradient_reversal_for_domain_classifier = gradient_reversal_for_domain_classifier ## Argument to indicate whether we should do gradient reversal for domain classifier.
         self.positional_encodings = positional_encodings ## Argument to indicate whether we should do use positional encodings or embeddings.
+        self.alibi_encoding = alibi_encoding, ## Argument to indicate whether we should do use alibi encodings .
+        self.asymmetric_alibi_encoding = asymmetric_alibi_encoding, ## Argument to indicate whether we should do use asymmetric alibi encodings for the encoder self attention.
         self.use_moe = use_moe ## Argument to indicate whether we use mixtures of experts instead of FFNs.
         self.num_experts = num_experts ## Argument to indicate how many experts we want. The FFN hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         self.expert_ffn_size = expert_ffn_size ## Argument to indicate the hidden size of the expert.

@@ -120,6 +120,118 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
 
     return inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min) # torch.finfo(dtype).min -1e10
 
+def get_slopes(num_heads, device):
+    closest_power_of_2 = 2 ** math.floor(math.log2(num_heads))
+    base = torch.tensor(
+        2 ** (-(2 ** -(math.log2(closest_power_of_2) - 3))), device=device, dtype=torch.float32
+    )
+    powers = torch.arange(1, 1 + closest_power_of_2, device=device, dtype=torch.int32)
+    slopes = torch.pow(base, powers)
+    if closest_power_of_2 != num_heads:
+        extra_base = torch.tensor(
+            2 ** (-(2 ** -(math.log2(2 * closest_power_of_2) - 3))), device=device, dtype=torch.float32
+        )
+        num_remaining_heads = min(closest_power_of_2, num_heads - closest_power_of_2)
+        extra_powers = torch.arange(1, 1 + 2 * num_remaining_heads, 2, device=device, dtype=torch.int32)
+        slopes = torch.cat([slopes, torch.pow(extra_base, extra_powers)], dim=0)
+    return slopes
+
+
+def build_alibi_tensor_decoder(attention_mask: torch.Tensor, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Coped from BLOOM implementation of huggingface.
+    Link to paper: https://arxiv.org/abs/2108.12409 Alibi tensor is not causal as the original paper mentions, it
+    relies on a translation invariance of softmax for quick implementation: with l being a tensor, and a fixed value
+    `softmax(l+a) = softmax(l)`. Based on
+    https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
+    Args:
+    Returns tensor shaped (batch_size * num_heads, 1, max_seq_len)
+        attention_mask (`torch.Tensor`):
+            Token-wise attention mask, this should be of shape (batch_size, max_seq_len).
+        num_heads (`int`, *required*):
+            number of heads
+        dtype (`torch.dtype`, *optional*, default=`torch.float32`):
+            dtype of the output tensor
+    """
+    batch_size, seq_length = attention_mask.shape
+    
+    slopes = get_slopes(num_heads, attention_mask.device)
+
+    # Note: alibi will added to the attention bias that will be applied to the query, key product of attention
+    # => therefore alibi will have to be of shape (batch_size, num_heads, query_length, key_length)
+    # => here we set (batch_size=1, num_heads=num_heads, query_length=1, key_length=max_length)
+    # => the query_length dimension will then be broadcasted correctly
+    # This is more or less identical to T5's relative position bias:
+    # https://github.com/huggingface/transformers/blob/f681437203baa7671de3174b0fa583c349d9d5e1/src/transformers/models/t5/modeling_t5.py#L527
+    arange_tensor = ((attention_mask.cumsum(dim=-1) - 1) * attention_mask)[:, None, :] ## The future tokens beyond padding are wiped out.
+    alibi = slopes[..., None] * arange_tensor
+    return alibi.reshape(batch_size * num_heads, 1, seq_length).to(dtype)
+
+
+def fill_with_neg_inf(t):
+    """FP16-compatible function that fills a tensor with -inf.""" ## Taken from fairseq
+    return t.float().fill_(float("-inf")).type_as(t)
+
+def build_alibi_tensor_encoder(attention_mask: torch.Tensor, num_heads: int, dtype: torch.dtype, asymmetric: bool = False) -> torch.Tensor:
+    """
+    Partly taken from huggingface.
+    Link to paper: https://arxiv.org/abs/2108.12409 Alibi tensor is not causal as the original paper mentions, it
+    relies on a translation invariance of softmax for quick implementation: with l being a tensor, and a fixed value
+    `softmax(l+a) = softmax(l)`. Based on
+    https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
+    Args:
+    Returns tensor shaped (batch_size * num_heads, 1, max_seq_len)
+        attention_mask (`torch.Tensor`):
+            Token-wise attention mask, this should be of shape (batch_size, max_seq_len).
+        num_heads (`int`, *required*):
+            number of heads
+        dtype (`torch.dtype`, *optional*, default=`torch.float32`):
+            dtype of the output tensor
+        asymmetric (`bool`, *optional*, default=True)
+            To decide between symmetric and asymmetric alibi tensor for encoder
+    """
+    batch_size, seq_length = attention_mask.shape
+    
+
+    # Note: alibi will added to the attention bias that will be applied to the query, key product of attention
+    # => therefore alibi will have to be of shape (batch_size, num_heads, query_length, key_length)
+    # => here we set (batch_size=1, num_heads=num_heads, query_length=1, key_length=max_length)
+    # => the query_length dimension will then be broadcasted correctly
+    # This is more or less identical to T5's relative position bias:
+    # https://github.com/huggingface/transformers/blob/f681437203baa7671de3174b0fa583c349d9d5e1/src/transformers/models/t5/modeling_t5.py#L527
+    
+    # if asymmetric:
+    #     future_mask_right = torch.triu(fill_with_neg_inf(torch.zeros([seq_length, seq_length])), 1).unsqueeze(0).repeat(num_heads//2, 1, 1)
+    #     future_mask_left = torch.tril(fill_with_neg_inf(torch.zeros([seq_length, seq_length])), -1).unsqueeze(0).repeat(num_heads//2, 1, 1)
+        
+    #     nonsym_mask = torch.cat((future_mask_right, future_mask_left), dim = 0).unsqueeze(0).cuda()
+    #     self.slopes = get_slopes(num_heads//2).cuda()*-1
+        
+    #     context_position = torch.arange(seq_length)[:, None].cuda()
+    #     memory_position = torch.arange(seq_length)[None, :].cuda()
+    #     relative_position = memory_position - context_position
+    #     relative_position = torch.abs(relative_position).unsqueeze(0).expand(attn_heads//2, -1,-1)
+
+    #     self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * relative_position
+    #     self.alibi = self.alibi.view(1, attn_heads//2, seq_length, seq_length)
+    #     self.alibi = self.alibi.repeat(1, 2, 1, 1).cuda()
+    # else:
+    if asymmetric: ## Not implemented yet.
+        pass
+    else:
+        slopes = get_slopes(num_heads, attention_mask.device)
+        context_position = torch.arange(seq_length)[:, None]
+        memory_position = torch.arange(seq_length)[None, :]
+        relative_position = (memory_position - context_position).to(slopes.device)
+        relative_position = torch.abs(relative_position).unsqueeze(0).expand(num_heads, -1,-1)
+        slopes = slopes * (-1)
+        alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+        alibi = alibi.view(1, num_heads, seq_length, seq_length).to(dtype)
+        alibi = alibi.expand(batch_size, -1, -1, -1) # This gives [batch size, num_heads, seq_len, seq_len].
+        attention_mask = attention_mask.unsqueeze(1).unsqueeze(1) ## This gives [batch size, 1, 1, seq_len]. Essentially we now use this to mask out the undesirable values corresponding to padding to the right of every batch.
+        alibi = alibi * attention_mask ## This ensures that we have symmetric alibi encodings along with the padding positions being zero so that no value is added. We dont want anything to over or underflow when doing attention masking. This is critical because we add masking biases, rather than mask_fill and this could lead to overflows.
+        return alibi.reshape(batch_size * num_heads, seq_length, seq_length).to(dtype)
+
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
 
@@ -132,19 +244,45 @@ class Experts(nn.Module):
         dim,
         num_experts = 8,
         hidden_dim = 128,
-        activation = ACT2FN['gelu'],
+        activation = "gelu",
         activation_dropout = 0.0,
         std = 0.2,
+        initialization_strategy = 'static',
+        depth = 1,
         ia3_adaptors = False,):
         super().__init__()
-
+        
         num_experts = cast_tuple(num_experts)
 
         w1 = torch.zeros(*num_experts, dim, hidden_dim)
         w2 = torch.zeros(*num_experts, hidden_dim, dim)
 
-        w1.normal_(mean=0.0, std=std)
-        w2.normal_(mean=0.0, std=std)
+        activation_string = activation
+        activation = ACT2FN[activation]
+
+        if ia3_adaptors:
+            initialization_strategy = 'static'
+        
+        if initialization_strategy == 'static':
+            w1.normal_(mean=0.0, std=std)
+            w2.normal_(mean=0.0, std=std)
+        elif initialization_strategy == 'xavier':
+            a = math.sqrt(6.0 / (dim + hidden_dim))
+            gain = 1.0  #nn.init.calculate_gain(activation_string if activation_string != "gelu" else "relu")
+            w1.uniform_(-a*gain, a*gain)
+            w2.uniform_(-a*gain, a*gain)
+        elif initialization_strategy == 'kaiming':
+            gain = 1.0 # nn.init.calculate_gain(activation_string if activation_string != "gelu" else "relu")
+            a = 1 / math.sqrt(dim)
+            w1.normal_(mean=0.0, std=a*gain)
+            a = 1 / math.sqrt(hidden_dim)
+            w2.normal_(mean=0.0, std=a*gain)
+        elif initialization_strategy == 'depth_scaled_xavier':
+            a = math.sqrt(6.0 / (dim + hidden_dim))
+            gain = 1.0 * (1/math.sqrt(depth)) # nn.init.calculate_gain(activation_string if activation_string != "gelu" else "relu")
+            w1.uniform_(-a*gain, a*gain)
+            w2.uniform_(-a*gain, a*gain)
+            
 
         self.w1 = nn.Parameter(w1)
         self.w2 = nn.Parameter(w2)
@@ -152,9 +290,8 @@ class Experts(nn.Module):
         self.act_drop = activation_dropout
         if ia3_adaptors:
             self.ia3_adaptors = True
-            ia3_zeroes = torch.zeros(hidden_dim, dtype=torch.float32)
-            ia3_zeroes.normal_(0.0, std)
-            self.ia3_adaptor_linear = nn.Parameter(ia3_zeroes)
+            ia3_ones = torch.ones(*num_experts, 1, 1, hidden_dim, dtype=torch.float32)
+            self.ia3_adaptor_linear = nn.Parameter(ia3_ones)
         self.ia3_adaptors = ia3_adaptors
 
     def forward(self, x):
@@ -332,12 +469,10 @@ class MBartAttention(nn.Module):
             self.multi_source_method = ""
 
         if ia3_adaptors:
-            ia3_zeroes = torch.zeros(embed_dim, dtype=torch.float32)
-            ia3_zeroes.normal_(0.0, init_std)
-            self.ia3_adaptor_key = nn.Parameter(ia3_zeroes)
-            ia3_zeroes = torch.zeros(embed_dim, dtype=torch.float32)
-            ia3_zeroes.normal_(0.0, init_std)
-            self.ia3_adaptor_value = nn.Parameter(ia3_zeroes)
+            ia3_ones = torch.ones(embed_dim, dtype=torch.float32)
+            self.ia3_adaptor_key = nn.Parameter(ia3_ones)
+            ia3_ones = torch.ones(embed_dim, dtype=torch.float32)
+            self.ia3_adaptor_value = nn.Parameter(ia3_ones)
         self.ia3_adaptors = ia3_adaptors
 
         if lora_adaptors:
@@ -372,6 +507,7 @@ class MBartAttention(nn.Module):
         output_attentions: bool = False,
         prompt_params = None,
         adaptor_or_prompt_layer_idx = 0,
+        alibi_bias = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
 
@@ -500,6 +636,10 @@ class MBartAttention(nn.Module):
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
+        if alibi_bias is not None:
+            assert ((alibi_bias.size() == (bsz*self.num_heads, tgt_len, src_len)) or (alibi_bias.size() == (bsz*self.num_heads, 1, src_len))), f"Attention mask should be of size {(bsz*self.num_heads, tgt_len, src_len)} or {(bsz*self.num_heads, 1, src_len)}, but is {alibi_bias.size()}"
+            attn_weights += alibi_bias
+
         attn_weights = F.softmax(attn_weights, dim=-1)
         ## Modified by Raj Dabre. Start.
         if self.multi_source:
@@ -617,7 +757,7 @@ class MBartAttention(nn.Module):
         ## Modified by Raj Dabre. End.
 
 class MBartEncoderLayer(nn.Module):
-    def __init__(self, config: MBartConfig):
+    def __init__(self, config: MBartConfig, layer_id: int = 1):
         super().__init__()
         self.embed_dim = config.d_model
         self.config = config
@@ -643,9 +783,11 @@ class MBartEncoderLayer(nn.Module):
             experts = Experts(dim = self.embed_dim,
                               num_experts = config.num_experts,
                               hidden_dim = config.expert_ffn_size,
-                              activation = ACT2FN[config.activation_function],
+                              activation = config.activation_function,
                               activation_dropout = self.activation_dropout,
                               std = config.init_std,
+                              initialization_strategy=config.initialization_strategy,
+                              depth = layer_id,
                               ia3_adaptors = config.ia3_adaptors,)
             self.moe = MoE(
                         dim = self.embed_dim,
@@ -664,9 +806,8 @@ class MBartEncoderLayer(nn.Module):
             self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
             self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
             if config.ia3_adaptors:
-                ia3_zeroes = torch.zeros(config.encoder_ffn_dim, dtype=torch.float32)
-                ia3_zeroes.normal_(0.0, config.init_std)
-                self.ia3_adaptor_linear = nn.Parameter(ia3_zeroes)
+                ia3_ones = torch.ones(config.encoder_ffn_dim, dtype=torch.float32)
+                self.ia3_adaptor_linear = nn.Parameter(ia3_ones)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
         if config.sparsify_ffn:
@@ -686,6 +827,7 @@ class MBartEncoderLayer(nn.Module):
         parallel_adaptors=False,
         moe_adaptors=False,
         adaptor_or_prompt_layer_idx = 0,
+        alibi_bias=None,
     ):
         """
         Args:
@@ -711,6 +853,7 @@ class MBartEncoderLayer(nn.Module):
             output_attentions=output_attentions,
             prompt_params=prompt_params,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
+            alibi_bias=alibi_bias,
         )
         
         if self.config.sparsify_attention or self.config.sparsify_ffn:
@@ -800,7 +943,7 @@ class MBartEncoderLayer(nn.Module):
 
 
 class MBartDecoderLayer(nn.Module):
-    def __init__(self, config: MBartConfig):
+    def __init__(self, config: MBartConfig, layer_id: int = 1):
         super().__init__()
         self.embed_dim = config.d_model
         self.config = config
@@ -842,9 +985,11 @@ class MBartDecoderLayer(nn.Module):
             experts = Experts(dim = self.embed_dim,
                               num_experts = config.num_experts,
                               hidden_dim = config.expert_ffn_size,
-                              activation = ACT2FN[config.activation_function],
+                              activation = config.activation_function,
                               activation_dropout = self.activation_dropout,
                               std = config.init_std,
+                              initialization_strategy=config.initialization_strategy,
+                              depth = layer_id,
                               ia3_adaptors = config.ia3_adaptors,)
             self.moe = MoE(
                         dim = self.embed_dim,
@@ -862,9 +1007,8 @@ class MBartDecoderLayer(nn.Module):
         else:
             self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
             if config.ia3_adaptors:
-                ia3_zeroes = torch.zeros(config.decoder_ffn_dim, dtype=torch.float32)
-                ia3_zeroes.normal_(0.0, config.init_std)
-                self.ia3_adaptor_linear = nn.Parameter(ia3_zeroes)
+                ia3_ones = torch.ones(config.decoder_ffn_dim, dtype=torch.float32)
+                self.ia3_adaptor_linear = nn.Parameter(ia3_ones)
             self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
@@ -891,6 +1035,7 @@ class MBartDecoderLayer(nn.Module):
         parallel_adaptors=False,
         moe_adaptors=False,
         adaptor_or_prompt_layer_idx = 0,
+        alibi_bias=None,
     ):
         """
         Args:
@@ -926,6 +1071,7 @@ class MBartDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             prompt_params=[prompt_params[0], prompt_params[1]] if prompt_params is not None else None,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
+            alibi_bias=alibi_bias,
         )
 
         if self.config.sparsify_attention or self.config.sparsify_ffn:
@@ -1134,11 +1280,42 @@ class MBartPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.init_std
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
+            if self.config.initialization_scheme == "static":
+                module.weight.data.normal_(mean=0.0, std=std)
+            elif self.config.initialization_scheme == "xavier":
+                nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
+            elif self.config.initialization_scheme == "kaiming":
+                nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="linear") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
+            elif self.config.initialization_scheme == "depth_scaled_xavier": ## The following logic is really inefficient but given that there is no simple way to pass depth information to the initialization function, we have to do it this way.
+                for param_name, param_weight in self.named_parameters():
+                    module_size = module.weight.size()
+                    param_weight_size = param_weight.size()
+                    if (len(module_size) == len(param_weight_size)) and (module_size == param_weight_size) and torch.all(param_weight == module.weight):
+                        try:
+                            if "encoder_proj" in param_name or "decoder_proj" in param_name or "shared_proj" in param_name: ## Projection matrices should not be scaled by depth.
+                                layer_index = 1
+                            elif param_name.startswith("model"):
+                                layer_index = int(param_name.split(".")[3])+1
+                            elif param_name.startswith("decoder") or param_name.startswith("encoder"):
+                                layer_index = int(param_name.split(".")[2])+1
+                            elif param_name.startswith("layers"):
+                                layer_index = int(param_name.split(".")[1])+1
+                            elif param_name.startswith("lm_head"):
+                                layer_index = 1
+                        except:
+                            layer_index = 1
+                        break
+                # print("Using depth scaled xavier initialization for layer: ", layer_index)
+                nn.init.xavier_uniform_(module.weight, gain=(1.0 / math.sqrt(layer_index))) # *(nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu"))
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
+            if self.config.initialization_scheme == "static":
+                module.weight.data.normal_(mean=0.0, std=std)
+            elif self.config.initialization_scheme == "xavier":
+                nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
+            elif self.config.initialization_scheme == "kaiming":
+                nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="linear") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
@@ -1337,28 +1514,32 @@ class MBartEncoder(MBartPreTrainedModel):
             print("Using no positional encodings for encoder")
             self.embed_positions = 0
         else:
-            if config.positional_encodings:
-                print("Using positional encodings")
-                self.embed_positions = MBartSinusoidalPositionalEmbedding(
-                    config.max_position_embeddings,
-                    embed_dim,
-                    self.padding_idx,
-                )
+            if config.alibi_encoding:
+                print("Using alibi encodings. The positional encodings will be identity functions implemeted as a zero addition.")
+                self.embed_positions = 0
             else:
-                print("Using positional embeddings")
-                self.embed_positions = MBartLearnedPositionalEmbedding(
-                    config.max_position_embeddings,
-                    embed_dim,
-                    self.padding_idx,
-                )
+                if config.positional_encodings:
+                    print("Using positional encodings")
+                    self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                        config.max_position_embeddings,
+                        embed_dim,
+                        self.padding_idx,
+                    )
+                else:
+                    print("Using positional embeddings")
+                    self.embed_positions = MBartLearnedPositionalEmbedding(
+                        config.max_position_embeddings,
+                        embed_dim,
+                        self.padding_idx,
+                    )
         ## Modified by Raj Dabre. Start.
         if config.encoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.encoder_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_layers = nn.ModuleList([MBartEncoderLayer(config) for idx in unique_idxs])
+            self.unique_layers = nn.ModuleList([MBartEncoderLayer(config, layer_id=idx+1) for idx in unique_idxs])
             self.layers = [self.unique_layers[int(idx)-1] for idx in layer_idxs]
         else:
-            self.layers = nn.ModuleList([MBartEncoderLayer(config) for _ in range(config.encoder_layers)])
+            self.layers = nn.ModuleList([MBartEncoderLayer(config, layer_id=i+1) for i in range(config.encoder_layers)])
         if config.multi_source and (config.multi_source_method == "self_relevance" or config.multi_source_method == "self_relevance_and_merge_before_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention" or config.multi_source_method == "self_relevance_and_merge_after_attention_with_context_relevance_only"): ## We should pass each input through a relevance mechanism which is sigmoid(Wx) where x is the representation of the input.
             self.self_relevance_layer = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         ## Modified by Raj Dabre. End.
@@ -1477,7 +1658,10 @@ class MBartEncoder(MBartPreTrainedModel):
             #     prompt_pos = self.embed_positions(prompt_shape, 0)
             #     embed_pos = self.embed_positions(input_shape, prompt_shape[1])
             # else:
-            embed_pos = self.embed_positions(input_shape)
+            if self.config.alibi_encoding:
+                embed_pos = self.embed_positions ## We add a zero here as a way of no positional encoding.
+            else:
+                embed_pos = self.embed_positions(input_shape)
 
         hidden_states = inputs_embeds + embed_pos
         # if prompt_params is not None:
@@ -1503,6 +1687,12 @@ class MBartEncoder(MBartPreTrainedModel):
         
         
         ## Modified by Raj Dabre. Start.
+
+        if self.config.alibi_encoding: ## Create the alibi encoding.
+            alibi_bias = build_alibi_tensor_encoder(attention_mask, self.config.encoder_attention_heads, inputs_embeds.dtype)
+        else:
+            alibi_bias = None
+        
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1520,6 +1710,8 @@ class MBartEncoder(MBartPreTrainedModel):
             assert head_mask.size()[0] == (
                 len(self.layers)
             ), f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
+
+        
         for idx, encoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
@@ -1555,6 +1747,7 @@ class MBartEncoder(MBartPreTrainedModel):
                         parallel_adaptors=parallel_adaptors,
                         moe_adaptors=moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only),
                         adaptor_or_prompt_layer_idx=idx,
+                        alibi_bias=alibi_bias,
                     )
                 
                 if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
@@ -1628,28 +1821,32 @@ class MBartDecoder(MBartPreTrainedModel):
             print("Using no positional encodings for decoder")
             self.embed_positions = 0
         else:
-            if config.positional_encodings:
-                print("Using positional encodings")
-                self.embed_positions = MBartSinusoidalPositionalEmbedding(
-                    config.max_position_embeddings,
-                    config.d_model,
-                    self.padding_idx,
-                )
+            if config.alibi_encoding:
+                print("Using alibi encodings. The positional encodings will be identity functions implemeted as a zero addition.")
+                self.embed_positions = 0
             else:
-                print("Using positional embeddings")
-                self.embed_positions = MBartLearnedPositionalEmbedding(
-                    config.max_position_embeddings,
-                    config.d_model,
-                    self.padding_idx,
-                )
+                if config.positional_encodings:
+                    print("Using positional encodings")
+                    self.embed_positions = MBartSinusoidalPositionalEmbedding(
+                        config.max_position_embeddings,
+                        config.d_model,
+                        self.padding_idx,
+                    )
+                else:
+                    print("Using positional embeddings")
+                    self.embed_positions = MBartLearnedPositionalEmbedding(
+                        config.max_position_embeddings,
+                        config.d_model,
+                        self.padding_idx,
+                    )
         ## Modified by Raj Dabre. Start.
         if config.decoder_tying_config is not None: ## Create unique or shared layers as per sharing configuration.
             layer_idxs = config.decoder_tying_config.strip().split("-")
             unique_idxs = sorted(set(layer_idxs))
-            self.unique_layers = nn.ModuleList([MBartDecoderLayer(config) for idx in unique_idxs])
+            self.unique_layers = nn.ModuleList([MBartDecoderLayer(config, layer_id=idx+1) for idx in unique_idxs])
             self.layers = [self.unique_layers[int(idx)-1] for idx in layer_idxs]
         else:
-            self.layers = nn.ModuleList([MBartDecoderLayer(config) for _ in range(config.decoder_layers)])
+            self.layers = nn.ModuleList([MBartDecoderLayer(config, layer_id=i+1) for i in range(config.decoder_layers)])
         ## Modified by Raj Dabre. End.
         if not config.no_embed_norm:
             self.layernorm_embedding = nn.LayerNorm(config.d_model)
@@ -1814,7 +2011,27 @@ class MBartDecoder(MBartPreTrainedModel):
                 prompt_params[2][prompt_params_idx] = prompt_params[2][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
                 # prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx] * self.embed_scale
                 prompt_params[3][prompt_params_idx] = prompt_params[3][prompt_params_idx].repeat(batch_dims[0], 1, 1)# Repeat the embeddings for each batch
-            
+
+        if self.config.alibi_encoding: ## Create the alibi encoding. Note that when doing prompt training, we assume that the prompt also will be position biased. This is different from when non alibi positional encodings were used. I am just too lazy to handle all configs and I doubt it will change the final outcome in the big picture.
+            alibi_bias_attention_mask = input_ids != self.config.pad_token_id
+            batch_size, _ = input_ids.size()
+            if num_prompts > 0:
+                ## Create zero biases for the prompts part.
+                ## During decoding, we need a prompt bias part which should be zero all the time. We need an alibi bias part for the non prompt part which was processed in the previous decoding steps. And we need the alibi bias part for the current token.
+                prompt_bias = torch.zeros(batch_size*self.config.decoder_attention_heads, 1, num_prompts, device=input_ids.device)
+                if prompt_params is None: ## For the first step, the prompt params will not be none and this ones mask wont be needed. For the rest, we need 1s mask for the previous tokens which will be past_key_values_length-num_prompts. For training, we dont need to bother with this extra ones mask.
+                    ones_mask = torch.ones(batch_size, past_key_values_length-num_prompts).to(device=input_ids.device)
+                    alibi_bias_attention_mask = torch.cat([ones_mask, alibi_bias_attention_mask], dim=1)
+                alibi_bias = build_alibi_tensor_decoder(alibi_bias_attention_mask, self.config.decoder_attention_heads, inputs_embeds.dtype)
+                alibi_bias = torch.cat([prompt_bias, alibi_bias], dim=2)
+            else:
+                if not self.training: ## The input ids will be [batch_size, 1] and this wont be aware of the current length. We can simply solve this by creating a tensor of ones with size [batch_size, past_key_values_length] and prepending this to the alibi_bias_attention_mask.
+                    ones_mask = torch.ones(batch_size, past_key_values_length).to(device=input_ids.device)
+                    alibi_bias_attention_mask = torch.cat([ones_mask, alibi_bias_attention_mask], dim=1)
+                alibi_bias = build_alibi_tensor_decoder(alibi_bias_attention_mask, self.config.decoder_attention_heads, inputs_embeds.dtype)
+        else:
+            alibi_bias = None
+
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
         ) ## Will be none if not training.
@@ -1837,10 +2054,13 @@ class MBartDecoder(MBartPreTrainedModel):
         else:
             # if prompt_params is not None:
             #     prompt_positions = self.embed_positions(prompt_shape, 0)
-            if prompt_params is not None:
-                positions = self.embed_positions(inputs_embeds.size()) ## No matter what, the past key values length will be be properly updated.
+            if self.config.alibi_encoding:
+                positions = self.embed_positions ## We add a zero here as a way of no positional encoding.
             else:
-                positions = self.embed_positions(inputs_embeds.size(), past_key_values_length-num_prompts) ## No matter what, the past key values length will be be properly updated.
+                if prompt_params is not None:
+                    positions = self.embed_positions(inputs_embeds.size()) ## No matter what, the past key values length will be be properly updated.
+                else:
+                    positions = self.embed_positions(inputs_embeds.size(), past_key_values_length-num_prompts) ## No matter what, the past key values length will be be properly updated.
         hidden_states = inputs_embeds + positions
 
         # if prompt_params is not None:
@@ -1889,6 +2109,7 @@ class MBartDecoder(MBartPreTrainedModel):
             assert head_mask.size()[0] == (
                 len(self.layers)
             ), f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
+        
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -1946,6 +2167,7 @@ class MBartDecoder(MBartPreTrainedModel):
                     parallel_adaptors=parallel_adaptors,
                     moe_adaptors=moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only),
                     adaptor_or_prompt_layer_idx=idx,
+                    alibi_bias=alibi_bias,
                 )
             if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
                 hidden_states, moe_loss = layer_outputs[0]
@@ -2574,9 +2796,9 @@ class Adaptor(nn.Module):
             experts = Experts(dim = d_model,
                               num_experts = num_experts,
                               hidden_dim = hidden,
-                              activation = torch.nn.GELU() if adaptor_activation_function=="gelu" else torch.nn.Identity(),
+                              activation = adaptor_activation_function,
                               activation_dropout = dropout,
-                              std = init_std)
+                              std = init_std,) # We wont mess with initialization strategies and instead go for static initialization.
             self.moe = MoE(
                         dim = d_model,
                         num_experts = num_experts,
