@@ -1286,7 +1286,7 @@ class MBartPreTrainedModel(PreTrainedModel):
                     print("Static initialization of the LM head with a std of {}".format(std))
                     module.weight.data.normal_(mean=0.0, std=std)
                 else:
-                    if self.config.embed_low_rank_dim == 0:
+                    if self.config.embed_low_rank_dim != 0:
                         std_lm = self.config.embed_low_rank_dim**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
                     else:
                         std_lm = self.config.d_model**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
@@ -1333,7 +1333,7 @@ class MBartPreTrainedModel(PreTrainedModel):
                 print("Static initialization of the embedding with a std of {}".format(std))
                 module.weight.data.normal_(mean=0.0, std=std) ## Fixed std for embeddings and LM heads.
             else:
-                if self.config.embed_low_rank_dim == 0:
+                if self.config.embed_low_rank_dim != 0:
                     std_emb = self.config.embed_low_rank_dim**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
                 else:
                     std_emb = self.config.d_model**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
