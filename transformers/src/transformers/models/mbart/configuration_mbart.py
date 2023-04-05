@@ -250,8 +250,8 @@ class MBartConfig(PretrainedConfig):
         self.num_domains_for_domain_classifier = num_domains_for_domain_classifier ## Argument to indicate number of domains for domain classifier.
         self.gradient_reversal_for_domain_classifier = gradient_reversal_for_domain_classifier ## Argument to indicate whether we should do gradient reversal for domain classifier.
         self.positional_encodings = positional_encodings ## Argument to indicate whether we should do use positional encodings or embeddings.
-        self.alibi_encoding = alibi_encoding, ## Argument to indicate whether we should do use alibi encodings .
-        self.asymmetric_alibi_encoding = asymmetric_alibi_encoding, ## Argument to indicate whether we should do use asymmetric alibi encodings for the encoder self attention.
+        self.alibi_encoding = alibi_encoding ## Argument to indicate whether we should do use alibi encodings .
+        self.asymmetric_alibi_encoding = asymmetric_alibi_encoding ## Argument to indicate whether we should do use asymmetric alibi encodings for the encoder self attention.
         self.use_moe = use_moe ## Argument to indicate whether we use mixtures of experts instead of FFNs.
         self.num_experts = num_experts ## Argument to indicate how many experts we want. The FFN hidden size should be divided by number of experts to keep model size unchanged when compared to using regular FFNs.
         self.expert_ffn_size = expert_ffn_size ## Argument to indicate the hidden size of the expert.
