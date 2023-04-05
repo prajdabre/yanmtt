@@ -97,20 +97,6 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
     print("Launching process:", rank)
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
-        shard_files_bi(train_files, args)
-        if args.ewc_importance != 0.0:
-            shard_files_bi(ewc_files, args)
-    
-    if rank == 0:
-        # handle quitting
-        with open(args.model_path + ".quitflag", "w") as f:
-            f.write("0")
-        # handle annealing
-        with open(args.model_path + ".anneal", "w") as f:
-            f.write("0")
-    dist.barrier() ## Stop other processes from proceeding till sharding is done.
-    
     if args.use_official_pretrained_tokenizer or args.use_official_pretrained: # If we use an official model then we are using its tokenizer by default.
         if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             if "50" in args.pretrained_model:
@@ -151,6 +137,20 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
     if args.tgt_tokenizer_name_or_path is not None:
         print("Target tokenizer is:", tgt_tok) # We are not going to save the target tokenizer because it is not compatible with what hugingface expects.
 
+    if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
+        shard_files_bi(train_files, tok, args, additional_tokenizer=tgt_tok)
+        if args.ewc_importance != 0.0:
+            shard_files_bi(ewc_files, tok, args, additional_tokenizer=tgt_tok)
+    
+    if rank == 0:
+        # handle quitting
+        with open(args.model_path + ".quitflag", "w") as f:
+            f.write("0")
+        # handle annealing
+        with open(args.model_path + ".anneal", "w") as f:
+            f.write("0")
+    dist.barrier() ## Stop other processes from proceeding till sharding is done.
+    
     if args.supported_languages is not None:
         args.supported_languages = args.supported_languages.split(",")
         with open(args.model_path+"_deploy/supported_languages.txt", "w") as f:
@@ -1211,6 +1211,10 @@ def run_demo():
                         help='What weight should we give to the domain classifier? 1 minus this weight will be given to the main loss.')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
+    parser.add_argument('--sliding_window_shard', action='store_true', 
+                        help='Should we shard the training data with a sliding window approach? We should only need this for pretraining but for the sake of convenience, I will also add this to the fine tuning scipt. Note that the maximum block length will be the hard truncate length. Also note that we will be tokenizing each sentence before deciding if it should fall into the current or next block.')
+    parser.add_argument('--sliding_sharding_delimiter', default=" ", type=str,
+                        help='When splitting a long line into sliding window blocks, what delimiter should we use? By default we assume a space where the basic counting unit is a word but in case we want to safely keep words in a sentence together, a sentence splitting delimiter would be nicer. In such a case, make sure that your data is organized with that delimiter in mind.')
     parser.add_argument('--multi_source', action='store_true', 
                         help='Are we doing multisource NMT? In that case you should specify the train_src as a hyphen separated pair indicating the parent language and the child language. You should also ensure that the source file is a tab separated file where each line contains "the parent pair source sentence[tab]child pair source sentence".')
     parser.add_argument('--multilayer_softmaxing', default=None, 

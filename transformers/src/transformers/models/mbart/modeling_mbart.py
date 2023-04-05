@@ -1280,42 +1280,63 @@ class MBartPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.init_std
         if isinstance(module, nn.Linear):
-            if self.config.initialization_scheme == "static":
-                module.weight.data.normal_(mean=0.0, std=std)
-            elif self.config.initialization_scheme == "xavier":
-                nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
-            elif self.config.initialization_scheme == "kaiming":
-                nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="linear") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
-            elif self.config.initialization_scheme == "depth_scaled_xavier": ## The following logic is really inefficient but given that there is no simple way to pass depth information to the initialization function, we have to do it this way.
-                for param_name, param_weight in self.named_parameters():
-                    module_size = module.weight.size()
-                    param_weight_size = param_weight.size()
-                    if (len(module_size) == len(param_weight_size)) and (module_size == param_weight_size) and torch.all(param_weight == module.weight):
-                        try:
-                            if "encoder_proj" in param_name or "decoder_proj" in param_name or "shared_proj" in param_name: ## Projection matrices should not be scaled by depth.
+            module_size = module.weight.size()
+            if module_size[0] == self.config.vocab_size or module_size[1] == self.config.vocab_size or module_size[0] == self.config.target_vocab_size or module_size[1] == self.config.target_vocab_size: ## See if its the LM projection layer.
+                if self.config.initialization_scheme == "static":
+                    print("Static initialization of the LM head with a std of {}".format(std))
+                    module.weight.data.normal_(mean=0.0, std=std)
+                else:
+                    std_lm = min(self.config.embed_low_rank_dim, self.config.d_model)**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
+                    print("The LM head will be initialized with a std of {}".format(std_lm))
+                    module.weight.data.normal_(mean=0.0, std=std_lm)
+            else:
+                if self.config.initialization_scheme == "static":
+                    print("Static initialization of the layer {} with dim {}".format(module, module_size))
+                    module.weight.data.normal_(mean=0.0, std=std)
+                elif self.config.initialization_scheme == "xavier":
+                    print("Xavier initialization of the layer {} with dim {}".format(module, module_size))
+                    nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
+                elif self.config.initialization_scheme == "kaiming":
+                    print("Kaiming initialization of the layer {} with dim {}".format(module, module_size))
+                    nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="relu") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
+                elif self.config.initialization_scheme == "depth_scaled_xavier": ## The following logic is really inefficient but given that there is no simple way to pass depth information to the initialization function, we have to do it this way.
+                    print("Depth scaled Xavier initialization of the layer {} with dim {}".format(module, module_size))
+                    for param_name, param_weight in self.named_parameters():
+                        param_weight_size = param_weight.size()
+                        if (len(module_size) == len(param_weight_size)) and (module_size == param_weight_size) and torch.all(param_weight == module.weight):
+                            try:
+                                if "encoder_proj" in param_name or "decoder_proj" in param_name or "shared_proj" in param_name: ## Projection matrices should not be scaled by depth.
+                                    layer_index = 1
+                                elif param_name.startswith("model"):
+                                    layer_index = int(param_name.split(".")[3])+1
+                                elif param_name.startswith("decoder") or param_name.startswith("encoder"):
+                                    layer_index = int(param_name.split(".")[2])+1
+                                elif param_name.startswith("layers"):
+                                    layer_index = int(param_name.split(".")[1])+1
+                                elif param_name.startswith("lm_head"):
+                                    layer_index = 1
+                            except:
                                 layer_index = 1
-                            elif param_name.startswith("model"):
-                                layer_index = int(param_name.split(".")[3])+1
-                            elif param_name.startswith("decoder") or param_name.startswith("encoder"):
-                                layer_index = int(param_name.split(".")[2])+1
-                            elif param_name.startswith("layers"):
-                                layer_index = int(param_name.split(".")[1])+1
-                            elif param_name.startswith("lm_head"):
-                                layer_index = 1
-                        except:
-                            layer_index = 1
-                        break
-                # print("Using depth scaled xavier initialization for layer: ", layer_index)
-                nn.init.xavier_uniform_(module.weight, gain=(1.0 / math.sqrt(layer_index))) # *(nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu"))
+                            break
+                    # print("Using depth scaled xavier initialization for layer: ", layer_index)
+                    nn.init.xavier_uniform_(module.weight, gain=(1.0 / math.sqrt(layer_index))) # *(nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu"))
             if module.bias is not None:
                 module.bias.data.zero_()
+        elif isinstance(module, MBartSinusoidalPositionalEmbedding): ## This should not be messed with.
+            print("Skipping initialization of the positional embedding layer.")
+            pass
         elif isinstance(module, nn.Embedding):
             if self.config.initialization_scheme == "static":
-                module.weight.data.normal_(mean=0.0, std=std)
-            elif self.config.initialization_scheme == "xavier":
-                nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
-            elif self.config.initialization_scheme == "kaiming":
-                nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="linear") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
+                print("Static initialization of the embedding with a std of {}".format(std))
+                module.weight.data.normal_(mean=0.0, std=std) ## Fixed std for embeddings and LM heads.
+            else:
+                std_emb = min(self.config.embed_low_rank_dim, self.config.d_model)**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
+                print("The embedding will be initialized with a std of {}".format(std_emb))
+                module.weight.data.normal_(mean=0.0, std=std_emb)
+            # elif self.config.initialization_scheme == "xavier":
+            #     nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
+            # elif self.config.initialization_scheme == "kaiming":
+            #     nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="relu") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 

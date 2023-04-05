@@ -97,14 +97,6 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     print("Launching process:", rank)
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
     
-    if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
-        shard_files_mono(files, args)
-        shard_files_bi(train_files, args)
-        if args.ewc_importance != 0.0:
-            shard_files_bi(ewc_files, args)
-    
-    dist.barrier() ## Stop other processes from proceeding till sharding is done.
-    
     if args.use_official_pretrained_tokenizer or args.use_official_pretrained: # If we use an official model then we are using its tokenizer by default.
         if "mbart" in args.pretrained_model or "IndicBART" in args.pretrained_model:
             if "50" in args.pretrained_model:
@@ -128,6 +120,14 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         shutil.copyfile(args.tokenizer_name_or_path+"/specially_added_tokens", args.model_path+"_deploy/specially_added_tokens")
 
     print("Tokenizer is:", tok)
+    
+    if args.shard_files and rank == 0: ## First shard the data using process 0 aka the prime process or master process. Other processes will wait.
+        shard_files_mono(files, tok, args)
+        shard_files_bi(train_files, tok, args, additional_tokenizer=None)
+        if args.ewc_importance != 0.0:
+            shard_files_bi(ewc_files, tok, args, additional_tokenizer=None)
+    
+    dist.barrier() ## Stop other processes from proceeding till sharding is done.
     
     if args.supported_languages is not None:
         args.supported_languages = args.supported_languages.split(",")
@@ -994,6 +994,10 @@ def run_demo():
                         help='Should we do gradient checkpointing during training? If yes, then the encoder and decoder layer activations will be recomputed during backprop.')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
+    parser.add_argument('--sliding_window_shard', action='store_true', 
+                        help='Should we shard the training data with a sliding window approach? We should only need this for pretraining but for the sake of convenience, I will also add this to the fine tuning scipt. Note that the maximum block length will be the hard truncate length. Also note that we will be tokenizing each sentence before deciding if it should fall into the current or next block.')
+    parser.add_argument('--sliding_sharding_delimiter', default=" ", type=str,
+                        help='When splitting a long line into sliding window blocks, what delimiter should we use? By default we assume a space where the basic counting unit is a word but in case we want to safely keep words in a sentence together, a sentence splitting delimiter would be nicer. In such a case, make sure that your data is organized with that delimiter in mind.')
     parser.add_argument('--multilayer_softmaxing', default=None, 
                         help='Should we apply a softmax for each decoder layer? Unsupported for distillation. Only for vanilla training. You have to specify a comma separated list of indices of the intermediate layers which you want to softmax. These go from 0 for the embedding layer to L-2 for the penultimate layer.')
     parser.add_argument('--remap_encoder', default='', type=str, 

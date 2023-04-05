@@ -388,7 +388,7 @@ def init_weights(module, in_features, out_features):
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
             
-def shard_files_mono(files, args):
+def shard_files_mono(files, tokenizer, args):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
     for lang, file_details in files:
@@ -399,7 +399,34 @@ def shard_files_mono(files, args):
         for shard_id in range(args.world_size):
             outfile = open(file_details[0]+"."+"%02d" % shard_id, "w") if args.num_domains_for_domain_classifier > 1 else open(file_details+"."+"%02d" % shard_id, "w")
             for line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
-                outfile.write(line)
+                if args.sliding_window_shard: ## This is for sliding window sharding. Now note that each shard wont contain the same number of lines. This is because we are sliding the window. But thats not going to change our overall story.
+                    if args.sliding_sharding_delimiter == " ": ## Handle this case specially.
+                        line = line.strip()
+                        line_tok = tokenizer(line, add_special_tokens=False).input_ids
+                        num_blocks = math.ceil(len(line_tok)/args.hard_truncate_length)
+                        for block_id in range(num_blocks): # Extract the block, detokenize it and write it to the file.
+                            block = line_tok[block_id*args.hard_truncate_length:(block_id+1)*args.hard_truncate_length]
+                            block = tokenizer.decode(block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            outfile.write(block+"\n")
+                    else: # First split the line based on the args.sliding_sharding_delimiter and then tokenize each constituent. Keep adding tokens until you reach the hard truncate length. Then write the block to the file.
+                        line = line.strip()
+                        line_split = line.split(args.sliding_sharding_delimiter)
+                        block = []
+                        for sub_line in line_split:
+                            sub_line_tok = tokenizer(sub_line, add_special_tokens=False).input_ids
+                            if (len(block) + len(sub_line_tok)) > args.hard_truncate_length:
+                                if len(block) > 0:
+                                    block = tokenizer.decode(block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                                    outfile.write(block+"\n")
+                                    block = []
+                                else:
+                                    pass
+                            block.extend(sub_line_tok)
+                        if len(block) > 0:
+                            block = tokenizer.decode(block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            outfile.write(block+"\n")
+                else:
+                    outfile.write(line)
             outfile.flush()
             outfile.close()
         print("File for language", lang, "has been sharded.")
@@ -422,9 +449,16 @@ def shard_files_mono_lm(files, args):
         print("File for language", lang, "has been sharded.")
         sys.stdout.flush()
         
-def shard_files_bi(files, args):
+def shard_files_bi(files, tokenizer, args, additional_tokenizer=None):
     """This method shards files into N parts containing the same number of lines. Each shard will go to a different GPU which may even be located on another machine. This method is run when the 'shard_files' argument is passed."""
     print("Sharding files into", args.world_size, "parts")
+    if args.sliding_window_shard and args.sliding_sharding_delimiter == " ":
+        print("Sliding window sharding with a space delimiter with parallel corpora is not a good idea. You have chosen violence. Now you must live with it.")
+    elif args.sliding_window_shard and args.sliding_sharding_delimiter != " ":
+        print("Sliding window sharding with a non-space delimiter with parallel corpora will make sense only if the number of delimiter separated sentences per pair of lines read are equal. Be careful.")
+
+    if additional_tokenizer is None:
+        additional_tokenizer = tokenizer
     for pair, file_details in files:
         infile = list(zip(open(file_details[0]).readlines(), open(file_details[1]).readlines()))
         num_lines = len(infile)
@@ -434,8 +468,50 @@ def shard_files_bi(files, args):
             srcoutfile = open(file_details[0]+"."+"%02d" % shard_id, "w")
             tgtoutfile = open(file_details[1]+"."+"%02d" % shard_id, "w")
             for src_line, tgt_line in infile[shard_id*lines_per_shard:(shard_id+1)*lines_per_shard]:
-                srcoutfile.write(src_line)
-                tgtoutfile.write(tgt_line)
+                if args.sliding_window_shard: ## This is for sliding window sharding. Now note that each shard wont contain the same number of lines. This is because we are sliding the window. But thats not going to change our overall story.
+                    if args.sliding_sharding_delimiter == " ": ## Handle this case specially. For a parallel corpus setting, this will be bad. Very very bad. Dont use this EVER.
+                        src_line = src_line.strip()
+                        tgt_line = tgt_line.strip()
+                        src_line_tok = tokenizer(src_line, add_special_tokens=False).input_ids
+                        tgt_line_tok = additional_tokenizer(tgt_line, add_special_tokens=False).input_ids
+                        num_blocks = math.ceil(len(src_line_tok)/args.hard_truncate_length)
+                        for block_id in range(num_blocks): # Extract the block, detokenize it and write it to the file. Assuming that the number of delimiter separated sentences per line is the same for both the files.
+                            src_block = src_line_tok[block_id*args.hard_truncate_length:(block_id+1)*args.hard_truncate_length]
+                            tgt_block = tgt_line_tok[block_id*args.hard_truncate_length:(block_id+1)*args.hard_truncate_length]
+                            src_block = tokenizer.decode(src_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            tgt_block = additional_tokenizer.decode(tgt_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            srcoutfile.write(src_block+"\n")
+                            tgtoutfile.write(tgt_block+"\n")
+                    else: # First split the line based on the args.sliding_sharding_delimiter and then tokenize each constituent. Keep adding tokens until you reach the hard truncate length. Then write the block to the file. Use this only if you are sure that the number of delimiter separated sentences per line is the same for both the files.
+                        src_line = src_line.strip()
+                        tgt_line = tgt_line.strip()
+                        src_line_split = src_line.split(args.sliding_sharding_delimiter)
+                        tgt_line_split = tgt_line.split(args.sliding_sharding_delimiter)
+                        src_block = []
+                        tgt_block = []
+                        for src_sub_line, tgt_sub_line in zip(src_line_split, tgt_line_split):
+                            src_sub_line_tok = tokenizer(src_sub_line, add_special_tokens=False).input_ids
+                            tgt_sub_line_tok = additional_tokenizer(tgt_sub_line, add_special_tokens=False).input_ids
+                            if (len(src_block) + len(src_sub_line_tok)) > args.hard_truncate_length: ## Assuming that source and target have the same number of delimiter separated sentences per line.
+                                if len(src_block) > 0:
+                                    src_block = tokenizer.decode(src_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                                    srcoutfile.write(src_block+"\n")
+                                    src_block = []
+                                    tgt_block = additional_tokenizer.decode(tgt_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                                    tgtoutfile.write(tgt_block+"\n")
+                                    tgt_block = []
+                                else:
+                                    pass
+                            src_block.extend(src_sub_line_tok)
+                            tgt_block.extend(tgt_sub_line_tok)
+                        if len(src_block) > 0:
+                            src_block = tokenizer.decode(src_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            srcoutfile.write(src_block+"\n")
+                            tgt_block = additional_tokenizer.decode(tgt_block, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            tgtoutfile.write(tgt_block+"\n")
+                else:
+                    srcoutfile.write(src_line)
+                    tgtoutfile.write(tgt_line)
             srcoutfile.flush()
             srcoutfile.close()
             tgtoutfile.flush()
@@ -903,7 +979,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 if sent_len < 1: 
                     continue
                 if sent_len > args.max_length: ## Initial truncation
-                    sentence_split = sentence_split[:args.max_length]
+                    sentence_split = sentence_split[:args.max_length] ## For MT this makes sense but for pre-training, does this even matter? Shouldnt I just take a starting point between 0 to (len(sentence_split)-max_length)
                     sentence = " ".join(sentence_split)
                     sent_len = args.max_length
             
@@ -913,26 +989,26 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 masked_sentence, sentence = generate_mbart_or_mt5_input_and_output(sentence_split, sentence, mask_percent, mask_tok, args) ## Simply preserving the original code's args.
             
             if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit. Not touching this for the UL2 work.
-                iids = tok(masked_sentence, return_tensors="pt").input_ids
-                curr_src_sent_len = len(iids[0])
-                if curr_src_sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                    masked_sentence = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                iids = tok(masked_sentence).input_ids
+                curr_src_sent_len = len(iids)
+                if curr_src_sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens.
+                    masked_sentence = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_src_sent_len = args.hard_truncate_length
-                iids = tok(sentence, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
+                iids = tok(sentence).input_ids
+                curr_tgt_sent_len = len(iids)
                 if curr_tgt_sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                    sentence = tok.decode(iids[0][1:args.hard_truncate_length-1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sentence = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_tgt_sent_len = args.hard_truncate_length
             else:
-                iids = tok(masked_sentence, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_src_sent_len = len(iids[0])
+                iids = tok(masked_sentence, add_special_tokens=False).input_ids
+                curr_src_sent_len = len(iids)
                 if curr_src_sent_len > args.hard_truncate_length:
-                    masked_sentence = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    masked_sentence = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_src_sent_len = args.hard_truncate_length
-                iids = tok(sentence, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
+                iids = tok(sentence, add_special_tokens=False).input_ids
+                curr_tgt_sent_len = len(iids)
                 if curr_tgt_sent_len > args.hard_truncate_length:
-                    sentence = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    sentence = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_tgt_sent_len = args.hard_truncate_length
             
                         
@@ -1110,7 +1186,7 @@ def generate_batches_lm(tok, args, rank, files): ## Address compatibilities of t
     
 def assert_all_frozen(model):
     """Checks if frozen parameters are all linked to each other or not. Ensures no disjoint components of graphs."""
-    model_grads: List[bool] = list(grad_status(model))
+    model_grads = list(grad_status(model))
     n_require_grad = sum(lmap(int, model_grads))
     npars = len(model_grads)
     assert not any(model_grads), f"{n_require_grad/npars:.1%} of {npars} weights require grad"
@@ -1171,17 +1247,17 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
             sent_len = args.max_src_length
         
         if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-            iids = tok(src_sent, return_tensors="pt").input_ids
-            sent_len = len(iids[0])
+            iids = tok(src_sent).input_ids
+            sent_len = len(iids)
             if sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                src_sent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                src_sent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 sent_len = args.hard_truncate_length
             encoder_input_batch.append(src_sent)
         else:
-            iids = tok(src_sent, add_special_tokens=False, return_tensors="pt").input_ids
-            sent_len = len(iids[0])
+            iids = tok(src_sent, add_special_tokens=False).input_ids
+            sent_len = len(iids)
             if sent_len > args.hard_truncate_length:
-                src_sent = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                src_sent = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 sent_len = args.hard_truncate_length
             if args.use_official_pretrained and "50" in args.pretrained_model: ## mbart-50 model has a different input representation
                 encoder_input_batch.append(lang + " " + src_sent + " </s>")
@@ -1195,17 +1271,17 @@ def generate_batches_eval_bilingual(tok, args, file, slang):
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
             if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                iids = tok(src_sent_parent, return_tensors="pt").input_ids
-                sent_len_parent = len(iids[0])
+                iids = tok(src_sent_parent).input_ids
+                sent_len_parent = len(iids)
                 if sent_len_parent - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                    src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent_parent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     sent_len_parent = args.hard_truncate_length
                 encoder_input_batch_parent.append(src_sent_parent)
             else:
-                iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                sent_len_parent = len(iids[0])
+                iids = tok(src_sent_parent, add_special_tokens=False).input_ids
+                sent_len_parent = len(iids)
                 if sent_len_parent > args.hard_truncate_length:
-                    src_sent_parent = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent_parent = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     sent_len_parent = args.hard_truncate_length
                 if args.use_official_pretrained and "50" in args.pretrained_model: ## mbart-50 model has a different input representation
                     encoder_input_batch_parent.append(lang_parent + " " + src_sent_parent + " </s>")
@@ -1409,42 +1485,42 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
                 src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, src_sent_len, mask_percent, mask_tok, args) ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
 
             if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                iids = tok(src_sent, return_tensors="pt").input_ids
-                curr_src_sent_len = len(iids[0])
+                iids = tok(src_sent).input_ids
+                curr_src_sent_len = len(iids)
                 if curr_src_sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                    src_sent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_src_sent_len = args.hard_truncate_length
                 
-                iids = tgt_tok(tgt_sent, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
+                iids = tgt_tok(tgt_sent).input_ids
+                curr_tgt_sent_len = len(iids)
                 if curr_tgt_sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                    tgt_sent = tgt_tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    tgt_sent = tgt_tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_tgt_sent_len = args.hard_truncate_length
             else:
-                iids = tok(src_sent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_src_sent_len = len(iids[0])
+                iids = tok(src_sent, add_special_tokens=False).input_ids
+                curr_src_sent_len = len(iids)
                 if curr_src_sent_len > args.hard_truncate_length:
-                    src_sent = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_src_sent_len = args.hard_truncate_length
                 
-                iids = tgt_tok(tgt_sent, add_special_tokens=False, return_tensors="pt").input_ids
-                curr_tgt_sent_len = len(iids[0])
+                iids = tgt_tok(tgt_sent, add_special_tokens=False).input_ids
+                curr_tgt_sent_len = len(iids)
                 if curr_tgt_sent_len > args.hard_truncate_length:
-                    tgt_sent = tgt_tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    tgt_sent = tgt_tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     curr_tgt_sent_len = args.hard_truncate_length
             
             if args.cross_distillation or args.multi_source:
                 if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                    iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                    curr_src_sent_len_parent = len(iids[0])
+                    iids = tok(src_sent_parent, add_special_tokens=False).input_ids
+                    curr_src_sent_len_parent = len(iids)
                     if curr_src_sent_len_parent - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                        src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                        src_sent_parent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                         curr_src_sent_len_parent = args.hard_truncate_length
                 else:
-                    iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                    curr_src_sent_len_parent = len(iids[0])
+                    iids = tok(src_sent_parent, add_special_tokens=False).input_ids
+                    curr_src_sent_len_parent = len(iids)
                     if curr_src_sent_len_parent > args.hard_truncate_length:
-                        src_sent_parent = tok.decode(iids[0][:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                        src_sent_parent = tok.decode(iids[:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                         curr_src_sent_len_parent = args.hard_truncate_length
                 
                 if curr_src_sent_len_parent > max_src_sent_len_parent:
@@ -1751,17 +1827,17 @@ def generate_batches_for_decoding(tok, args):
         
         
         if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-            iids = tok(src_sent, return_tensors="pt").input_ids
-            sent_len = len(iids[0])
+            iids = tok(src_sent).input_ids
+            sent_len = len(iids)
             if sent_len - 2 > args.hard_truncate_length: ##Ignoring the BOS and EOS tokens
-                src_sent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                src_sent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 sent_len = args.hard_truncate_length
             encoder_input_batch.append(src_sent)
         else: 
-            iids = tok(src_sent, add_special_tokens=False, return_tensors="pt").input_ids
-            sent_len = len(iids[0])
+            iids = tok(src_sent, add_special_tokens=False).input_ids
+            sent_len = len(iids)
             if sent_len > args.hard_truncate_length:
-                src_sent = tok.decode(iids[0][0:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                src_sent = tok.decode(iids[0:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 sent_len = args.hard_truncate_length
             if args.use_official_pretrained and "50" in args.model_path: ## mbart-50 model has a different input representation
                 encoder_input_batch.append(lang + " " + src_sent + " </s>")
@@ -1776,17 +1852,17 @@ def generate_batches_for_decoding(tok, args):
                 src_sent_parent = " ".join(src_sent_split_parent)
                 sent_len_parent = args.max_src_length
             if args.use_official_pretrained and ("bart" in args.model_path or "barthez" in args.model_path) and "mbart" not in args.model_path: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
-                iids = tok(src_sent_parent, return_tensors="pt").input_ids
-                sent_len_parent = len(iids[0])
+                iids = tok(src_sent_parent).input_ids
+                sent_len_parent = len(iids)
                 if sent_len_parent - 2 > args.hard_truncate_length:  ##Ignoring the BOS and EOS tokens
-                    src_sent_parent = tok.decode(iids[0][1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent_parent = tok.decode(iids[1:args.hard_truncate_length+1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     sent_len_parent = args.hard_truncate_length
                 encoder_input_batch.append(src_sent_parent)
             else: 
-                iids = tok(src_sent_parent, add_special_tokens=False, return_tensors="pt").input_ids
-                sent_len_parent = len(iids[0])
+                iids = tok(src_sent_parent, add_special_tokens=False).input_ids
+                sent_len_parent = len(iids)
                 if sent_len_parent > args.hard_truncate_length:
-                    src_sent_parent = tok.decode(iids[0][0:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    src_sent_parent = tok.decode(iids[0:args.hard_truncate_length], skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     sent_len_parent = args.hard_truncate_length
                 if args.use_official_pretrained and "50" in args.model_path: ## mbart-50 model has a different input representation
                     encoder_input_batch_parent.append(lang_parent + " " + src_sent_parent + " </s>")
