@@ -64,7 +64,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Various multi-source fusion strategies. <br>
     * Can be combined with wait-k NMT. <br>
     
-**How to install: Follow installation_instructions.txt** <br>
+**How to install: Follow <a href="https://github.com/prajdabre/yanmtt/blob/main/installation_instructions.txt">installation_instructions.txt</a>** <br>
 
 **Installing the GUI:**
 1. Follow the README.md file in the interface folder.
