@@ -61,4 +61,5 @@ sudo make install
 sudo ldconfig -v
 cd ..
 
-# After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder. # You will need to modify line 34 in create_autotokenizer.sh
+# After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder. 
+# You will need to modify line 34 in create_autotokenizer.sh
