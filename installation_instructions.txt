@@ -1,0 +1,64 @@
+## Key paths. Set these up as per your system
+
+export LD_LIBRARY_PATH=/usr/local/cuda-11.7/lib64/:/home/MLTL/draj/.local/lib64/:$LD_LIBRARY_PATH
+export PATH=/usr/local/cuda-11.7/bin:/share03/securityL2/PBStools/:$PATH
+export PYTHONPATH=$PYTHONPATH
+
+## Clone and cd to folder
+
+git clone https://github.com/prajdabre/yanmtt
+cd yanmtt
+
+## Create conda
+
+conda create -n yanmtt-final python=3.9
+
+## Install core pip packages
+
+pip install -r yanmtt_pip_requirements.txt
+
+## Install torch packages specific to cuda 11.8
+
+pip install numpy --pre torch torchvision torchaudio --force-reinstall --index-url https://download.pytorch.org/whl/nightly/cu118
+
+## Install transformers explicitly
+
+cd transformers
+python setup.py install
+cd ..
+
+## Install torchdistx explicitly
+
+git clone https://github.com/pytorch/torchdistx
+cd torchdistx
+git submodule update --init --recursive
+pip install --upgrade -r requirements.txt -r use-cu118.txt
+cmake -DTORCHDIST_INSTALL_STANDALONE=ON -DCMAKE_CXX_COMPILER=<PATH to g++> -DCMAKE_C_COMPILER=<PATH to gcc> -B build
+cmake --build build
+mkdir build/src/python/torchdistx/_C/CMakeFiles/CMakeRelink.dir
+cp -f build/src/python/torchdistx/_C/_C.cpython-39-x86_64-linux-gnu.so build/src/python/torchdistx/_C/CMakeFiles/CMakeRelink.dir/
+## Note that _C.cpython-39-x86_64-linux-gnu.so is the name of the file that is generated on my system. It may be different on yours.
+
+mkdir build/src/cc/torchdistx/CMakeFiles/CMakeRelink.dir
+cp -f build/src/cc/torchdistx/libtorchdistx.so build/src/cc/torchdistx/CMakeFiles/CMakeRelink.dir/libtorchdistx.so
+pip install .
+cd ..
+
+## Install sentencepiece explicitly
+
+# Go to the URL - "https://github.com/google/sentencepiece/tree/v0.1.95" and follow the install instructions for your OS. But the basic steps are:
+
+sudo apt-get install cmake build-essential pkg-config libgoogle-perftools-dev
+# If you dont have sudo then you can try to install them from source as well. But I have not tried that. Ideally ask an admin.
+
+git clone --branch v0.1.95 https://github.com/google/sentencepiece.git
+cd sentencepiece
+mkdir build
+cd build
+cmake ..
+make -j $(nproc)
+sudo make install
+sudo ldconfig -v
+cd ..
+
+# After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder. # You will need to modify line 34 in create_autotokenizer.sh

@@ -29,7 +29,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 **List of features:**
 1. **Basic NMT pre-training, fine-tuning, decoding, visualization** <br>
     * Distributed, mixed precision, multilingual training.<br> 
-    * Denoising pre-training in mBART or mT5 style.<br>
+    * Denoising pre-training in mBART, mT5 or UL2 style.<br>
     * Fine-tuning your own or official BART-like models like BART, mBART, IndicBART.<br>
     * Joint supervised and unsupervised training using monolingual and parallel corpora.<br>
     * Sentence representation, attention extraction, and scoring translations. <br>
@@ -46,9 +46,11 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Entropy maximization training.<br>
     * Multi-layer softmax training. <br>
     * 8-bit optimizers for training large models. <br>
+    * Various weight initialization strategies. <br>
+    * Various positional embedding strategies like sinusoidal, learned, RoPE, AliBi, NoPE. <br>
 4. **Light-weight fine-tuning** <br>
-    * Adaptor and prompt tuning. <br>
-    * Hypercomplex, light-weight adaptors. <br>
+    * Adaptor (Houlsby, Bapna, Mixtures of Adapters) and prompt tuning. <br>
+    * Hypercomplex, IA-3 light-weight adaptors. <br>
     * Eliminate components or layers prior to decoding or fine-tuning. <br>
     * Fine-grained control over what parameters to fine-tune. <br>
 5. **Model compression** <br>
@@ -62,19 +64,7 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
     * Various multi-source fusion strategies. <br>
     * Can be combined with wait-k NMT. <br>
     
-**How to install:** <br>
-1. Clone the repo and go to the toolkit directory via: "git clone https://github.com/prajdabre/yanmtt && cd yanmtt"
-2. Create a conda environment with python3.9 via and activate it via: "conda create -n yanmtt python=3.9 && conda activate yanmtt"
-3. Update pip via "pip install pip --upgrade" and then install the required packages via: "pip install -r requirements.txt"
-4. Install the modified version of transformers provided along with this repo by: "cd transformers && python setup.py install"
-5. Move out of this folder with "cd .." and install sentencepiece v0.1.95 with "git clone --branch v0.1.95 https://github.com/google/sentencepiece.git"<br>
-5.1. Go to the URL - "https://github.com/google/sentencepiece/tree/v0.1.95" and follow the install instructions for your OS.<br>
-5.2. After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder.<br>
-5.3 Move back to yanmtt folder i.e., "cd ../yanmtt" (from the sentencepiece folder).<br>
-6. Modify the "create_autotokenizer.sh" file by specifying the correct path to sentencepiece trainer ("spm_train") in line 8
-7. Set the python path to the local transformers repo by: PYTHONPATH=$PYTHONPATH:/path/to/this/toolkit/transformers
-8. Make sure that the PATH and LD_LIBRARY_PATH variables point to the appropriate CUDA folders (bin and lib64/lib respectively) 
-9. Whever you do a git pull and the files in the transformers repo has been updated remember to run "python setup.py install" to update the compiled python scripts
+**How to install: Follow installation_instructions.txt** <br>
 
 **Installing the GUI:**
 1. Follow the README.md file in the interface folder.
@@ -85,12 +75,12 @@ YANMTT is short for Yet Another Neural Machine Translation Toolkit. For a backst
 1. **create_autotokenizer.sh** and **create_autotokenizer.py**: These scripts govern the creation of a unigram SPM or BPE tokenizer. The shell script creates the subword segmenter using sentencepiece which can make both SPM and BPE models. All you need is a monolingual corpus for the languages you are interested in. The python script wraps this around an AlbertTokenizer (for SPM) or MBartTokenizer (for BPE), adds special user defined tokens and saves a configuration file for use in the future via an AutoTokenizer. <br>
 **Usage:** see examples/create_tokenizer.sh
 
-2. **pretrain_nmt.py**: This is used to train an MBART model. At the very least you need a monolingual corpus for the languages you are interested in and a tokenizer trained for those languages. This script can also be used to do joint MBART style training jointly with regular NMT training although the NMT training is rather basic because there is no evaluation during training. If you want to do advanced NMT training then you should use the "train_nmt.py" script. Ultimately, you should not use the outcome of this script to perform final translations. Additional advanced usages involve: simulated wait-k simultaneous NMT, knowledge distillation, fine-tuning pre-existing MBART models with fine-grained control over what should be initialized, frozen or tuned, etc. Read the code and the command line arguments for a better understanding of the advanced features.  <br>
+2. **pretrain_nmt.py**: This is used to pre-train a model. At the very least you need a monolingual corpus for the languages you are interested in and a tokenizer trained for those languages. This script can also be used to do denoising style training jointly with regular NMT training although the NMT training is rather basic because there is no evaluation during training. If you want to do advanced NMT training then you should use the "train_nmt.py" script. Ultimately, you should not use the outcome of this script to perform final translations. Additional advanced usages involve: simulated wait-k simultaneous NMT, knowledge distillation, fine-tuning pre-existing MBART models with fine-grained control over what should be initialized, frozen or tuned, etc. Read the code and the command line arguments for a better understanding of the advanced features.  <br>
 **Usage:** see examples/train_mbart_model.sh<br>
 **Note 1:** If M is your model name then a folder "M_deploy" is created which you can directly use with AutoTokenizer and AutoModel.<br>
 **Note 2:** If you plan to use this "M_deploy" model with the GUI then remember to use the --supported_languages flag.<br>
 
-3. **train_nmt.py**: This is used to either train a NMT model from scratch or fine-tune a pre-existing MBART or NMT model. At the very least you need a parallel corpus (preferrably split into train, dev and test sets although we can make do with only a train set) for the language pairs you are interested in. There are several advanced features such as: simulated wait-k simultaneous NMT, knowledge distillation, fine-grained control over what should be initialized, frozen or tuned, document NMT, multi-source NMT, adaptor tuning, prompt tuning, mixtures of experts layers, multilingual NMT training. <br>
+3. **train_nmt.py**: This is used to either train a NMT model from scratch or fine-tune a pre-existing MBART or a NMT model created via YANMTT. At the very least you need a parallel corpus (preferrably split into train, dev and test sets although we can make do with only a train set) for the language pairs you are interested in. There are several advanced features such as: simulated wait-k simultaneous NMT, knowledge distillation, fine-grained control over what should be initialized, frozen or tuned, document NMT, multi-source NMT, adaptor tuning, prompt tuning, mixtures of experts layers, multilingual NMT training. <br>
 **Usage:** see examples/train_or_fine_tune_model.sh
 **Note:** The notes applying to the "pretrain_nmt.py" script also apply to this script.
 

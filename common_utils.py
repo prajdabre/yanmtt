@@ -524,12 +524,13 @@ def get_sacrebleu(refs, hyp):
     bleu = sacrebleu.corpus_bleu(hyp, refs)
     return bleu.score
 
-def get_bucket_indexed_indefinite_corpus_yielder_mono(corpus, lang, bucket_intervals, sorted_batching):
+def get_bucket_indexed_indefinite_corpus_yielder_mono(corpus, lang, bucket_intervals, sorted_batching, tokenizer):
     # First we split the corpus into buckets. Each number in the bucket_intervals list is the upper bound of the bucket. The last bucket is the rest of the corpus.
     # We create a dictionary where the key is the bucket id and the value is the yielder for that bucket.
     corpus_split_by_length = {l: [] for l in bucket_intervals}
     for line in corpus:
-        line_length = len(line)
+        tokenized_sentence = tokenizer(line.strip(), add_special_tokens=False).input_ids
+        line_length = len(tokenized_sentence)
         for bucket_id in range(len(bucket_intervals)-1):
             if line_length >= bucket_intervals[bucket_id] and line_length < bucket_intervals[bucket_id+1]:
                 corpus_split_by_length[bucket_intervals[bucket_id]].append(line)
@@ -547,13 +548,14 @@ def get_bucket_indexed_indefinite_corpus_yielder_mono(corpus, lang, bucket_inter
     # Now we create a yielder for each bucket.
     bucket_yielders = {}
     for bucket_id in corpus_split_by_length:
-        bucket_yielders[bucket_id] = yield_corpus_indefinitely_mono(corpus_split_by_length[bucket_id], lang, sorted_batching, bucketed_batching=True, bucket_id=bucket_id)
+        if len(corpus_split_by_length[bucket_id]) > 0:
+            bucket_yielders[bucket_id] = yield_corpus_indefinitely_mono(corpus_split_by_length[bucket_id], lang, sorted_batching, bucketed_batching=True, bucket_id=bucket_id, tokenizer=tokenizer)
     
     return bucket_yielders, bucket_distributions
 
 
 
-def yield_corpus_indefinitely_mono(corpus, lang, sorted_batching, bucketed_batching=False, bucket_id=None):
+def yield_corpus_indefinitely_mono(corpus, lang, sorted_batching, bucketed_batching=False, bucket_id=None, tokenizer=None):
     """This shuffles the corpus or corpus shard at the beginning of each epoch and returns sentences indefinitely."""
     epoch_counter = 0
     num_lines = len(corpus)
@@ -571,7 +573,7 @@ def yield_corpus_indefinitely_mono(corpus, lang, sorted_batching, bucketed_batch
             if sorted_batching:
                 for curr_segment_id in range(num_sorted_segments):
                     curr_segment = corpus[curr_segment_id*num_sentences_before_sort:(curr_segment_id+1)*num_sentences_before_sort]
-                    for src_line in sorted(curr_segment, key=len):
+                    for src_line in sorted(curr_segment, key=lambda x: len(tokenizer(x.strip(), add_special_tokens=False).input_ids)):
                         yield src_line
             else:
                 for src_line in corpus:
@@ -586,18 +588,22 @@ def yield_corpus_indefinitely_mono(corpus, lang, sorted_batching, bucketed_batch
         print("Catastrophic data gen failure")
     return None
 
-def get_bucket_indexed_indefinite_corpus_yielder_bi(corpus, lang, bucket_intervals, sorted_batching):
+def get_bucket_indexed_indefinite_corpus_yielder_bi(corpus, lang, bucket_intervals, sorted_batching, tokenizer, tgt_tokenizer):
     # First we split the corpus into buckets. Each number in the bucket_intervals list is the upper bound of the bucket. The last bucket is the rest of the corpus.
     # We create a dictionary where the key is the bucket id and the value is the yielder for that bucket.
     corpus_split_by_length = {l: [] for l in bucket_intervals}
     for src_line, tgt_line in corpus:
-        tgt_line_length = len(tgt_line)
+        tgt_line_tok = tgt_tokenizer(tgt_line.strip(), add_special_tokens=False).input_ids
+        src_line_tok = tokenizer(src_line.strip(), add_special_tokens=False).input_ids
+        tgt_line_length = len(tgt_line_tok)
+        src_line_length = len(src_line_tok)
+        average_line_length = (tgt_line_length + src_line_length) / 2 ## Hopefully this leads to a compromise between the two.
         # We will index the bucket by the target line length.
         for bucket_id in range(len(bucket_intervals)-1):
-            if tgt_line_length >= bucket_intervals[bucket_id] and tgt_line_length < bucket_intervals[bucket_id+1]:
+            if average_line_length >= bucket_intervals[bucket_id] and average_line_length < bucket_intervals[bucket_id+1]:
                 corpus_split_by_length[bucket_intervals[bucket_id]].append((src_line, tgt_line))
                 break
-        if tgt_line_length >= bucket_intervals[-1]:
+        if average_line_length >= bucket_intervals[-1]:
             corpus_split_by_length[bucket_intervals[-1]].append((src_line, tgt_line))
     # Print bucket sizes
     bucket_distributions = []
@@ -610,11 +616,12 @@ def get_bucket_indexed_indefinite_corpus_yielder_bi(corpus, lang, bucket_interva
     # Now we create a yielder for each bucket.
     bucket_yielders = {}
     for bucket_id in corpus_split_by_length:
-        bucket_yielders[bucket_id] = yield_corpus_indefinitely_bi(corpus_split_by_length[bucket_id], lang, sorted_batching, bucketed_batching=True, bucket_id=bucket_id)
+        if len(corpus_split_by_length[bucket_id]) > 0:
+            bucket_yielders[bucket_id] = yield_corpus_indefinitely_bi(corpus_split_by_length[bucket_id], lang, sorted_batching, bucketed_batching=True, bucket_id=bucket_id, tokenizer=tokenizer, tgt_tokenizer=tgt_tokenizer)
     
     return bucket_yielders, bucket_distributions
 
-def yield_corpus_indefinitely_bi(corpus, language, sorted_batching, bucketed_batching=False, bucket_id=None):
+def yield_corpus_indefinitely_bi(corpus, language, sorted_batching, bucketed_batching=False, bucket_id=None, tokenizer=None, tgt_tokenizer=None):
     """This shuffles the corpus at the beginning of each epoch and returns sentences indefinitely."""
     epoch_counter = 0
     num_lines = len(corpus)
@@ -622,7 +629,7 @@ def yield_corpus_indefinitely_bi(corpus, language, sorted_batching, bucketed_bat
     num_sorted_segments = (num_lines // num_sentences_before_sort) + 1
     while True:
         if bucketed_batching:
-            print("Shuffling bucket:", bucket_id, "for language:", language)
+            print("Shuffling bucket ID:", bucket_id, "for language:", language)
         else:
             print("Shuffling corpus:", language)
         random.shuffle(corpus)
@@ -630,7 +637,7 @@ def yield_corpus_indefinitely_bi(corpus, language, sorted_batching, bucketed_bat
         if sorted_batching:
             for curr_segment_id in range(num_sorted_segments):
                 curr_segment = corpus[curr_segment_id*num_sentences_before_sort:(curr_segment_id+1)*num_sentences_before_sort]
-                for src_line, tgt_line in sorted(curr_segment, key=lambda x: len(x[1])):
+                for src_line, tgt_line in sorted(curr_segment, key=lambda x: (len(tokenizer(x[0].strip(), add_special_tokens=False).input_ids) + len(tgt_tokenizer(x[1].strip(), add_special_tokens=False).input_ids)) / 2):
                     yield src_line, tgt_line
         else:
             for src_line, tgt_line in corpus:
@@ -912,11 +919,11 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         file_content = open(file_details[0]+"."+"%02d" % rank).readlines() if args.num_domains_for_domain_classifier > 1 else open(file_details+"."+"%02d" % rank).readlines()
         probs.append(len(file_content))
         if args.bucketed_batching:
-            bucket_yielder, bucket_stats = get_bucket_indexed_indefinite_corpus_yielder_mono(file_content, lang, args.bucket_intervals, args.sorted_batching)
+            bucket_yielder, bucket_stats = get_bucket_indexed_indefinite_corpus_yielder_mono(file_content, lang, args.bucket_intervals, args.sorted_batching, tok)
             language_file_dict.append(bucket_yielder)
             all_bucket_stats[lang] = bucket_stats
         else:
-            language_file_dict.append(yield_corpus_indefinitely_mono(file_content, lang, args.sorted_batching))
+            language_file_dict.append(yield_corpus_indefinitely_mono(file_content, lang, args.sorted_batching, bucketed_batching=False, bucket_id=None, tokenizer=tok))
     probs_temp = [probval/sum(probs) for probval in probs]
     probs = probs_temp
     probs_temp = [probsval**(1.0/args.data_sampling_temperature) for probsval in probs] ## Temperature sampling probabilities.
@@ -930,7 +937,8 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
             bucket_stats.append(sum([all_bucket_stats[lang][i] for lang in language_list]))
         bucket_stats = [statval/sum(bucket_stats) for statval in bucket_stats]
     print("Language probabilities:", probs)
-    print("Bucket probabilities:", bucket_stats)
+    if args.bucketed_batching:
+        print("Bucket probabilities:", bucket_stats)
 
     dropped_sentence = "" ## We will save the sentence to be dropped this batch and add it to the next batch.
     dropped_language = "" ## We will save the language to be dropped this batch and add it to the next batch.
@@ -945,8 +953,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         start = time.time()
         sents_in_batch = 0
         if args.bucketed_batching:
-            for lang in language_list:
-                current_bucket = random.choices(args.bucket_intervals, bucket_stats)[0] # Its a chicken and egg problem. Since I need to choose sentences from the same bucket, I need to know the bucket first and the bucket distributions are language dependent. So I normalize the bucket distributions across languages and then sample from it. Not ideal but ill take what I can get.
+            current_bucket = random.choices(args.bucket_intervals, bucket_stats)[0] # Its a chicken and egg problem. Since I need to choose sentences from the same bucket, I need to know the bucket first and the bucket distributions are language dependent. So I normalize the bucket distributions across languages and then sample from it. Not ideal but ill take what I can get.
         if args.num_domains_for_domain_classifier > 1:
             domain_classifier_labels = []
         while True:
@@ -959,7 +966,10 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                 language_index = random.choices(language_indices, probs)[0]
                 language = language_list[language_index]
                 if args.bucketed_batching:
-                    sentence = next(language_file_dict[language_index][current_bucket]).strip()
+                    if current_bucket in language_file_dict[language_index]:
+                        sentence = next(language_file_dict[language_index][current_bucket]).strip()
+                    else:
+                        continue
                 else:
                     sentence = next(language_file_dict[language_index]).strip()
             if args.num_domains_for_domain_classifier > 1: ## Careful when handling domains for monolingual corpora.
@@ -1366,11 +1376,11 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
         probs.append(len(src_file_content))
         file_content = list(zip(src_file_content, tgt_file_content))
         if args.bucketed_batching:
-            bucket_yielder, bucket_stats = get_bucket_indexed_indefinite_corpus_yielder_bi(file_content, lang, args.bucket_intervals, args.sorted_batching)
+            bucket_yielder, bucket_stats = get_bucket_indexed_indefinite_corpus_yielder_bi(file_content, lang, args.bucket_intervals, args.sorted_batching, tok, tgt_tok)
             language_file_dict.append(bucket_yielder)
             all_bucket_stats[lang] = bucket_stats
         else:
-            language_file_dict.append(yield_corpus_indefinitely_bi(file_content, lang, args.sorted_batching))
+            language_file_dict.append(yield_corpus_indefinitely_bi(file_content, lang, args.sorted_batching, bucketed_batching=False, bucket_id=None, tokenizer=tok, tgt_tokenizer=tgt_tok))
     print("Corpora stats:", probs)
     probs_temp = [probval/sum(probs) for probval in probs]
     probs = probs_temp
@@ -1386,7 +1396,7 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
         bucket_stats = [statval/sum(bucket_stats) for statval in bucket_stats]
     print("Corpora sampling probabilities:", probs)
     if args.bucketed_batching:
-        print("Bucket stats:", bucket_stats)
+        print("Bucket stats (post tokenization length):", bucket_stats)
     dropped_source_sentence = "" ## We will save the source sentence to be dropped this batch and add it to the next batch.
     dropped_target_sentence = "" ## We will save the target sentence to be dropped this batch and add it to the next batch.
     dropped_language = "" ## We will save the language indicator to be dropped this batch and add it to the next batch.
@@ -1424,7 +1434,10 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
                 language_index = random.choices(language_indices, probs)[0]
                 language = language_list[language_index]
                 if args.bucketed_batching:
-                    src_sent, tgt_sent = next(language_file_dict[language_index][bucket_index])
+                    if bucket_index in language_file_dict[language_index]:
+                        src_sent, tgt_sent = next(language_file_dict[language_index][bucket_index])
+                    else:
+                        continue
                 else:
                     src_sent, tgt_sent = next(language_file_dict[language_index])
                 if args.cross_distillation or args.multi_source: ## We assume that we use a N-way corpus of 3 languages X, Y and Z. We want to distill Y-Z behavior into X-Z where the Y-Z pair also has additional larger corpora but X-Z does not. As such the source sentence should be a tab separated sentence consisting of X[tab]Y.
@@ -1482,7 +1495,7 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
                 else:
                     pass
 
-                src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, src_sent_len, mask_percent, mask_tok, args) ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
+                src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, mask_percent, mask_tok, args) ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
 
             if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent).input_ids

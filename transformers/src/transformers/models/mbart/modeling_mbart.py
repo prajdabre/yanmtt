@@ -21,6 +21,8 @@ import random
 from typing import Optional, Tuple
 
 import torch
+from torch import nn, einsum
+from einops import rearrange, repeat
 import numpy as np
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -29,7 +31,7 @@ from torch.nn import CrossEntropyLoss
 ## Modified by Raj Dabre. Start.
 from torch.autograd import Function
 from mixture_of_experts import MoE
-from math import log
+from math import log, pi
 ## Modified by Raj Dabre. End.
 
 from ...activations import ACT2FN
@@ -232,6 +234,154 @@ def build_alibi_tensor_encoder(attention_mask: torch.Tensor, num_heads: int, dty
         alibi = alibi * attention_mask ## This ensures that we have symmetric alibi encodings along with the padding positions being zero so that no value is added. We dont want anything to over or underflow when doing attention masking. This is critical because we add masking biases, rather than mask_fill and this could lead to overflows.
         return alibi.reshape(batch_size * num_heads, seq_length, seq_length).to(dtype)
 
+
+## Modified RoPE implementation of lucidrains. Start.
+
+# helper functions
+
+def exists(val):
+    return val is not None
+
+def broadcat(tensors, dim = -1):
+    num_tensors = len(tensors)
+    shape_lens = set(list(map(lambda t: len(t.shape), tensors)))
+    assert len(shape_lens) == 1, 'tensors must all have the same number of dimensions'
+    shape_len = list(shape_lens)[0]
+
+    dim = (dim + shape_len) if dim < 0 else dim
+    dims = list(zip(*map(lambda t: list(t.shape), tensors)))
+
+    expandable_dims = [(i, val) for i, val in enumerate(dims) if i != dim]
+    assert all([*map(lambda t: len(set(t[1])) <= 2, expandable_dims)]), 'invalid dimensions for broadcastable concatentation'
+    max_dims = list(map(lambda t: (t[0], max(t[1])), expandable_dims))
+    expanded_dims = list(map(lambda t: (t[0], (t[1],) * num_tensors), max_dims))
+    expanded_dims.insert(dim, (dim, dims[dim]))
+    expandable_shapes = list(zip(*map(lambda t: t[1], expanded_dims)))
+    tensors = list(map(lambda t: t[0].expand(*t[1]), zip(tensors, expandable_shapes)))
+    return torch.cat(tensors, dim = dim)
+
+# rotary embedding helper functions
+
+def rotate_half(x):
+    x = rearrange(x, '... (d r) -> ... d r', r = 2)
+    x1, x2 = x.unbind(dim = -1)
+    x = torch.stack((-x2, x1), dim = -1)
+    return rearrange(x, '... d r -> ... (d r)')
+
+def apply_rotary_emb(freqs, t, start_index = 0, scale = 1.):
+    freqs = freqs.to(t)
+    rot_dim = freqs.shape[-1]
+    end_index = start_index + rot_dim
+    assert rot_dim <= t.shape[-1], f'feature dimension {t.shape[-1]} is not of sufficient size to rotate in all the positions {rot_dim}'
+    t_left, t, t_right = t[..., :start_index], t[..., start_index:end_index], t[..., end_index:]
+    t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
+    return torch.cat((t_left, t, t_right), dim = -1)
+
+# learned rotation helpers
+
+def apply_learned_rotations(rotations, t, start_index = 0, freq_ranges = None):
+    if exists(freq_ranges):
+        rotations = einsum('..., f -> ... f', rotations, freq_ranges)
+        rotations = rearrange(rotations, '... r f -> ... (r f)')
+
+    rotations = repeat(rotations, '... n -> ... (n r)', r = 2)
+    return apply_rotary_emb(rotations, t, start_index = start_index)
+
+# classes
+
+class RotaryEmbedding(nn.Module):
+    def __init__(
+        self,
+        dim,
+        custom_freqs = None,
+        freqs_for = 'lang',
+        theta = 10000,
+        max_freq = 10,
+        num_freqs = 1,
+        learned_freq = False,
+        use_xpos = False,
+        xpos_scale_base = 512,
+    ):
+        super().__init__()
+        if exists(custom_freqs):
+            freqs = custom_freqs
+        elif freqs_for == 'lang':
+            freqs = 1. / (theta ** (torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))
+        elif freqs_for == 'pixel':
+            freqs = torch.linspace(1., max_freq / 2, dim // 2) * pi
+        elif freqs_for == 'constant':
+            freqs = torch.ones(num_freqs).float()
+        else:
+            raise ValueError(f'unknown modality {freqs_for}')
+
+        self.cache = dict()
+        self.cache_scale = dict()
+        self.freqs = nn.Parameter(freqs, requires_grad = learned_freq)
+
+        self.use_xpos = use_xpos
+        if not use_xpos:
+            self.register_buffer('scale', None)
+            return
+
+        scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
+        self.scale_base = xpos_scale_base
+        self.register_buffer('scale', scale)
+
+    def rotate_queries_or_keys(self, t, past_key_values_length=0, seq_dim = -2):
+        assert not self.use_xpos, 'you must use `.rotate_queries_and_keys` method instead and pass in both queries and keys, for length extrapolatable rotary embeddings'
+        device, seq_len = t.device, t.shape[seq_dim]
+        freqs = self.forward(lambda: torch.arange(past_key_values_length+seq_len, device = device), cache_key = past_key_values_length+seq_len)
+        return apply_rotary_emb(freqs[-seq_len:,:], t)
+
+    def rotate_queries_and_keys(self, q, k, past_key_values_length=0, seq_dim = -2):
+        assert self.use_xpos
+        device, seq_len = q.device, q.shape[seq_dim]
+        seq = torch.arange(past_key_values_length+seq_len, device = device)
+        freqs = self.forward(lambda: seq, cache_key = f'freqs:{past_key_values_length+seq_len}')
+        scale = self.get_scale(lambda: seq, cache_key = f'scale:{past_key_values_length+seq_len}')
+        rotated_q = apply_rotary_emb(freqs[-seq_len:,:], q, scale = scale[-seq_len:,:])
+        rotated_k = apply_rotary_emb(freqs[-seq_len:,:], k, scale = scale[-seq_len:,:] ** -1)
+        
+        return rotated_q, rotated_k
+
+    def get_scale(self, t, cache_key = None):
+        assert self.use_xpos
+
+        if exists(cache_key) and cache_key in self.cache:
+            return self.cache[cache_key]
+
+        if callable(t):
+            t = t()
+
+        scale = 1.
+        if self.use_xpos:
+            power = (t - len(t) // 2) / self.scale_base
+            scale = self.scale ** rearrange(power, 'n -> n 1')
+            scale = torch.cat((scale, scale), dim = -1)
+
+        if exists(cache_key):
+            self.cache[cache_key] = scale
+
+        return scale
+
+    def forward(self, t, cache_key = None):
+        if exists(cache_key) and cache_key in self.cache:
+            return self.cache[cache_key]
+
+        if callable(t):
+            t = t()
+
+        freqs = self.freqs
+
+        freqs = torch.einsum('..., f -> ... f', t.type(freqs.dtype), freqs)
+        freqs = repeat(freqs, '... n -> ... (n r)', r = 2)
+
+        if exists(cache_key):
+            self.cache[cache_key] = freqs
+
+        return freqs
+
+## End of modified RoPE implementation of lucidrains.
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
 
@@ -432,7 +582,6 @@ class MBartAttention(nn.Module):
         init_std = 0.02,
         sparsify_attention = False,
         sparsification_temperature = 3.0,
-
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -508,6 +657,7 @@ class MBartAttention(nn.Module):
         prompt_params = None,
         adaptor_or_prompt_layer_idx = 0,
         alibi_bias = None,
+        rope_encoder=None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
 
@@ -520,6 +670,14 @@ class MBartAttention(nn.Module):
         query_states = self.q_proj(hidden_states) * self.scaling
         if self.lora_adaptors:
             query_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_q_proj), self.lora_adapter_up_q_proj) * self.scaling
+        
+        query_states = self._shape(query_states, tgt_len, bsz)
+
+        if past_key_value is not None:
+            past_key_values_length = past_key_value[0].shape[2]
+        else:
+            past_key_values_length = 0
+
         # get key, value proj
         ## Modified by Raj Dabre. Start.
         if is_cross_attention and past_key_value is not None:
@@ -540,6 +698,7 @@ class MBartAttention(nn.Module):
             if prompt_params is not None:
                 prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
                 key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
+            
             value_states = self.v_proj(key_value_states)
             if self.lora_adaptors:
                 value_states += torch.matmul(torch.matmul(key_value_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
@@ -574,6 +733,10 @@ class MBartAttention(nn.Module):
                 key_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
             key_states = key_states * self.ia3_adaptor_key if self.ia3_adaptors else key_states
             key_states = self._shape(key_states, -1, bsz)
+            
+            if rope_encoder is not None: ## In case of decoding self attention, both query and key will be sequence length 1. In this case we need to provide the past key value length to the rope encoder which will select the appropriate frequency and scale components.
+                query_states, key_states = rope_encoder.rotate_queries_and_keys(query_states, key_states, past_key_values_length=past_key_values_length)
+
             value_states = self.v_proj(hidden_states)
             if self.lora_adaptors:
                 value_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_v_proj), self.lora_adapter_up_v_proj)
@@ -588,6 +751,10 @@ class MBartAttention(nn.Module):
                 key_states += torch.matmul(torch.matmul(hidden_states, self.lora_adapter_down_k_proj), self.lora_adapter_up_k_proj)
             key_states = key_states * self.ia3_adaptor_key if self.ia3_adaptors else key_states
             key_states = self._shape(key_states, -1, bsz)
+
+            if rope_encoder is not None: ## In case of decoding self attention, both query and key will be sequence length 1. In this case we need to provide the past key value length to the rope encoder which will select the appropriate frequency and scale components.
+                query_states, key_states = rope_encoder.rotate_queries_and_keys(query_states, key_states, past_key_values_length=past_key_values_length)
+
             if prompt_params is not None:
                 prompt_params_expanded = self._shape(prompt_params[0][adaptor_or_prompt_layer_idx], -1, bsz)
                 key_states = torch.cat([prompt_params_expanded, key_states], dim=2)
@@ -614,7 +781,7 @@ class MBartAttention(nn.Module):
                 additional_past_key_value = (additional_key_states, additional_value_states)
             ## Modified by Raj Dabre. End.
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+        query_states = query_states.view(*proj_shape)
         key_states = key_states.view(*proj_shape)
         value_states = value_states.view(*proj_shape)
 
@@ -633,6 +800,8 @@ class MBartAttention(nn.Module):
                 tgt_len,
                 src_len,
             ), f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
+            # print("Attn weights device: ", attn_weights.device)
+            # print("Attn mask device: ", attention_mask.device)
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
@@ -828,6 +997,7 @@ class MBartEncoderLayer(nn.Module):
         moe_adaptors=False,
         adaptor_or_prompt_layer_idx = 0,
         alibi_bias=None,
+        rope_encoder=None,
     ):
         """
         Args:
@@ -846,6 +1016,8 @@ class MBartEncoderLayer(nn.Module):
         if not self.config.postnorm_encoder:
             hidden_states = self.self_attn_layer_norm(hidden_states)
         
+        # print("Encoder attention mask device: ", attention_mask.device)
+        
         hidden_states, attn_weights, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -854,6 +1026,7 @@ class MBartEncoderLayer(nn.Module):
             prompt_params=prompt_params,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
             alibi_bias=alibi_bias,
+            rope_encoder=rope_encoder,
         )
         
         if self.config.sparsify_attention or self.config.sparsify_ffn:
@@ -1036,6 +1209,7 @@ class MBartDecoderLayer(nn.Module):
         moe_adaptors=False,
         adaptor_or_prompt_layer_idx = 0,
         alibi_bias=None,
+        rope_encoder=None,
     ):
         """
         Args:
@@ -1072,6 +1246,7 @@ class MBartDecoderLayer(nn.Module):
             prompt_params=[prompt_params[0], prompt_params[1]] if prompt_params is not None else None,
             adaptor_or_prompt_layer_idx=adaptor_or_prompt_layer_idx,
             alibi_bias=alibi_bias,
+            rope_encoder=rope_encoder,
         )
 
         if self.config.sparsify_attention or self.config.sparsify_ffn:
@@ -1283,27 +1458,27 @@ class MBartPreTrainedModel(PreTrainedModel):
             module_size = module.weight.size()
             if module_size[0] == self.config.vocab_size or module_size[1] == self.config.vocab_size or module_size[0] == self.config.target_vocab_size or module_size[1] == self.config.target_vocab_size: ## See if its the LM projection layer.
                 if self.config.initialization_scheme == "static":
-                    print("Static initialization of the LM head with a std of {}".format(std))
+                    # print("Static initialization of the LM head with a std of {}".format(std))
                     module.weight.data.normal_(mean=0.0, std=std)
                 else:
                     if self.config.embed_low_rank_dim != 0:
                         std_lm = self.config.embed_low_rank_dim**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
                     else:
                         std_lm = self.config.d_model**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
-                    print("The LM head will be initialized with a std of {}".format(std_lm))
+                    # print("The LM head will be initialized with a std of {}".format(std_lm))
                     module.weight.data.normal_(mean=0.0, std=std_lm)
             else:
                 if self.config.initialization_scheme == "static":
-                    print("Static initialization of the layer {} with dim {}".format(module, module_size))
+                    # print("Static initialization of the layer {} with dim {}".format(module, module_size))
                     module.weight.data.normal_(mean=0.0, std=std)
                 elif self.config.initialization_scheme == "xavier":
-                    print("Xavier initialization of the layer {} with dim {}".format(module, module_size))
+                    # print("Xavier initialization of the layer {} with dim {}".format(module, module_size))
                     nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
                 elif self.config.initialization_scheme == "kaiming":
-                    print("Kaiming initialization of the layer {} with dim {}".format(module, module_size))
+                    # print("Kaiming initialization of the layer {} with dim {}".format(module, module_size))
                     nn.init.kaiming_normal_(module.weight, mode="fan_in", nonlinearity="relu") # self.config.activation_function if self.config.activation_function != "gelu" else "relu"
                 elif self.config.initialization_scheme == "depth_scaled_xavier": ## The following logic is really inefficient but given that there is no simple way to pass depth information to the initialization function, we have to do it this way.
-                    print("Depth scaled Xavier initialization of the layer {} with dim {}".format(module, module_size))
+                    # print("Depth scaled Xavier initialization of the layer {} with dim {}".format(module, module_size))
                     for param_name, param_weight in self.named_parameters():
                         param_weight_size = param_weight.size()
                         if (len(module_size) == len(param_weight_size)) and (module_size == param_weight_size) and torch.all(param_weight == module.weight):
@@ -1326,18 +1501,18 @@ class MBartPreTrainedModel(PreTrainedModel):
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, MBartSinusoidalPositionalEmbedding): ## This should not be messed with.
-            print("Skipping initialization of the positional embedding layer.")
+            # print("Skipping initialization of the positional embedding layer.")
             pass
         elif isinstance(module, nn.Embedding):
             if self.config.initialization_scheme == "static":
-                print("Static initialization of the embedding with a std of {}".format(std))
+                # print("Static initialization of the embedding with a std of {}".format(std))
                 module.weight.data.normal_(mean=0.0, std=std) ## Fixed std for embeddings and LM heads.
             else:
                 if self.config.embed_low_rank_dim != 0:
                     std_emb = self.config.embed_low_rank_dim**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
                 else:
                     std_emb = self.config.d_model**(-0.5) ## This is the std of the LM head. We want to initialize it with a std that is inversely proportional to the rank of the embedding matrix.
-                print("The embedding will be initialized with a std of {}".format(std_emb))
+                # print("The embedding will be initialized with a std of {}".format(std_emb))
                 module.weight.data.normal_(mean=0.0, std=std_emb)
             # elif self.config.initialization_scheme == "xavier":
             #     nn.init.xavier_uniform_(module.weight) # , gain=nn.init.calculate_gain(self.config.activation_function if self.config.activation_function != "gelu" else "relu")
@@ -1544,6 +1719,10 @@ class MBartEncoder(MBartPreTrainedModel):
             if config.alibi_encoding:
                 print("Using alibi encodings. The positional encodings will be identity functions implemeted as a zero addition.")
                 self.embed_positions = 0
+            elif config.rope_encoding:
+                print("Using RoPE encodings. The positional encodings will be identity functions implemeted as a zero addition.")
+                self.embed_positions = 0
+                self.rope_encoder = RotaryEmbedding(dim = config.d_model//config.encoder_attention_heads//2, use_xpos = True)
             else:
                 if config.positional_encodings:
                     print("Using positional encodings")
@@ -1685,7 +1864,7 @@ class MBartEncoder(MBartPreTrainedModel):
             #     prompt_pos = self.embed_positions(prompt_shape, 0)
             #     embed_pos = self.embed_positions(input_shape, prompt_shape[1])
             # else:
-            if self.config.alibi_encoding:
+            if self.config.alibi_encoding or self.config.rope_encoding:
                 embed_pos = self.embed_positions ## We add a zero here as a way of no positional encoding.
             else:
                 embed_pos = self.embed_positions(input_shape)
@@ -1740,6 +1919,7 @@ class MBartEncoder(MBartPreTrainedModel):
 
         
         for idx, encoder_layer in enumerate(self.layers):
+            # print("Encoder Layer: ", idx)
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
@@ -1775,6 +1955,7 @@ class MBartEncoder(MBartPreTrainedModel):
                         moe_adaptors=moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only),
                         adaptor_or_prompt_layer_idx=idx,
                         alibi_bias=alibi_bias,
+                        rope_encoder=self.rope_encoder if self.config.rope_encoding else None,
                     )
                 
                 if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
@@ -1851,6 +2032,10 @@ class MBartDecoder(MBartPreTrainedModel):
             if config.alibi_encoding:
                 print("Using alibi encodings. The positional encodings will be identity functions implemeted as a zero addition.")
                 self.embed_positions = 0
+            elif config.rope_encoding:
+                print("Using RoPE encodings. The positional encodings will be identity functions implemeted as a zero addition.")
+                self.embed_positions = 0
+                self.rope_encoder = RotaryEmbedding(dim = config.d_model//config.decoder_attention_heads//2, use_xpos = True)
             else:
                 if config.positional_encodings:
                     print("Using positional encodings")
@@ -1891,14 +2076,14 @@ class MBartDecoder(MBartPreTrainedModel):
         self.embed_tokens = value
 
     # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
-    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length): # prompting=False
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length, encoder_attention_mask=None): # prompting=False
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
                 input_shape, inputs_embeds.dtype, past_key_values_length=past_key_values_length
-            ).to(self.device)
+            ).to(self.device if encoder_attention_mask is None else encoder_attention_mask.device)
             # if prompting:
             #     bsz, _, tgt_seq_len, src_seq_len = combined_attention_mask.size()
             #     combined_attention_mask = torch.cat([combined_attention_mask[:,:,0:1,:].expand(bsz, 1, past_key_values_length, src_seq_len), combined_attention_mask], dim=2)
@@ -2060,8 +2245,10 @@ class MBartDecoder(MBartPreTrainedModel):
             alibi_bias = None
 
         attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, input_shape, inputs_embeds, past_key_values_length
+            attention_mask, input_shape, inputs_embeds, past_key_values_length, encoder_attention_mask=encoder_attention_mask
         ) ## Will be none if not training.
+        # print("In decoder attention mask device: ", attention_mask.device)
+        # print("Self device: ", self.device)
                 
         ## Modified by Raj Dabre. Start.
         # expand encoder attention mask
@@ -2081,7 +2268,7 @@ class MBartDecoder(MBartPreTrainedModel):
         else:
             # if prompt_params is not None:
             #     prompt_positions = self.embed_positions(prompt_shape, 0)
-            if self.config.alibi_encoding:
+            if self.config.alibi_encoding or self.config.rope_encoding:
                 positions = self.embed_positions ## We add a zero here as a way of no positional encoding.
             else:
                 if prompt_params is not None:
@@ -2139,6 +2326,7 @@ class MBartDecoder(MBartPreTrainedModel):
         
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
+            # print("Decoder Layer: ", idx)
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             dropout_probability = random.uniform(0, 1)
@@ -2195,6 +2383,7 @@ class MBartDecoder(MBartPreTrainedModel):
                     moe_adaptors=moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only),
                     adaptor_or_prompt_layer_idx=idx,
                     alibi_bias=alibi_bias,
+                    rope_encoder=self.rope_encoder if self.config.rope_encoding else None,
                 )
             if self.config.use_moe or (adaptor_layers is not None and moe_adaptors and (deep_adaptor_tuning or deep_adaptor_tuning_ffn_only)):
                 hidden_states, moe_loss = layer_outputs[0]

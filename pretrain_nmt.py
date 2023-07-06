@@ -68,7 +68,12 @@ from torch.distributed.fsdp.wrap import (
 from torch.distributed.fsdp import BackwardPrefetch
 
 from functools import partial
-from torchdistx import deferred_init
+try:
+    from torchdistx import deferred_init
+except:
+    print("torchdistx not installed. Large models will load REALLLLYYYY SLOWLY!")
+    deferred_init = None
+
 
 ##
 
@@ -90,6 +95,9 @@ from contextlib import nullcontext
 torch.manual_seed(621311)
 ##
 
+## Get torch version
+torch_version = torch.__version__
+##
 
 def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     """The main function which does the overall training. Should be split into multiple parts in the future. Currently monolithc intentionally."""
@@ -136,7 +144,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 f.write(supported_pair.replace("-", " ")+"\n")
     
     
-    print(f"Running DDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
+    print(f"Running DDP/FSDP checkpoint example on rank {rank}.") ## Unlike the FT script this will always be distributed
 
     if args.fp16: ## Although the code supports FP16/AMP training, it tends to be unstable in distributed setups so use this carefully.
         print("We will do fp16 training")
@@ -165,6 +173,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     
     if args.use_fsdp:
         fullstate_save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers.
+            from torch.distributed.fsdp.fully_sharded_data_parallel import FullOptimStateDictConfig
+            from torch.distributed.checkpoint.optimizer import load_sharded_optimizer_state_dict
+            optimizer_fullstate_save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
         from transformers.models.mbart.modeling_mbart import MBartEncoderLayer, MBartDecoderLayer
         mbart_auto_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
@@ -172,9 +184,39 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             MBartEncoderLayer, MBartDecoderLayer,
         },
         )
-        sharding_strategy: ShardingStrategy = ShardingStrategy.SHARD_GRAD_OP if args.zero_stage_2 else ShardingStrategy.FULL_SHARD #for SHARD_GRAD_OP Zero2 and FULL_SHARD for Zero3
+        if args.sharding_strategy == "FULL_SHARD":
+            print("We will use full sharding")
+            sharding_strategy = ShardingStrategy.FULL_SHARD
+        elif args.sharding_strategy == "SHARD_GRAD_OP":
+            print("We will use gradient and optimizer sharding")
+            sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
+        elif args.sharding_strategy == "HYBRID_SHARD":
+            print("We will use hybrid sharding. Model is sharded on a node and then each node forms a replica.")
+            sharding_strategy = ShardingStrategy.HYBRID_SHARD
+        elif args.sharding_strategy == "_HYBRID_SHARD_ZERO2":
+            print("Similar to hybrid sharding except that only optimizer and gradient sharding is done over a node.")
+            sharding_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
+        else:
+            raise ValueError("Invalid sharding strategy")
         backward_prefetch_policy = BackwardPrefetch.BACKWARD_PRE if args.backward_prefetch else None
         torch.backends.cuda.matmul.allow_tf32 = args.allow_tf32_matmul
+        if args.nodes_per_hsdp_group > 1:
+            print("We will use HSDP replicas of size:", args.nodes_per_hsdp_group*args.gpus, "GPUs and there are total", args.nodes//args.nodes_per_hsdp_group, "HSDP replicas")
+            assert args.nodes % args.nodes_per_hsdp_group == 0, "The number of nodes should be divisible by the number of nodes per HSDP group"
+            hsdp_replica_id = rank//(args.nodes_per_hsdp_group*args.gpus)
+            print("HSDP replica id is:", hsdp_replica_id)
+            intranode_process_group, _ = dist.new_subgroups(group_size=args.nodes_per_hsdp_group*args.gpus)
+            for local_rank in range(args.nodes_per_hsdp_group*args.gpus):
+                internode_ranks = [hsdp_replica_num*args.nodes_per_hsdp_group*args.gpus+rank%(args.nodes_per_hsdp_group*args.gpus) for hsdp_replica_num in range(args.nodes//args.nodes_per_hsdp_group)]
+                grp = dist.new_group(ranks=internode_ranks, backend='nccl') 
+                if local_rank == (rank%(args.nodes_per_hsdp_group*args.gpus)):
+                    internode_process_group = grp
+            print("Process groups are:", dist.get_process_group_ranks(intranode_process_group), dist.get_process_group_ranks(internode_process_group))
+            process_group = (intranode_process_group, internode_process_group)
+        else:
+            print("We will use a single node for each HSDP group")
+            process_group = None
+        cpu_offload = dist.fsdp.CPUOffload(offload_params=args.fsdp_cpu_offload)
     
     if args.encoder_tying_config is not None:
         print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
@@ -238,7 +280,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.sparsify_ffn = args.sparsify_ffn
             config.num_sparsify_blocks = args.num_sparsify_blocks
             config.sparsification_temperature = args.sparsification_temperature
-            model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config) if args.use_fsdp else MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
+            model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config) if (args.use_fsdp and deferred_init is not None) else MBartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["MBartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
         elif "bart" in args.pretrained_model:
@@ -251,14 +293,14 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
             config.gradient_checkpointing = args.gradient_checkpointing ## We should set gradient_checkpointing_info manually
-            model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config, force_bos_token_to_be_generated=True) if args.use_fsdp else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
+            model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.pretrained_model, config=config, force_bos_token_to_be_generated=True) if (args.use_fsdp and deferred_init is not None) else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
             config.architectures = ["BartForConditionalGeneration"]
             config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
     else: ## We are going to manually specify our own model config.
-        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, initialization_scheme=args.initialization_scheme, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, alibi_encoding=args.alibi_encoding, asymmetric_alibi_encoding=args.asymmetric_alibi_encoding, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, sparsify_attention=args.sparsify_attention, sparsify_ffn=args.sparsify_ffn, num_sparsify_blocks=args.num_sparsify_blocks, sparsification_temperature=args.sparsification_temperature, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
+        config = MBartConfig(vocab_size=len(tok), init_std=args.init_std, initialization_scheme=args.initialization_scheme, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, dropout=args.dropout, attention_dropout=args.attention_dropout, activation_dropout=args.activation_dropout, encoder_attention_heads=args.encoder_attention_heads, decoder_attention_heads=args.decoder_attention_heads, encoder_ffn_dim=args.encoder_ffn_dim, decoder_ffn_dim=args.decoder_ffn_dim, d_model=args.d_model, embed_low_rank_dim=args.embed_low_rank_dim, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, gradient_checkpointing=args.gradient_checkpointing, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, alibi_encoding=args.alibi_encoding, asymmetric_alibi_encoding=args.asymmetric_alibi_encoding, rope_encoding=args.rope_encoding, num_domains_for_domain_classifier=args.num_domains_for_domain_classifier, gradient_reversal_for_domain_classifier=args.gradient_reversal_for_domain_classifier, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size, prompt_tuning=args.prompt_tuning, prompt_dropout=args.prompt_dropout, prompt_projection_hidden_size=args.prompt_projection_hidden_size, prompt_init_std=args.prompt_init_std, layernorm_prompt_projection=args.layernorm_prompt_projection, no_projection_prompt=args.no_projection_prompt, use_tanh_activation_prompt=args.use_tanh_activation_prompt, residual_connection_prompt=args.residual_connection_prompt, num_prompts=args.num_prompts, recurrent_projections=args.recurrent_projections, adaptor_tuning=args.adaptor_tuning, deep_adaptor_tuning=args.deep_adaptor_tuning, deep_adaptor_tuning_ffn_only=args.deep_adaptor_tuning_ffn_only, adaptor_dropout=args.adaptor_dropout, adaptor_activation_function=args.adaptor_activation_function, parallel_adaptors = args.parallel_adaptors, layernorm_adaptor_input = args.layernorm_adaptor_input, adaptor_scaling_factor = args.adaptor_scaling_factor, residual_connection_adaptor = args.residual_connection_adaptor, encoder_adaptor_tying_config=args.encoder_adaptor_tying_config, decoder_adaptor_tying_config=args.decoder_adaptor_tying_config, adaptor_hidden_size=args.adaptor_hidden_size, moe_adaptors=args.moe_adaptors, num_moe_adaptor_experts=args.num_moe_adaptor_experts, hypercomplex=args.hypercomplex, hypercomplex_n=args.hypercomplex_n, ia3_adaptors=args.ia3_adaptors, lora_adaptors=args.lora_adaptors, lora_adaptor_rank=args.lora_adaptor_rank, softmax_bias_tuning=args.softmax_bias_tuning, sparsify_attention=args.sparsify_attention, sparsify_ffn=args.sparsify_ffn, num_sparsify_blocks=args.num_sparsify_blocks, sparsification_temperature=args.sparsification_temperature, tokenizer_class="AlbertTokenizer" if "albert" in args.tokenizer_name_or_path else "MBartTokenizer") ## Configuration. TODO: Save this configuration somehow.
         config.architectures = ["MBartForConditionalGeneration"]
         config.save_pretrained(args.model_path+"_deploy") ## Save the config as a json file to ensure easy loading during future fine tuning of the model.
-        model = deferred_init.deferred_init(MBartForConditionalGeneration, config) if args.use_fsdp else MBartForConditionalGeneration(config)
+        model = deferred_init.deferred_init(MBartForConditionalGeneration, config) if (args.use_fsdp and deferred_init is not None) else MBartForConditionalGeneration(config)
     
     model.train()
     if args.distillation: ## When distilling we need a parent model. The creation of the model is in the same way as the child. This model is immediately loaded with some pretrained params and then loaded into the GPU.
@@ -271,7 +313,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-                parent_model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config) if args.use_fsdp else MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_model = deferred_init.deferred_init(MBartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config) if (args.use_fsdp and deferred_init is not None) else MBartForConditionalGeneration.from_pretrained(args.parent_pretrained_model, config=parent_config) ## We may use FBs official model and fine-tune it for our purposes.
             elif "bart" in args.parent_pretrained_model:
                 parent_config = BartConfig.from_pretrained(args.parent_pretrained_model)
                 parent_config.dropout = args.parent_dropout ## We should set dropouts manually
@@ -279,10 +321,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 parent_config.activation_dropout = args.parent_activation_dropout ## We should set dropouts manually
                 parent_config.encoder_layerdrop = args.layerdrop ## We should set dropouts manually
                 parent_config.decoder_layerdrop = args.layerdrop ## We should set dropouts manually
-                parent_model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) if args.use_fsdp else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
+                parent_model = deferred_init.deferred_init(BartForConditionalGeneration.from_pretrained, args.parent_pretrained_model, config=parent_config, force_bos_token_to_be_generated=True) if (args.use_fsdp and deferred_init is not None) else BartForConditionalGeneration.from_pretrained(args.pretrained_model, config=config, force_bos_token_to_be_generated=True) ## We may use FBs official model and fine-tune it for our purposes.
         else: ## We are going to manually specify our own parent model config.
-            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
-            parent_model = deferred_init.deferred_init(MBartForConditionalGeneration, parent_config) if args.use_fsdp else MBartForConditionalGeneration(parent_config)
+            parent_config = MBartConfig(vocab_size=len(tok), encoder_layers=args.parent_encoder_layers, decoder_layers=args.parent_decoder_layers, dropout=args.parent_dropout, attention_dropout=args.parent_attention_dropout, activation_dropout=args.parent_activation_dropout, encoder_attention_heads=args.parent_encoder_attention_heads, decoder_attention_heads=args.parent_decoder_attention_heads, encoder_ffn_dim=args.parent_encoder_ffn_dim, decoder_ffn_dim=args.parent_decoder_ffn_dim, d_model=args.parent_d_model, no_embed_norm=args.no_embed_norm, scale_embedding=args.scale_embedding, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], encoder_tying_config=args.encoder_tying_config, decoder_tying_config=args.decoder_tying_config, multilayer_softmaxing=args.multilayer_softmaxing, wait_k=args.wait_k, unidirectional_encoder=args.unidirectional_encoder, softmax_temperature=args.softmax_temperature, temperature_calibration=args.temperature_calibration, encoder_layerdrop=args.layerdrop, decoder_layerdrop=args.layerdrop, no_scale_attention_embedding=args.no_scale_attention_embedding, positional_encodings=args.positional_encodings, alibi_encoding=args.alibi_encoding, asymmetric_alibi_encoding=args.asymmetric_alibi_encoding, rope_encoding=args.rope_encoding, activation_function=args.activation_function, no_positional_encoding_encoder=args.no_positional_encoding_encoder, no_positional_encoding_decoder=args.no_positional_encoding_decoder, postnorm_encoder=args.postnorm_encoder, postnorm_decoder=args.postnorm_decoder, use_moe=args.use_moe, num_experts=args.num_experts, expert_ffn_size=args.expert_ffn_size)
+            parent_model = deferred_init.deferred_init(MBartForConditionalGeneration, parent_config) if (args.use_fsdp and deferred_init is not None) else MBartForConditionalGeneration(parent_config)
         
         parent_model.train() ## We do this to enable dropout but we wont have an optimizer for this so we wont train this model. For now. Future implementations should ask if we want to do co-distill or not. By co-distillation I mean, the parent will learn together with the child.
         if not args.use_fsdp:
@@ -292,7 +334,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             print("When FSDP is used, the parent model is not moved to the GPU. This is because FSDP does not support moving the model to the GPU. Instead, it moves the model to the CPU and then to the GPU. This is done to save memory. This is done in the FSDP wrapper itself.")
         
         if args.use_fsdp:
-            parent_model = FSDP(parent_model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy) #, forward_prefetch=args.forward_prefetch
+            parent_model = FSDP(parent_model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy, process_group=process_group, cpu_offload=cpu_offload) #, forward_prefetch=args.forward_prefetch
         else:
             parent_model = DistributedDataParallel(parent_model, device_ids=[gpu], output_device=gpu)
         
@@ -301,12 +343,20 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         # configure map_location properly
         if not args.use_official_parent_pretrained:
             if args.use_fsdp:
-                reader = FileSystemReader(args.parent_pretrained_model + "_sharded")
-                with FSDP.state_dict_type(parent_model, StateDictType.LOCAL_STATE_DICT):
-                    state_dict = parent_model.state_dict()
-                    load_state_dict(state_dict, reader)
-                    parent_model.load_state_dict(state_dict)
-                del state_dict
+                if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers.
+                    reader = FileSystemReader(args.parent_pretrained_model + "_sharded")
+                    with FSDP.state_dict_type(parent_model, StateDictType.LOCAL_STATE_DICT):
+                        state_dict = parent_model.state_dict()
+                        load_state_dict(state_dict, reader)
+                        parent_model.load_state_dict(state_dict)
+                    del state_dict
+                else:
+                    reader = FileSystemReader(args.parent_pretrained_model + "_sharded")
+                    with FSDP.state_dict_type(parent_model, StateDictType.LOCAL_STATE_DICT):
+                        state_dict = parent_model.state_dict()
+                        load_state_dict(state_dict, reader)
+                        parent_model.load_state_dict(state_dict)
+                    del state_dict
             else:
                 map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
                 parent_checkpoint_dict = torch.load(args.parent_pretrained_model, map_location=map_location)
@@ -341,7 +391,9 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
     
     if args.use_fsdp:
-        model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy) ## This wrapper around the model will enable sharded distributed training. , forward_prefetch=args.forward_prefetch
+        model = FSDP(model, mixed_precision=mixed_precision_policy, device_id=torch.cuda.current_device(), auto_wrap_policy=mbart_auto_wrap_policy, sharding_strategy=sharding_strategy, backward_prefetch=backward_prefetch_policy, process_group=process_group, cpu_offload=cpu_offload) ## This wrapper around the model will enable sharded distributed training. , forward_prefetch=args.forward_prefetch
+        if args.sharding_strategy == "HYBRID_SHARD":
+            print("Process groups are", torch.distributed.get_process_group_ranks(model.process_group), torch.distributed.get_process_group_ranks(model._inter_node_pg))
     else:
         model = DistributedDataParallel(model, device_ids=[gpu], output_device=gpu) ## This wrapper around the model will enable distributed training.
     print("Memory consumed after wrapping with DDP/FSDP", round(torch.cuda.memory_allocated(gpu)/(1024**3), 2), "GB")
@@ -380,19 +432,40 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         if args.locally_fine_tuned_model_path is not None: ## Now that the pretrained_model argument was used to instantiate the model, it can be replaced with the local model path. Remember to specify pure model or the model with the optimizer and scheduler states depending on your requirement by relying on the flag --no_reload_optimizer_ctr_and_scheduler.
             args.pretrained_model = args.locally_fine_tuned_model_path
         if args.use_fsdp: # With FSDP models I would rather not risk pruning or layer remapping. So I am not going to do it. I am going to load the model as it is. Consider doing this externally before loading the model.
-            reader = FileSystemReader(args.pretrained_model + "_sharded")
-            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-                state_dict = model.state_dict()
-                load_state_dict(state_dict, reader)
-                model.load_state_dict(state_dict) # Check if strict loading is required here. We ideally dont want it to be so if we add prompts or adaptors.
+            if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers.
+                reader = FileSystemReader(args.pretrained_model + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    model.load_state_dict(state_dict)
+                del state_dict
+            else:
+                reader = FileSystemReader(args.pretrained_model + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    model.load_state_dict(state_dict) # Check if strict loading is required here. We ideally dont want it to be so if we add prompts or adaptors.
             if args.prompt_tuning and args.initialize_prompts_with_random_embeddings: # This might fail for FSDP so please check. TODO.
                 model.module.initialize_prompt_params_with_random_embeddings()
             if not args.no_reload_optimizer_ctr_and_scheduler:
-                full_optimizer = None
-                if rank == 0:
-                    full_optimizer = torch.load(args.pretrained_model+ "_optim")  ## We now load only the optimizer and scheduler.
-                sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
-                optimizer.load_state_dict(sharded_optimizer)
+                if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers so we will load a sharded optimizer.
+                    reader = FileSystemReader(args.pretrained_model+ "_optim_sharded")
+                    with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                        optim_dict = load_sharded_optimizer_state_dict(
+                            model_state_dict=model.state_dict(),
+                            optimizer_key="optim",
+                            storage_reader=reader,
+                        )
+                        flattened_osd = FSDP.optim_state_dict_to_load(model, optimizer, optim_dict["optim"])
+                        optimizer.load_state_dict(flattened_osd)
+                    del flattened_osd
+                    del optim_dict
+                else:
+                    full_optimizer = None
+                    if rank == 0:
+                        full_optimizer = torch.load(args.pretrained_model+ "_optim")  ## We now load only the optimizer and scheduler.
+                    sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
+                    optimizer.load_state_dict(sharded_optimizer)
                 scheduler_and_ctr = torch.load(args.pretrained_model + "_scheduler_and_ctr")
                 scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
                 ctr = scheduler_and_ctr['ctr']
@@ -437,24 +510,48 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             print("Training from scratch")
         CHECKPOINT_PATH = args.model_path
         if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
-            shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
-            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-                state_dict = model.state_dict()
-            save_state_dict(state_dict, shard_writer)
-            del state_dict
-            state_dict = None
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
-                state_dict = model.state_dict()
-            optim_state = FSDP.full_optim_state_dict(model, optimizer)
-            if rank == 0:
-                torch.save(state_dict, CHECKPOINT_PATH)
-                torch.save(optim_state, CHECKPOINT_PATH + "_optim")
-                scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
-                torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
-                os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
-                del scheduler_and_ctr
-            del state_dict
-            del optim_state    
+            if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers so we will load a sharded optimizer.
+                model_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+                optim_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_optim_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                    save_state_dict(state_dict, model_shard_writer)
+                    optim_dict = {"optim": FSDP.optim_state_dict(model, optimizer)}
+                    save_state_dict(optim_dict, optim_shard_writer)
+                del state_dict
+                del optim_dict
+                ## Also save the full state dict for the model and optimizer.
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy, optimizer_fullstate_save_policy):
+                    state_dict = model.state_dict()
+                    optim_dict = {"optim": FSDP.full_optim_state_dict(model, optimizer)}
+                if rank == 0:
+                    torch.save(state_dict, CHECKPOINT_PATH)
+                    torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+                    torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                    os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                    del scheduler_and_ctr
+                del state_dict
+                del optim_dict
+            else:
+                shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                save_state_dict(state_dict, shard_writer)
+                del state_dict
+                state_dict = None
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+                    state_dict = model.state_dict()
+                optim_dict = FSDP.full_optim_state_dict(model, optimizer)
+                if rank == 0:
+                    torch.save(state_dict, CHECKPOINT_PATH)
+                    torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': 0}
+                    torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                    os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                    del scheduler_and_ctr
+                del state_dict
+                del optim_dict    
         else:
             if rank == 0:
                 checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': 0}
@@ -464,23 +561,46 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 del checkpoint_dict
         dist.barrier()
         if args.use_fsdp: ## This is consuming CPU ram. Need an optimization here. We need to make a decision whether we are going to go for a full state dict or a local state dict. If we are going to go for a full state dict, we need to make sure that we are not going to run out of memory.
-            reader = FileSystemReader(CHECKPOINT_PATH + "_sharded")
-            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-                state_dict = model.state_dict()
-                load_state_dict(state_dict, reader)
-                model.load_state_dict(state_dict)
-            full_optimizer = None
-            if rank == 0:
-                full_optimizer = torch.load(CHECKPOINT_PATH+ "_optim")  ## We now load only the optimizer and scheduler.
-            sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
-            optimizer.load_state_dict(sharded_optimizer)
-            scheduler_and_ctr = torch.load(CHECKPOINT_PATH + "_scheduler_and_ctr")
-            scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
-            ctr = scheduler_and_ctr['ctr']
-            del scheduler_and_ctr
-            del sharded_optimizer
-            del full_optimizer
-            del state_dict
+            if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers so we will load a sharded optimizer.
+                reader = FileSystemReader(CHECKPOINT_PATH + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    model.load_state_dict(state_dict)
+                del state_dict
+                reader = FileSystemReader(CHECKPOINT_PATH + "_optim_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    optim_dict = load_sharded_optimizer_state_dict(
+                        model_state_dict=model.state_dict(),
+                        optimizer_key="optim",
+                        storage_reader=reader,
+                    )
+                    flattened_osd = FSDP.optim_state_dict_to_load(model, optimizer, optim_dict["optim"])
+                    optimizer.load_state_dict(flattened_osd)
+                del flattened_osd
+                del optim_dict   
+                scheduler_and_ctr = torch.load(CHECKPOINT_PATH + "_scheduler_and_ctr")
+                scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
+                ctr = scheduler_and_ctr['ctr']
+                del scheduler_and_ctr
+            else:
+                reader = FileSystemReader(CHECKPOINT_PATH + "_sharded")
+                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                    state_dict = model.state_dict()
+                    load_state_dict(state_dict, reader)
+                    model.load_state_dict(state_dict)
+                full_optimizer = None
+                if rank == 0:
+                    full_optimizer = torch.load(CHECKPOINT_PATH+ "_optim")  ## We now load only the optimizer and scheduler.
+                sharded_optimizer = FSDP.scatter_full_optim_state_dict(full_optimizer, model)
+                optimizer.load_state_dict(sharded_optimizer)
+                scheduler_and_ctr = torch.load(CHECKPOINT_PATH + "_scheduler_and_ctr")
+                scheduler.load_state_dict(scheduler_and_ctr['scheduler'])
+                ctr = scheduler_and_ctr['ctr']
+                del scheduler_and_ctr
+                del sharded_optimizer
+                del full_optimizer
+                del state_dict
         else:
             map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
             checkpoint_dict = torch.load(CHECKPOINT_PATH, map_location=map_location)
@@ -512,7 +632,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
 
     num_batches_this_optimizer_step = 0
     losses = 0
-    batch_stats = torch.zeros(4, dtype=torch.long, device=gpu) # We want to keep track of batch statistics.
+    batch_stats = torch.zeros(7, dtype=torch.long, device=gpu) # We want to keep track of batch statistics.
     avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
 
     start = time.time()
@@ -523,37 +643,67 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         if ctr % args.save_every == 0 and num_batches_this_optimizer_step == 0: ## We have to evaluate our model every save_every steps. Since there is no evaluation data during pretraining this means our model is saved every save_every steps.
             CHECKPOINT_PATH = args.model_path
             if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
-                shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
-                with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-                    state_dict = model.state_dict()
-                if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
-                    shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_sharded")
+                if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers so we will load a sharded optimizer.
+                    model_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+                    optim_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_optim_sharded")
+                    with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                        state_dict = model.state_dict()
+                        save_state_dict(state_dict, model_shard_writer)
+                        optim_dict = {"optim": FSDP.optim_state_dict(model, optimizer)}
+                        save_state_dict(optim_dict, optim_shard_writer)
+                        if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
+                            model_shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_sharded")
+                            optim_shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_optim_sharded")
+                            save_state_dict(state_dict, model_shard_writer)
+                            save_state_dict(optim_dict, optim_shard_writer)
+                    del state_dict
+                    del optim_dict
+                        
+                    ## Also save the full state dict for the model and optimizer.
+                    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy, optimizer_fullstate_save_policy):
+                        state_dict = model.state_dict()
+                        optim_dict = {"optim": FSDP.full_optim_state_dict(model, optimizer)}
+                    if rank == 0:
+                        torch.save(state_dict, CHECKPOINT_PATH)
+                        torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                        scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                        torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                        os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                        if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
+                            torch.save(state_dict, CHECKPOINT_PATH +"."+str(ctr))
+                            torch.save(optim_dict, CHECKPOINT_PATH +"."+str(ctr)+ "_optim")
+                            torch.save(scheduler_and_ctr, CHECKPOINT_PATH +"."+str(ctr)+ "_scheduler_and_ctr")
+                        del scheduler_and_ctr
+                    del state_dict
+                    del optim_dict
+                else:
+                    with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                        state_dict = model.state_dict()
+                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
+                        shard_writer = FileSystemWriter(CHECKPOINT_PATH +"."+str(ctr)+ "_sharded")
+                        save_state_dict(state_dict, shard_writer)
+                    shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
                     save_state_dict(state_dict, shard_writer)
-                shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
-                save_state_dict(state_dict, shard_writer)
-                del state_dict
-                state_dict = None
-                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
-                    state_dict = model.state_dict()
-                optim_state = FSDP.full_optim_state_dict(model, optimizer)
-                if rank == 0:
-                    print("Saving the model")
-                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
-                        print("Saving an intermediate checkpoint")
-                        torch.save(state_dict, CHECKPOINT_PATH+"."+str(ctr))
-                    sys.stdout.flush()
-                    torch.save(state_dict, CHECKPOINT_PATH)
-                    scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
-                    if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
-                        torch.save(optim_state, CHECKPOINT_PATH + "."+str(ctr)+"_optim")
-                        torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "."+str(ctr)+"_scheduler_and_ctr")
-                    torch.save(optim_state, CHECKPOINT_PATH + "_optim")
-                    torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
-                    
-                    os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
-                    del scheduler_and_ctr
-                del state_dict
-                del optim_state  
+                    del state_dict
+                    state_dict = None
+                    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+                        state_dict = model.state_dict()
+                    optim_dict = FSDP.full_optim_state_dict(model, optimizer)
+                    if rank == 0:
+                        print("Saving the model")
+                        torch.save(state_dict, CHECKPOINT_PATH)
+                        scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                        torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                        torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                        os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                        if ctr % args.save_intermediate_checkpoints_every == 0 and args.save_intermediate_checkpoints:
+                            print("Saving an intermediate checkpoint")
+                            torch.save(state_dict, CHECKPOINT_PATH+"."+str(ctr))
+                            torch.save(optim_dict, CHECKPOINT_PATH + "."+str(ctr)+"_optim")
+                            torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "."+str(ctr)+"_scheduler_and_ctr")
+                        del scheduler_and_ctr
+                    del state_dict
+                    del optim_dict  
             else:
                 if rank == 0:
                     print("Saving the model")
@@ -700,12 +850,14 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     loss -= contrastive_loss
 
         fwd_memory = torch.cuda.memory_allocated(gpu)/(1024**3)
-
-        padding_tokens_enc_dec = (decoder_input_ids == tok.pad_token_id).sum().item() + (input_ids == tok.pad_token_id).sum().item()
-        total_tokens_enc_dec = decoder_input_ids.numel() + input_ids.numel()
-        non_padding_tokens_enc_dec = total_tokens_enc_dec - padding_tokens_enc_dec
+        padding_tokens_dec = (decoder_input_ids == tok.pad_token_id).sum().item()
+        padding_tokens_enc = (input_ids == tok.pad_token_id).sum().item()
+        total_tokens_dec = decoder_input_ids.numel()
+        total_tokens_enc = input_ids.numel()
+        non_padding_tokens_dec = total_tokens_dec - padding_tokens_dec
+        non_padding_tokens_enc = total_tokens_enc - padding_tokens_enc
         num_sequences = input_ids.size()[0]
-        batch_stats += torch.tensor([non_padding_tokens_enc_dec, padding_tokens_enc_dec, total_tokens_enc_dec, num_sequences], dtype=torch.long, device=gpu)
+        batch_stats += torch.tensor([non_padding_tokens_enc, padding_tokens_enc, total_tokens_enc, non_padding_tokens_dec, padding_tokens_dec, total_tokens_dec, num_sequences], dtype=torch.long, device=gpu)
         
         ## Optimization part of the model from this point forward.
         if args.fp16: ## The gradient scaler needs to be invoked with FP16/AMP computation. ## With FP16/AMP computation we need to unscale gradients before clipping them. We then optimize and update the scaler.
@@ -760,11 +912,13 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             # Round the memory stats to 2 decimal places.
             fwd_memory = round(fwd_memory, 2)
             bwd_memory = round(bwd_memory, 2)
-            non_padding_tokens_enc_dec, padding_tokens_enc_dec, total_tokens_enc_dec, num_sequences = batch_stats.tolist()
+            non_padding_tokens_enc, padding_tokens_enc, total_tokens_enc, non_padding_tokens_dec, padding_tokens_dec, total_tokens_dec, num_sequences = batch_stats.tolist()
+            non_padding_percent_enc = round(non_padding_tokens_enc/total_tokens_enc*100, 2)
+            non_padding_percent_dec = round(non_padding_tokens_dec/total_tokens_dec*100, 2)
             if rank % args.world_size == 0:
-                print("Step:", ctr, "| Loss:", round(lv.item(),2), " | Time:", round(end-start, 2), "s/100 batches. | Fwd-Bwd (avg):", fwd_memory, ",", bwd_memory, "GB. | Enc-Dec Non-pad, Pad, Total tokens:", non_padding_tokens_enc_dec, ",", padding_tokens_enc_dec, ",", total_tokens_enc_dec, " | Num sequences:", num_sequences)
+                print("Step:", ctr, "| Loss:", round(lv.item(),2), " | Time:", round(end-start, 2), "s/100 batches. | Fwd-Bwd (avg):", fwd_memory, ",", bwd_memory, "GB. | Enc Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_enc, ",", padding_tokens_enc, ",", total_tokens_enc, ",", non_padding_percent_enc, "% | Dec Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_dec, ",", padding_tokens_dec, ",", total_tokens_dec, ",", non_padding_percent_dec, "% | Num sequences:", num_sequences)
                 sys.stdout.flush()
-            batch_stats = torch.zeros(4, dtype=torch.long, device=gpu)
+            batch_stats = torch.zeros(7, dtype=torch.long, device=gpu)
             avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
             start = time.time()
 
@@ -790,24 +944,49 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
     
     if args.use_fsdp: # For FSDP we will save the model params, optimizer, scheduler and ctr in separate files. This is because FSDP saving everything in a single file is too heavy.
         print("Since we are saving the final model, we will save the sharded as well as the unsharded model.")
-        shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
-        with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-            state_dict = model.state_dict()
-        save_state_dict(state_dict, shard_writer)
-        del state_dict
-        state_dict = None
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
-            state_dict = model.state_dict()
-        optim_state = FSDP.full_optim_state_dict(model, optimizer)
-        if rank == 0:
-            torch.save(state_dict, CHECKPOINT_PATH)
-            scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
-            torch.save(optim_state, CHECKPOINT_PATH + "_optim")
-            torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
-            os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
-            del scheduler_and_ctr
-        del state_dict
-        del optim_state  
+        if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers so we will load a sharded optimizer.
+            model_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+            optim_shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_optim_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+                save_state_dict(state_dict, model_shard_writer)
+                optim_dict = {"optim": FSDP.optim_state_dict(model, optimizer)}
+                save_state_dict(optim_dict, optim_shard_writer)
+            del state_dict
+            del optim_dict
+                
+            ## Also save the full state dict for the model and optimizer.
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy, optimizer_fullstate_save_policy):
+                state_dict = model.state_dict()
+                optim_dict = {"optim": FSDP.full_optim_state_dict(model, optimizer)}
+            if rank == 0:
+                torch.save(state_dict, CHECKPOINT_PATH)
+                torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                del scheduler_and_ctr
+            del state_dict
+            del optim_dict
+        else:   
+            shard_writer = FileSystemWriter(CHECKPOINT_PATH + "_sharded")
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                state_dict = model.state_dict()
+            save_state_dict(state_dict, shard_writer)
+            del state_dict
+            state_dict = None
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy): ## This full state dict is what is messing things up. The model should be saved as local state dicts and then assembled as a full state dict in the end if needed. A presharding and unsharding script may be useful. We have used an offload to CPU policy and this means we hopefully wont run out of memory.
+                state_dict = model.state_dict()
+            optim_dict = FSDP.full_optim_state_dict(model, optimizer)
+            if rank == 0:
+                torch.save(state_dict, CHECKPOINT_PATH)
+                scheduler_and_ctr = {'scheduler': scheduler.state_dict(), 'ctr': ctr}
+                torch.save(optim_dict, CHECKPOINT_PATH + "_optim")
+                torch.save(scheduler_and_ctr, CHECKPOINT_PATH + "_scheduler_and_ctr")
+                os.system("cp "+CHECKPOINT_PATH+" "+CHECKPOINT_PATH+"_deploy/pytorch_model.bin")
+                del scheduler_and_ctr
+            del state_dict
+            del optim_dict  
     else:
         if rank == 0:
             checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr}
@@ -888,6 +1067,8 @@ def run_demo():
                         help='If true then we will use alibi positional encodings instead of sinusoidal or learned positional embeddings.')
     parser.add_argument('--asymmetric_alibi_encoding', action='store_true', 
                         help='If true then we will use asymmetric alibi positional encodings in the encoder. Not implemented yet!')
+    parser.add_argument('--rope_encoding', action='store_true', 
+                        help='If true then we will use rotary positional encodings instead of sinusoidal or learned positional embeddings.')
     parser.add_argument('--no_embed_norm', action='store_true', 
                         help='If true then we wont normalize embeddings.')
     parser.add_argument('--scale_embedding', action='store_true', 
@@ -1106,14 +1287,18 @@ def run_demo():
     parser.add_argument('--softmax_bias_tuning', action='store_true', help="Should we use softmax bias tuning to adapt the bias of the softmax?")
     parser.add_argument('--use_fsdp', action='store_true', 
                         help='Should we use FSDP instead of DDP? FSDP is like DDPs big brother and can handle mega large models.')
-    parser.add_argument('--zero_stage_2', action='store_true', 
-                        help='Should we use ZERO stage 2? If yes then SHARD_GRAD_OP will be done which means gradients will be sharded along with model but optimizer will still be full. Dont recommend this for extremely large models.')
+    parser.add_argument('--sharding_strategy', default="FULL_SHARD", type=str, 
+                        help='There are 4 options: FULL_SHARD, SHARD_GRAD_OP, HYBRID_SHARD and _HYBRID_SHARD_ZERO2.')
     parser.add_argument('--backward_prefetch', action='store_true',
                         help='Should we do backward prefetch in FSDP?')
     parser.add_argument('--forward_prefetch', action='store_true',
                         help='Should we do forward prefetch in FSDP?')
     parser.add_argument('--allow_tf32_matmul', action='store_true',
                         help='Should we allow TF32 for matmul?')
+    parser.add_argument('--nodes_per_hsdp_group', default=1, type=int, 
+                        help='How many nodes should be in each FSDP group when using HYBRID_SHARD and HYBRID_SHARD_ZERO2?')
+    parser.add_argument('--fsdp_cpu_offload', action='store_true', 
+                        help='Should we use CPU offloading when training large models using FSDP?')
 
     ## UL2 flags
     parser.add_argument('--ul2_denoising', action='store_true', 
