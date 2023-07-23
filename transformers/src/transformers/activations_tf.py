@@ -75,6 +75,38 @@ else:
     gelu_new = _gelu_new
 
 
+def glu(x):
+    """
+    Implementation of the GLU activation. Also see the Gated Linear Unit paper: https://arxiv.org/abs/1612.08083v3
+    """
+    x, gate = tf.split(x, num_or_size_splits=2, axis=-1)
+    return tf.sigmoid(gate) * x
+
+
+def swiglu(x):
+    """
+    Implementation of the SwiGLU activation that is a variant of GLU activation. Also see the SwiGLU paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = tf.split(x, num_or_size_splits=2, axis=-1)
+    return tf.keras.activations.swish(gate) * x
+
+
+def geglu(x):
+    """
+    Implementation of the GeGLU activation that is a variant of GLU activation. Also see the GLU variants paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = tf.split(x, num_or_size_splits=2, axis=-1)
+    return gelu(gate) * x
+
+
+def reglu(x):
+    """
+    Implementation of the ReGLU activation that is a variant of GLU activation. Also see the GLU variants paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = tf.split(x, num_or_size_splits=2, axis=-1)
+    return tf.keras.activations.relu(gate) * x
+
+
 ACT2FN = {
     "gelu": gelu,
     "relu": tf.keras.activations.relu,
@@ -84,6 +116,10 @@ ACT2FN = {
     "mish": mish,
     "tanh": tf.keras.activations.tanh,
     "gelu_fast": gelu_fast,
+    "glu": glu,
+    "swiglu": swiglu,
+    "geglu": geglu,
+    "reglu": reglu
 }
 
 
