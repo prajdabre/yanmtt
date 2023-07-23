@@ -1208,6 +1208,40 @@ class Conv1D(nn.Module):
         return x
 
 
+class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization (RMSNorm) layer as defined by Zhang and Sennrich (also used in LLaMa).
+
+    It is a simplifies LayerNorm by removing the mean-centering operation, or normalizing layer activations with RMS statistic.
+
+    Credits:
+    - https://github.com/VarunGumma/fairseq/blob/main/fairseq/modules/rms_norm.py#L4-L39
+    - https://github.com/facebookresearch/llama/blob/main/llama/model.py#L34-L45
+
+    Args:
+        nx (:obj:`int`): 
+            The number of input features.
+        eps (:obj:`float`, `optional`, defaults to 1e-8): 
+            Small value to avoid division by zero.
+        bias (:obj:`bool`, `optional`, defaults to True): 
+            Whether to add learnable bias after normalization.
+    """
+    
+    def __init__(self, nx: int, eps: float = 1e-8, bias: bool = False):
+        super().__init__()
+        self.eps = eps
+        self.apply_bias = bias
+        self.weight = nn.Parameter(torch.ones(nx))
+        self.bias = nn.Parameter(torch.zeros(nx)) if bias else None
+    
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+    
+    def forward(self, x):
+        output = self._norm(x.float()).type_as(x)
+        return (output * self.weight + self.bias) if self.apply_bias else (output * self.weight)
+
+
 class PoolerStartLogits(nn.Module):
     """
     Compute SQuAD start logits from sequence hidden states.
