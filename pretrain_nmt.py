@@ -47,6 +47,10 @@ from torch.optim import Adam
 from torch.nn.functional import cosine_similarity
 from torch.utils.tensorboard import SummaryWriter
 try:
+    import wandb
+except:
+    raise ImportError("Wandb not installed. Recommended: pip install wandb")
+try:
     import bitsandbytes as bnb
 except:
     bnb=None
@@ -230,6 +234,13 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
 
     if rank == 0:
         writer = SummaryWriter(args.model_path+".tflogs")
+        if args.wb:
+            run = wandb.init(
+                project=args.wb_project,
+                name=args.wb_run,
+                config=vars(args),
+                save_code=True,
+            )
     
     print("Initialization scheme is:", args.initialization_scheme)
     if args.initialization_scheme == "static":
@@ -756,6 +767,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 loss = -cosine_similarity(source_hidden_state_encoder, target_hidden_state_encoder)
                 if rank == 0:
                     writer.add_scalar("encoder unification loss", loss.detach().cpu().numpy(), ctr)
+                    if args.wb:
+                        wandb.log({"encoder unification loss": loss.detach().cpu().numpy()}, step=ctr)
             else:
                 mod_compute = model(input_ids=input_ids, attention_mask=input_masks, decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation, label_mask=label_mask if args.num_domains_for_domain_classifier > 1 else None) ## Run the model and get logits.
                 logits = mod_compute.logits
@@ -766,16 +779,23 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 loss = loss*args.softmax_temperature ## Up scale loss in case of non unitary temperatures. Note that in case of self calibrating temperature, the softmax temperature must be set to 1.
                 if rank == 0:
                     writer.add_scalar("pure cross entropy loss", loss.detach().cpu().numpy(), ctr)
+                    if args.wb:
+                        wandb.log({"pure cross entropy loss": loss.detach().cpu().numpy()}, step=ctr)
                 if args.ewc_importance != 0: ## Update the model with the EWC loss.
                     ewc_loss_current = args.ewc_importance * ewc_loss.penalty(model)
                     if rank == 0:
                         writer.add_scalar("EWC loss", ewc_loss_current.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"EWC loss": ewc_loss_current.detach().cpu().numpy()}, step=ctr)
                     loss = loss + ewc_loss_current
                 if args.temperature_calibration: 
                     loss = loss*mod_compute.softmax_temperature
                     if rank == 0:
                         writer.add_scalar("calibrated temperature", mod_compute.softmax_temperature.detach().cpu().numpy(), ctr)
                         writer.add_scalar("calibrated temperature loss", loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"calibrated temperature": mod_compute.softmax_temperature.detach().cpu().numpy()}, step=ctr)
+                            wandb.log({"calibrated temperature loss": loss.detach().cpu().numpy()}, step=ctr)
                 if args.num_domains_for_domain_classifier > 1: ## We augment the main loss with the domain classifier loss
                     domain_classifier_logits = mod_compute.domain_classifier_logits
                     domain_classifier_lprobs = torch.nn.functional.log_softmax(domain_classifier_logits, dim=-1) ## Softmax tempering of logits if needed.
@@ -786,6 +806,9 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     if rank == 0:
                         writer.add_scalar("domain classifier loss", domain_classifier_loss.detach().cpu().numpy(), ctr)
                         writer.add_scalar("loss with domain classifier loss", loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"domain classifier loss": domain_classifier_loss.detach().cpu().numpy()}, step=ctr)
+                            wandb.log({"loss with domain classifier loss": loss.detach().cpu().numpy()}, step=ctr)
                 ## We will do multilayer softmaxing without any consideration for distillation or domain classification.
                 if mod_compute.additional_lm_logits is not None:
                     for additional_logits in mod_compute.additional_lm_logits:
@@ -806,6 +829,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     entropy = -(torch.exp(lprobs)*lprobs).mean()
                     if rank == 0:
                         writer.add_scalar("softmax entropy", entropy.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"softmax entropy": entropy.detach().cpu().numpy()}, step=ctr)
                     if mod_compute.additional_lm_logits is not None:
                         for additional_logits in mod_compute.additional_lm_logits: ## Compute entropy for each layer as well
                             additional_logits = additional_logits*args.softmax_temperature ## We have to undo the tempered logits else our entropy estimate will be wrong.
@@ -817,6 +842,8 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     loss = loss*(1-args.max_ent_weight) - entropy*args.max_ent_weight ## Maximize the entropy so a minus is needed. Weigh and add losses as required.
                     if rank == 0:
                         writer.add_scalar("loss with entropy loss", loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"loss with entropy loss": loss.detach().cpu().numpy()}, step=ctr)
                 if args.distillation: ## Time to distill.
                     with torch.no_grad(): ## No gradient to avoid memory allocation.
                         parent_mod_compute = parent_model(input_ids=input_ids, attention_mask=input_masks ,decoder_input_ids=decoder_input_ids, output_hidden_states=args.distillation, output_attentions=args.distillation)
@@ -825,15 +852,22 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                     if rank == 0:
                         writer.add_scalar("distillation loss", distillation_loss.detach().cpu().numpy(), ctr)
                         writer.add_scalar("final loss", loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"distillation loss": distillation_loss.detach().cpu().numpy()}, step=ctr)
+                            wandb.log({"final loss": loss.detach().cpu().numpy()}, step=ctr)
                 if args.use_moe or args.moe_adaptors: ## add MOE losses too.
                     moe_loss = torch.sum(torch.stack(mod_compute.encoder_moe_losses)) + torch.sum(torch.stack(mod_compute.decoder_moe_losses))
                     if rank == 0:
                         writer.add_scalar("moe loss", moe_loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"moe loss": moe_loss.detach().cpu().numpy()}, step=ctr)  
                     loss += moe_loss
                 if args.sparsify_attention or args.sparsify_ffn: ## add sparsification losses too.
                     sparsification_loss = torch.sum(torch.stack(mod_compute.encoder_sparsification_l0_losses)) + torch.sum(torch.stack(mod_compute.decoder_sparsification_l0_losses))
                     if rank == 0:
                         writer.add_scalar("sparsification loss", sparsification_loss.detach().cpu().numpy(), ctr)
+                        if args.wb:
+                            wandb.log({"sparsification loss": sparsification_loss.detach().cpu().numpy()}, step=ctr)
                     loss += sparsification_loss * args.sparsification_lambda
                     
                 if args.contrastive_decoder_training: ## Shuffle the decoder input and label batches and compute loss. This should be negated and added to the overall loss.
@@ -936,6 +970,9 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 if not ("embed_positions" in param_name and args.positional_encodings):
                     writer.add_histogram("weights."+param_name, param_value.detach().cpu().numpy(), ctr)
                     writer.add_histogram("gradients."+param_name, param_value.grad.detach().cpu().numpy(), ctr)
+                    if args.wb:
+                        wandb.log({f"weights.{param_name}": wandb.Histogram(param_value.detach().cpu().numpy())}, step=ctr)
+                        wandb.log({f"gradients.{param_name}": wandb.Histogram(param_value.grad.detach().cpu().numpy())}, step=ctr)
         end = time.time()
         ctr += 1
     
@@ -1335,6 +1372,13 @@ def run_demo():
     parser.add_argument('--is_summarization', action='store_true', 
                         help='Should we use masking on source sentences when training on parallel corpora?')
     ###
+    
+    ### Wandb flags
+    parser.add_argument('--wb', action='store_true', help='Whether to use wandb for tracking?')
+    parser.add_argument('--wb_project', type=str, default='YANMT', help='Name of the project to use on wandb dashboard')
+    parser.add_argument('--wb_run', type=str, default='exp', help='Name of the experiment to use on wandb dashboard')
+    ###
+    
     args = parser.parse_args()
     assert len(args.token_masking_probs_range) <= 2
     print("IP address is", args.ipaddr)
