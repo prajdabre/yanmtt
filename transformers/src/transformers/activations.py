@@ -29,7 +29,7 @@ def _gelu_python(x):
     Original Implementation of the GELU activation function in Google BERT repo when initially created. For
     information: OpenAI GPT's GELU is slightly different (and gives slightly different results): 0.5 * x * (1 +
     torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3)))) This is now written in C in
-    torch.nn.functional Also see the Gaussian Error Linear Units paper: https://arxiv.org/abs/1606.08415
+    torch.nn.functional. Also see the Gaussian Error Linear Units paper: https://arxiv.org/abs/1606.08415
     """
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
@@ -77,6 +77,38 @@ def linear_act(x):
     return x
 
 
+def glu(x):
+    """
+    Implementation of the GLU activation. Also see the Gated Linear Unit paper: https://arxiv.org/abs/1612.08083v3
+    """
+    x, gate = x.chunk(2, dim=-1)
+    return F.sigmoid(gate) * x
+
+
+def swiglu(x):
+    """
+    Implementation of the SwiGLU activation that is a variant of GLU activation. Also see the GLU variants paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = x.chunk(2, dim=-1)
+    return silu(gate) * x
+
+
+def geglu(x):
+    """
+    Implementation of the GeGLU activation that is a variant of GLU activation. Also see the GLU variants paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = x.chunk(2, dim=-1)
+    return gelu(gate) * x
+
+
+def reglu(x):
+    """
+    Implementation of the ReGLU activation that is a variant of GLU activation. Also see the GLU variants paper: https://arxiv.org/abs/2002.05202v1
+    """
+    x, gate = x.chunk(2, dim=-1)
+    return F.relu(gate) * x
+
+
 ACT2FN = {
     "relu": F.relu,
     "silu": silu,
@@ -88,6 +120,10 @@ ACT2FN = {
     "mish": mish,
     "linear": linear_act,
     "sigmoid": torch.sigmoid,
+    "glu": glu,
+    "swiglu": swiglu,
+    "geglu": geglu,
+    "reglu": reglu
 }
 
 

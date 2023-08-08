@@ -1331,6 +1331,48 @@ class TFConv1D(tf.keras.layers.Layer):
         return x
 
 
+class TFRMSNorm(tf.keras.layers.Layer):
+    """
+    Root Mean Square Layer Normalization (RMSNorm) layer as defined by Zhang and Sennrich (also used in LLaMa).
+
+    It is a simplifies LayerNorm by removing the mean-centering operation, or normalizing layer activations with RMS statistic.
+
+    Credits:
+    - https://github.com/VarunGumma/fairseq/blob/main/fairseq/modules/rms_norm.py#L4-L39
+    - https://github.com/facebookresearch/llama/blob/main/llama/model.py#L34-L45
+
+    Args:
+        nx (:obj:`int`): 
+            The number of input features.
+        initializer_range (:obj:`float`, `optional`, defaults to 0.02):
+            The standard deviation to use to initialize the weights.
+        eps (:obj:`float`, `optional`, defaults to 1e-8): 
+            Small value to avoid division by zero.
+        bias (:obj:`bool`, `optional`, defaults to True): 
+            Whether to add learnable bias after normalization.
+    """
+    
+    def __init__(self, nx: int, initializer_range: float = 0.02, eps: float = 1e-8, bias: bool = False):
+        super().__init__()
+        self.nx = nx
+        self.eps = eps
+        self.apply_bias = bias
+        self.initializer_range = initializer_range
+    
+    def build(self, input_shape=None):
+        self.weight = self.add_weight(
+            "weight", shape=(self.nx,), initializer=get_initializer(self.initializer_range)
+        )
+        self.bias = self.add_weight("bias", shape=(self.nx,), initializer=tf.zeros_initializer()) if self.apply_bias else None
+    
+    def _norm(self, x):
+        return x * tf.math.rsqrt(tf.reduce_mean(tf.square(x), axis=-1, keepdims=True) + self.eps)
+    
+    def call(self, x):
+        output = self._norm(tf.cast(x, dtype=tf.float32))
+        return tf.cast(output * self.weight + self.bias if self.apply_bias else output * self.weight, dtype=x.dtype)
+
+
 class WordEmbeddings(tf.keras.layers.Layer):
     def __init__(self, vocab_size: int, hidden_size: int, initializer_range: float, **kwargs):
         super().__init__(**kwargs)
