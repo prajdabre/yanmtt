@@ -836,7 +836,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                         
                         print(metric, "score using", scorertool, "after", ctr, "iterations is", round(sbleu, 2), "for language pair", dev_pair)
                         writer.add_scalar(dev_pair+" bleu/rouge", sbleu, ctr)
-                        wandb.log(f"{dev_pair} bleu/rouge": sbleu, step=ctr)
+                        if args.wb:
+                            wandb.log({f"{dev_pair} bleu/rouge": sbleu}, step=ctr)
                         if sbleu > max_individual_sbleu[dev_idx][1]: ## Update the best score and step number. If the score has improved then save a model copy for this pair. Although we will stop on the global score (average across scores over all pairs) we save these models if we want a model that performs the best on a single pair.
                             max_individual_sbleu[dev_idx][1] = sbleu
                             max_individual_sbleu_step[dev_idx][1] = curr_eval_step
@@ -853,7 +854,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
                     print("Global", metric, "score using", scorertool, "after", ctr, "iterations is:", round(sbleu, 2))
                     writer.add_scalar("global bleu/rouge", sbleu, ctr)
-                    wandb.log("global bleu/rouge": sbleu, step=ctr)
+                    if args.wb:
+                        wandb.log({"global bleu/rouge": sbleu}, step=ctr)
                     if sbleu > max_global_sbleu: ## Update the best score and step number. If this has improved then save a copy for the model. Note that this model MAY NOT be the model that gives the best performance for all pairs.
                         max_global_sbleu = sbleu
                         max_global_sbleu_step = curr_eval_step
