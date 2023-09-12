@@ -734,7 +734,6 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
         print("Fisher coefficients learned.")
     
     num_batches_this_optimizer_step = 0
-    losses = 0
     global_sbleu_history = [] ## To save the global evaluation metric history.
     max_global_sbleu = 0 ## Maximum global evaluation metric score.
     max_global_sbleu_step = 0 ## Step at which we achieved the maximum global evaluation metric score.
@@ -751,6 +750,7 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
     
     start = time.time()
     
+    losses = torch.zeros(2, dtype=torch.float, device=gpu)  # We need a tensor to keep track of running loss which is reduced across all processes.
     # We need a tensor to keep track of batch stats. This tensor should be reduced across all processes.
     batch_stats = torch.zeros(7, dtype=torch.long, device=gpu)
     avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
@@ -836,7 +836,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                         
                         print(metric, "score using", scorertool, "after", ctr, "iterations is", round(sbleu, 2), "for language pair", dev_pair)
                         writer.add_scalar(dev_pair+" bleu/rouge", sbleu, ctr)
-                        wandb.log(f"{dev_pair} bleu/rouge": sbleu, step=ctr)
+                        if args.wb:
+                            wandb.log({f"{dev_pair} bleu/rouge": sbleu}, step=ctr)
                         if sbleu > max_individual_sbleu[dev_idx][1]: ## Update the best score and step number. If the score has improved then save a model copy for this pair. Although we will stop on the global score (average across scores over all pairs) we save these models if we want a model that performs the best on a single pair.
                             max_individual_sbleu[dev_idx][1] = sbleu
                             max_individual_sbleu_step[dev_idx][1] = curr_eval_step
@@ -853,7 +854,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
                     print("Global", metric, "score using", scorertool, "after", ctr, "iterations is:", round(sbleu, 2))
                     writer.add_scalar("global bleu/rouge", sbleu, ctr)
-                    wandb.log("global bleu/rouge": sbleu, step=ctr)
+                    if args.wb:
+                        wandb.log({"global bleu/rouge": sbleu}, step=ctr)
                     if sbleu > max_global_sbleu: ## Update the best score and step number. If this has improved then save a copy for the model. Note that this model MAY NOT be the model that gives the best performance for all pairs.
                         max_global_sbleu = sbleu
                         max_global_sbleu_step = curr_eval_step
@@ -1151,7 +1153,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
             bwd_memory=torch.cuda.memory_allocated(gpu)/(1024**3)
             avg_memory_stats += torch.tensor([fwd_memory, bwd_memory], dtype=torch.float, device=gpu)
             num_batches_this_optimizer_step += 1
-            losses += loss.detach().cpu().numpy()
+            losses[0] += loss.item()
+            losses[1] += 1
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
@@ -1174,7 +1177,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
             bwd_memory=torch.cuda.memory_allocated(gpu)/(1024**3)
             avg_memory_stats += torch.tensor([fwd_memory, bwd_memory], dtype=torch.float, device=gpu)
             num_batches_this_optimizer_step += 1
-            losses += loss.detach().cpu().numpy()
+            losses[0] += loss.item()
+            losses[1] += 1
             if num_batches_this_optimizer_step < args.multistep_optimizer_steps:
                 continue
             if args.max_gradient_clip_value != 0.0:
@@ -1184,12 +1188,12 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient_clip_value)
             optimizer.step()
         scheduler.step() ## Advance the scheduler to get to the next value of LR.
-        lv = losses ## Detach the loss in order to report it.
-        losses = 0
         num_batches_this_optimizer_step = 0
+        
         if ctr % 100 == 0: ## Print the current loss every 100 batches but only for the master/prime process.
             # All reduce the batch stats.
             end = time.time()
+            dist.all_reduce(losses)
             dist.all_reduce(batch_stats)
             dist.all_reduce(avg_memory_stats)
             avg_memory_stats = avg_memory_stats/args.world_size/100/args.multistep_optimizer_steps
@@ -1201,8 +1205,26 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
             non_padding_percent_enc = round(non_padding_tokens_enc/total_tokens_enc*100, 2)
             non_padding_percent_dec = round(non_padding_tokens_dec/total_tokens_dec*100, 2)
             if rank % args.world_size == 0:
-                print("Step:", ctr, "| Loss:", round(lv.item(),2), " | Time:", round(end-start, 2), "s/100 batches. | Fwd-Bwd (avg):", fwd_memory, ",", bwd_memory, "GB. | Enc Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_enc, ",", padding_tokens_enc, ",", total_tokens_enc, ",", non_padding_percent_enc, "% | Dec Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_dec, ",", padding_tokens_dec, ",", total_tokens_dec, ",", non_padding_percent_dec, "% | Num sequences:", num_sequences)
+                lv = (losses[0] / losses[1]).item()
+                print("Step:", ctr, "| Loss:", round(lv, 2), " | Time:", round(end-start, 2), "s/100 batches. | Fwd-Bwd (avg):", fwd_memory, ",", bwd_memory, "GB. | Enc Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_enc, ",", padding_tokens_enc, ",", total_tokens_enc, ",", non_padding_percent_enc, "% | Dec Non-pad, Pad, Total tokens, Non pad percentage:", non_padding_tokens_dec, ",", padding_tokens_dec, ",", total_tokens_dec, ",", non_padding_percent_dec, "% | Num sequences:", num_sequences)
                 sys.stdout.flush()
+                if args.wb:
+                    wandb.log({
+                        "train/step": ctr,
+                        "train/total_loss": lv, 
+                        "train/time": round(end-start, 2),
+                        "train/size_in_gb_per_100_batches_fwd_avg": fwd_memory,
+                        "train/size_in_gb_per_100_batches_bwd_avg": bwd_memory,
+                        "train/non_padding_tokens_enc": non_padding_tokens_enc,
+                        "train/padding_tokens_enc": padding_tokens_enc,
+                        "train/total_tokens_enc": total_tokens_enc,
+                        "train/non_padding_percent_enc": non_padding_percent_enc,
+                        "train/non_padding_tokens_dec": non_padding_tokens_dec,
+                        "train/padding_tokens_dec": padding_tokens_dec,
+                        "train/total_tokens_dec": total_tokens_dec,
+                        "train/non_padding_percent_dec": non_padding_percent_dec,
+                        "train/num_sequences": num_sequences
+                    })
             batch_stats = torch.zeros(7, dtype=torch.long, device=gpu)
             avg_memory_stats = torch.zeros(2, dtype=torch.float, device=gpu)
             start = time.time()
