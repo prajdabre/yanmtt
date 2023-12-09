@@ -12,6 +12,7 @@ cd yanmtt
 ## Create conda
 
 conda create -n yanmtt-final python=3.9
+conda activate yanmtt-final
 
 ## Install core pip packages
 
@@ -19,7 +20,7 @@ pip install -r yanmtt_pip_requirements.txt
 
 ## Install torch packages specific to cuda 11.8
 
-pip install numpy --pre torch torchvision torchaudio --force-reinstall --index-url https://download.pytorch.org/whl/nightly/cu118
+python -m pip install numpy --pre torch torchvision torchaudio --force-reinstall --index-url https://download.pytorch.org/whl/nightly/cu118
 
 ## Install transformers explicitly
 
@@ -32,7 +33,7 @@ cd ..
 git clone https://github.com/pytorch/torchdistx
 cd torchdistx
 git submodule update --init --recursive
-pip install --upgrade -r requirements.txt -r use-cu118.txt
+python -m pip install --upgrade -r requirements.txt -r use-cu118.txt
 cmake -DTORCHDIST_INSTALL_STANDALONE=ON -DCMAKE_CXX_COMPILER=<PATH to g++> -DCMAKE_C_COMPILER=<PATH to gcc> -B build
 cmake --build build
 mkdir build/src/python/torchdistx/_C/CMakeFiles/CMakeRelink.dir
@@ -41,7 +42,7 @@ cp -f build/src/python/torchdistx/_C/_C.cpython-39-x86_64-linux-gnu.so build/src
 
 mkdir build/src/cc/torchdistx/CMakeFiles/CMakeRelink.dir
 cp -f build/src/cc/torchdistx/libtorchdistx.so build/src/cc/torchdistx/CMakeFiles/CMakeRelink.dir/libtorchdistx.so
-pip install .
+python -m pip install .
 cd ..
 
 ## Install sentencepiece explicitly
@@ -53,13 +54,8 @@ sudo apt-get install cmake build-essential pkg-config libgoogle-perftools-dev
 
 git clone --branch v0.1.95 https://github.com/google/sentencepiece.git
 cd sentencepiece
-mkdir build
-cd build
-cmake ..
-make -j $(nproc)
-sudo make install
-sudo ldconfig -v
-cd ..
+cmake . -B ./build -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=./build/root
+cmake --build ./build --config Release --target install --parallel $(nproc)
 
-# After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/src folder. 
+# After installing sentencepiece with those instructions, you will find the file "spm_train" in the sentencepiece/build/root/bin folder. 
 # You will need to modify line 34 in create_autotokenizer.sh
