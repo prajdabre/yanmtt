@@ -34,6 +34,7 @@ import transformers
 from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer
 from transformers import MBartForConditionalGeneration, MBartConfig, get_linear_schedule_with_warmup
 from transformers import AdamW
+from torch.optim import Optimizer
 ##
 
 
@@ -53,6 +54,7 @@ from common_utils import *
 
 ## Other imports
 import random
+from typing import Iterable, Tuple
 import numpy as np
 import math
 import sacrebleu
@@ -71,6 +73,121 @@ from copy import deepcopy
 ## Seed setting here
 torch.manual_seed(621311)
 ##
+
+
+class AdamWScale(Optimizer): ### Taken from nanot5 library (https://github.com/PiotrNawrot/nanoT5)
+    """
+    This AdamW implementation is copied from Huggingface.
+    We modified it with Adagrad scaling by rms of a weight tensor
+
+    Implements Adam algorithm with weight decay fix as introduced in [Decoupled Weight Decay
+    Regularization](https://arxiv.org/abs/1711.05101).
+
+    Parameters:
+        params (`Iterable[nn.parameter.Parameter]`):
+            Iterable of parameters to optimize or dictionaries defining parameter groups.
+        lr (`float`, *optional*, defaults to 1e-3):
+            The learning rate to use.
+        betas (`Tuple[float,float]`, *optional*, defaults to (0.9, 0.999)):
+            Adam's betas parameters (b1, b2).
+        eps (`float`, *optional*, defaults to 1e-6):
+            Adam's epsilon for numerical stability.
+        weight_decay (`float`, *optional*, defaults to 0):
+            Decoupled weight decay to apply.
+        correct_bias (`bool`, *optional*, defaults to `True`):
+            Whether or not to correct bias in Adam (for instance, in Bert TF repository they use `False`).
+        no_deprecation_warning (`bool`, *optional*, defaults to `False`):
+            A flag used to disable the deprecation warning (set to `True` to disable the warning).
+    """
+
+    def __init__(
+        self,
+        params: Iterable[nn.parameter.Parameter],
+        lr: float = 1e-3,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-6,
+        weight_decay: float = 0.0,
+        correct_bias: bool = True,
+    ):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr} - should be >= 0.0")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter: {betas[0]} - should be in [0.0, 1.0)")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter: {betas[1]} - should be in [0.0, 1.0)")
+        if not 0.0 <= eps:
+            raise ValueError(f"Invalid epsilon value: {eps} - should be >= 0.0")
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, correct_bias=correct_bias)
+        super().__init__(params, defaults)
+
+    @staticmethod
+    def _rms(tensor):
+        return tensor.norm(2) / (tensor.numel() ** 0.5)
+
+    def step(self, closure=None):
+        """
+        Performs a single optimization step.
+
+        Arguments:
+            closure (`Callable`, *optional*): A closure that reevaluates the model and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if grad.is_sparse:
+                    raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
+
+                state = self.state[p]
+                beta1, beta2 = group["betas"]
+
+                # State initialization
+                if len(state) == 0:
+                    state["step"] = 0
+                    # Exponential moving average of gradient values
+                    state["exp_avg"] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state["exp_avg_sq"] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+
+                state["step"] += 1
+
+                # Decay the first and second moment running average coefficient
+                # In-place operations to update the averages at the same time
+                exp_avg.mul_(beta1).add_(grad, alpha=(1.0 - beta1))
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+                denom = exp_avg_sq.sqrt().add_(group["eps"])
+
+                step_size = group["lr"]
+                if group["correct_bias"]:  # No bias correction for Bert
+                    bias_correction1 = 1.0 - beta1 ** state["step"]
+                    bias_correction2 = 1.0 - beta2 ** state["step"]
+                    step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
+
+                # /Adapt Step from Adafactor
+                step_size = step_size * max(1e-3, self._rms(p.data))
+                # /Adapt Step from Adafactor
+
+                p.data.addcdiv_(exp_avg, denom, value=-step_size)
+
+                # Just adding the square of the weights to the loss function is *not*
+                # the correct way of using L2 regularization/weight decay with Adam,
+                # since that will interact with the m and v parameters in strange ways.
+                #
+                # Instead we want to decay the weights in a manner that doesn't interact
+                # with the m/v parameters. This is equivalent to adding the square
+                # of the weights to the loss with plain (non-momentum) SGD.
+                # Add weight decay at the end (fixed version)
+                if group["weight_decay"] > 0.0:
+                    p.data.add_(p.data, alpha=(-group["lr"] * group["weight_decay"]))
+
+        return loss
 
 
 class EWC(object):
@@ -267,7 +384,7 @@ def compute_distillation_losses(child_mod_compute, parent_mod_compute, target, i
         
     return -torch.mean(torch.stack(all_distillation_losses), dim=0)
 
-def remap_layers(model, idx, args): ### Cut this code into half.
+def remap_layers(model, idx, args, rank): ### Cut this code into half.
     """This method is used to remap the layers from a pretrained model to the current model. The remapping info comes in the form of 2-1,... which means, map the second layer of the pretrained model to the first layer of the current model."""
     print("Remapping layers from parent to child.")
     model_copy = model.copy()
@@ -283,7 +400,8 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                 key = key.strip().split(".")
                 key_copy = list(key)
                 if key[idx] == slayer:
-                    print("Remapping", key)
+                    if rank == 0:
+                        print("Remapping", key)
                     key_copy[idx] =tlayer
                     key = ".".join(key)
                     key_copy = ".".join(key_copy)
@@ -292,7 +410,8 @@ def remap_layers(model, idx, args): ### Cut this code into half.
             key = key.strip().split(".")
             if key[idx] not in keys_to_keep:
                 key = ".".join(key)
-                print("Deleting", key)
+                if rank == 0:
+                    print("Deleting", key)
                 del model[key]
 
     if args.remap_decoder != "":
@@ -307,7 +426,8 @@ def remap_layers(model, idx, args): ### Cut this code into half.
                 key = key.strip().split(".")
                 key_copy = list(key)
                 if key[idx] == slayer:
-                    print("Remapping", key)
+                    if rank == 0:
+                        print("Remapping", key)
                     key_copy[idx] =tlayer
                     key = ".".join(key)
                     key_copy = ".".join(key_copy)
@@ -316,9 +436,11 @@ def remap_layers(model, idx, args): ### Cut this code into half.
             key = key.strip().split(".")
             if key[idx] not in keys_to_keep:
                 key = ".".join(key)
-                print("Deleting", key)
+                if rank == 0:
+                    print("Deleting", key)
                 del model[key]
-    print("Final model dictionary after remapping is:", model.keys())
+    if rank == 0:
+        print("Final model dictionary after remapping is:", model.keys())
     return model
 
 def remap_embeddings(our_model_dict, model_to_load_dict, args):
@@ -676,10 +798,10 @@ def sub_sample_and_permute_document(sentence, document_level_sentence_delimiter,
     return sentence_split_shuffled, sentence, sent_len
 
 
-def generate_ul2_input_and_output(split_sentence, args):
+def generate_ul2_input_and_output(split_sentence, args, current_ul2_denoising_style = None):
     """Generates the input and output for the UL2 objective model."""
     # Randomly select a denoising style
-    denoising_style = random.choice(args.denoising_styles)
+    denoising_style = random.choice(args.denoising_styles) if current_ul2_denoising_style is None else current_ul2_denoising_style
     max_retries = args.max_masking_retries
     curr_retries = 0
     if denoising_style == "R": 
@@ -942,7 +1064,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
 
     dropped_sentence = "" ## We will save the sentence to be dropped this batch and add it to the next batch.
     dropped_language = "" ## We will save the language to be dropped this batch and add it to the next batch.
-    while batch_count != args.num_batches:
+    while batch_count != (args.num_batches*args.multistep_optimizer_steps):
         curr_batch_count = 0
         encoder_input_batch = []
         decoder_input_batch = []
@@ -952,12 +1074,14 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
         max_tgt_sent_len = 0
         start = time.time()
         sents_in_batch = 0
+        if args.ul2_denoising and args.ul2_denoising_same_objective_per_batch:
+            current_ul2_denoising_style = random.choice(args.denoising_styles)
         if args.bucketed_batching:
             current_bucket = random.choices(args.bucket_intervals, bucket_stats)[0] # Its a chicken and egg problem. Since I need to choose sentences from the same bucket, I need to know the bucket first and the bucket distributions are language dependent. So I normalize the bucket distributions across languages and then sample from it. Not ideal but ill take what I can get.
         if args.num_domains_for_domain_classifier > 1:
             domain_classifier_labels = []
         while True:
-            if dropped_sentence != "":
+            if dropped_sentence != "": ## If we have a dropped sentence from the previous batch, then we will use it in this batch. However, when doing UL2, if we ever want to use the same objective per batch, then we will end up having a different type of objective applied to the dropped sentence. This is not ideal but I dont think it will matter much.
                 language = dropped_language # Reuse the previous language
                 sentence = dropped_sentence # Reuse the previous sentence
                 dropped_sentence = ""
@@ -994,7 +1118,7 @@ def generate_batches_monolingual_masked(tok, args, files, rank):
                     sent_len = args.max_length
             
             if args.ul2_denoising:
-                masked_sentence, sentence = generate_ul2_input_and_output(sentence_split, args)
+                masked_sentence, sentence = generate_ul2_input_and_output(sentence_split, args, current_ul2_denoising_style=current_ul2_denoising_style)
             else:
                 masked_sentence, sentence = generate_mbart_or_mt5_input_and_output(sentence_split, sentence, mask_percent, mask_tok, args) ## Simply preserving the original code's args.
             
@@ -1134,7 +1258,7 @@ def generate_batches_lm(tok, args, rank, files): ## Address compatibilities of t
     num_langs = len(language_list)
     language_indices = list(range(num_langs))
     has_rem=False
-    while batch_count != args.num_batches:
+    while batch_count != (args.num_batches*args.multistep_optimizer_steps):
         curr_batch_count = 0
         input_batch = []
         batch_count += 1
@@ -1206,16 +1330,19 @@ def grad_status(model):
     return (par.requires_grad for par in model.parameters())
 
 
-def freeze_params(model, exception="none"):
+def freeze_params(model, exception="none", rank=0):
     """Set requires_grad=False for each of model.parameters() thereby freezing those parameters. We use this when we want to prevent parts of the model from being trained."""
     if exception == "none":
         for par in model.parameters():
             par.requires_grad = False
     elif exception is not None:
         exception = exception.split(",")
+        if rank == 0:
+            print("Freezing all parameters except those containing the following strings:", exception)
         for name, par in model.named_parameters():
             if not any(individual_exception in name for individual_exception in exception):
-                print("Freezing", name)
+                if rank == 0:
+                    print("Freezing", name)
                 par.requires_grad = False
 
 def freeze_embeds(model):
@@ -1402,7 +1529,7 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
     dropped_language = "" ## We will save the language indicator to be dropped this batch and add it to the next batch.
     if args.cross_distillation or args.multi_source: ## We assume an additional source language.
         dropped_source_sentence_parent = "" ## We will save the source parent sentence to be dropped this batch and add it to the next batch.
-    while batch_count != args.num_batches:
+    while batch_count != (args.num_batches*args.multistep_optimizer_steps): ## Note that in case of multistep optimizer, each model step will see multistep_optimizer_steps batches per gpu before updating. Thus if I dont multiply by multistep_optimizer_steps, my data generator will end around num_batches/multistep_optimizer_steps. 
         curr_batch_count = 0
         encoder_input_batch = []
         decoder_input_batch = []
@@ -1494,8 +1621,12 @@ def generate_batches_bilingual(tok, args, files, rank, tgt_tok=None):
                     ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
                 else:
                     pass
-
-                src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, mask_percent, mask_tok, args) ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
+                
+                if args.ul2_denoising:
+                    masked_sentence, sentence = generate_ul2_input_and_output(src_sent_split, args, current_ul2_denoising_style=None) ## We dont really care about padding since its out of wack for mixed MT and denoising objectives. TODO: See if theres a possibility to do something interesting here.
+                else:
+                    src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, mask_percent, mask_tok, args) ## Simply preserving the original code's args.
+                # src_sent, tgt_sent = generate_mbart_or_mt5_input_and_output(src_sent_split, tgt_sent, mask_percent, mask_tok, args) ## Careful not to use args.span_to_sentence_prediction or args.span_prediction when using args.source_masking_for_bilingual. If you do use the latter two flags, your tgt_sent will be wiped out. These two flags wont mix well.
 
             if args.use_official_pretrained and ("bart" in args.pretrained_model or "barthez" in args.pretrained_model) and "mbart" not in args.pretrained_model: ## The bart tokenizer is wacky so we need to tweak the inputs a bit
                 iids = tok(src_sent).input_ids

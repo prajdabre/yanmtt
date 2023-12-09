@@ -32,7 +32,7 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 ## Huggingface imports
 import transformers
 from transformers import AutoTokenizer, MBartTokenizer, MBart50Tokenizer, BartTokenizer, AlbertTokenizer
-from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, BartConfig, get_linear_schedule_with_warmup
+from transformers import MBartForConditionalGeneration, BartForConditionalGeneration, MBartConfig, BartConfig, get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup, get_cosine_with_hard_restarts_schedule_with_warmup
 from transformers import AdamW
 ##
 
@@ -66,6 +66,7 @@ from torch.distributed._shard.checkpoint import (
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
+    size_based_auto_wrap_policy,
     enable_wrap,
     wrap,
 )
@@ -78,6 +79,7 @@ except:
     print("torchdistx not installed. Large models will load REALLLLYYYY SLOWLY!")
     deferred_init = None
 
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import apply_activation_checkpointing, checkpoint_wrapper, CheckpointImpl
 
 ##
 
@@ -139,7 +141,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         if args.ewc_importance != 0.0:
             shard_files_bi(ewc_files, tok, args, additional_tokenizer=None)
     
-    dist.barrier() ## Stop other processes from proceeding till sharding is done.
+    # dist.barrier() ## Stop other processes from proceeding till sharding is done. ## Barriers are bad before loading a model they occupy memory for no reason.
     
     if args.supported_languages is not None:
         args.supported_languages = args.supported_languages.split(",")
@@ -180,14 +182,29 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         if torch_version.startswith("2."): ## From 2.0 onwards, FSDP allows sharded optimizers.
             from torch.distributed.fsdp.fully_sharded_data_parallel import FullOptimStateDictConfig
             from torch.distributed.checkpoint.optimizer import load_sharded_optimizer_state_dict
-            optimizer_fullstate_save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            optimizer_fullstate_save_policy = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True)
         from transformers.models.mbart.modeling_mbart import MBartEncoderLayer, MBartDecoderLayer
-        mbart_auto_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={
-            MBartEncoderLayer, MBartDecoderLayer,
-        },
-        )
+        if args.auto_wrap_policy == "transformer": ## A block will be kept on a single device. No minimum number of params.
+            print("We will use transformer auto wrap policy")
+            mbart_auto_wrap_policy = functools.partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls={
+                MBartEncoderLayer, MBartDecoderLayer,
+            },
+            )
+        else:
+            print("We will use size based auto wrap policy with min params:", args.fsdp_min_params)
+            mbart_auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=int(args.fsdp_min_params))
+
+        if args.activation_checkpointing:
+            print("We will use activation checkpointing for FSDP.")
+            non_reentrant_wrapper = partial(
+                checkpoint_wrapper,
+                offload_to_cpu=False,
+                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+            )
+            check_fn = lambda submodule: (isinstance(submodule, MBartEncoderLayer) or isinstance(submodule, MBartDecoderLayer))
+
         if args.sharding_strategy == "FULL_SHARD":
             print("We will use full sharding")
             sharding_strategy = ShardingStrategy.FULL_SHARD
@@ -221,7 +238,10 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             print("We will use a single node for each HSDP group")
             process_group = None
         cpu_offload = dist.fsdp.CPUOffload(offload_params=args.fsdp_cpu_offload)
+        if args.fsdp_cpu_offload:
+            print("We will use CPU offloading for FSDP")
     
+    # dist.barrier()
     if args.encoder_tying_config is not None:
         print("We will use recurrently stacked layers for the encoder with configuration:", args.encoder_tying_config)
     if args.decoder_tying_config is not None:
@@ -381,7 +401,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
 
     torch.cuda.empty_cache()
     
-    freeze_params(model, args.freeze_exception_list)
+    freeze_params(model, args.freeze_exception_list, rank)
 
     ### NOTE: Please freeze params before wrapping the model in DDP. Mandem almost had a stoke trying to figure this out.
 
@@ -428,10 +448,21 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
         optimizer = bnb.optim.AdamW8bit(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps, betas=(0.9, 0.995)) # Our glorious 8 bit optimizer. All hail our lord and savior Tim Dettmers.
     else:
         print("Using an 32-bit AdamW optimizer.")
-        optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
+        if args.rms_adam:
+            print("Using RMSAdam optimizer.")
+            optimizer = AdamWScale(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps, betas=(0.9, 0.995))
+        else:
+            optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr, eps=args.adam_eps) ## Our glorious optimizer.
         
     model.train()
-    scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
+    if args.lr_scheduler == "linear":
+        scheduler = get_linear_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
+    elif args.lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches, num_cycles=args.cosine_scheduler_num_cycles) ## A warmup and decay scheduler. We use the linear scheduler for now. TODO: Enable other schedulers with a flag.
+    elif args.lr_scheduler == "cosine_with_restarts":
+        scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, args.warmup_steps, args.num_batches, num_cycles=args.cosine_scheduler_num_cycles)
+    else:
+        raise ValueError("Invalid LR scheduler")
     while scheduler.get_lr()[0] < 1e-7: ## We want to keep a minimum learning rate else for the initial batch or initial few batches barely anything will be learned which is a waste of computation. This minimum value is kept to 1e-7 by default in accordance with previous literature, other implementations and the Paris peace accords.
         scheduler.step()
     if rank == 0:
@@ -491,7 +522,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
             map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
             checkpoint_dict = torch.load(args.pretrained_model, map_location=map_location)
             if type(checkpoint_dict) == dict:
-                model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                model.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict['model'], 4, args, rank), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
                 if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                     model.module.initialize_prompt_params_with_random_embeddings()
                 if not args.no_reload_optimizer_ctr_and_scheduler and args.remap_encoder == '' and args.remap_decoder == '' and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization: ## Do not load optimizers, ctr and schedulers when remapping or resuming training.
@@ -507,7 +538,7 @@ def model_create_load_run_save(gpu, args, files, train_files, ewc_files):
                 else:
                     ctr = 0
             else:
-                model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
+                model.module.load_state_dict(remap_embeddings_eliminate_components_and_eliminate_mismatches(model.state_dict(), remap_layers(checkpoint_dict, 3, args, rank), args), strict=True if (args.remap_encoder == "" and args.remap_decoder == "" and not args.eliminate_encoder_before_initialization and not args.eliminate_decoder_before_initialization and not args.eliminate_embeddings_before_initialization and not args.prompt_tuning and not args.adaptor_tuning and not args.deep_adaptor_tuning and not args.deep_adaptor_tuning_ffn_only and not args.ia3_adaptors and not args.lora_adaptors and not args.softmax_bias_tuning and not args.sparsify_attention) else False)
                 if args.prompt_tuning and args.initialize_prompts_with_random_embeddings:
                     model.module.initialize_prompt_params_with_random_embeddings()
                 ctr = 0
@@ -1144,6 +1175,8 @@ def run_demo():
                         help='The size of the nbest list when doing stochastic tokenization.')
     parser.add_argument('--tokenization_alpha_or_dropout', type=float, default=0.1, 
                         help='The value of sentence piece regularization amount controlled via alpha or the amount of BPE dropout controlled by dropout.')
+    parser.add_argument('--lr_scheduler', default='linear', type=str, help="The value for the learning rate scheduler. Can be linear, cosine")
+    parser.add_argument('--cosine_scheduler_num_cycles', default=0.5, type=float, help="The number of cosine cycles for the scheduler. For the one without hard restarts this is the number of cycles. For the one with hard restarts this is the number of cycles before the first restart.")
     parser.add_argument('--warmup_steps', default=16000, type=int,
                         help='Scheduler warmup steps')
     parser.add_argument('--adam_8bit', action='store_true', 
@@ -1169,6 +1202,7 @@ def run_demo():
                         help='Use this flag if you want to bucket the corpus by target length before batching. This helps reduce the number of padding tokens substatially.')
     parser.add_argument('--bucket_intervals', nargs='+', type=int, default=[20, 40, 60, 80, 100], help='The intervals for bucketing. This is only used if bucketed_batching is set to True. Note the writing style, we specify the points at which we want to split the buckets. So if we want to split the buckets at 20, 40, 60, 80, 100 then we specify 20 40 60 80 100. The first bucket will be [0, 20) and the last bucket will be [100, inf).')
     parser.add_argument('--label_smoothing', default=0.1, type=float, help="The value for label smoothing.")
+    parser.add_argument('--rms_adam', action='store_true', help='Should we use RMS ADAM Optimizer?')
     parser.add_argument('--lr', default=1e-3, type=float, help="The value for the learning rate")
     parser.add_argument('--init_scale', default=65536.0, type=float, help="FP16 gradient scaler's initial value.")
     parser.add_argument('--adam_eps', default=1e-9, type=float, help="The value for the learning rate")
@@ -1210,6 +1244,8 @@ def run_demo():
                         help='What should be the parameter tying configuration? 1-1-1-1-1-1 means 6 layers where all are shared. 1-1-2-2-3-3 means 6 layers, 3 unique layers and each one is recurred twice before passing to another layer. 1-2-3-1-2-3 means 6 layers, 3 unique layers and recurrence is done twice after all layers have been passed through. The default None implies a 1-2-3-4-...-N setup')
     parser.add_argument('--gradient_checkpointing', action='store_true', 
                         help='Should we do gradient checkpointing during training? If yes, then the encoder and decoder layer activations will be recomputed during backprop.')
+    parser.add_argument('--activation_checkpointing', action='store_true', 
+                        help='Should we do activation checkpointing during FDP training? This is the same as gradient checkpointing but now its handled outside the model definition.')
     parser.add_argument('--shard_files', action='store_true', 
                         help='Should we shard the training data? Set to true only if the data is not already pre-sharded.')
     parser.add_argument('--sliding_window_shard', action='store_true', 
@@ -1336,10 +1372,14 @@ def run_demo():
                         help='How many nodes should be in each FSDP group when using HYBRID_SHARD and HYBRID_SHARD_ZERO2?')
     parser.add_argument('--fsdp_cpu_offload', action='store_true', 
                         help='Should we use CPU offloading when training large models using FSDP?')
-
+    parser.add_argument('--auto_wrap_policy', default="transformer", type=str, 
+                        help='There are 2 options: transformer or size_based. The latter may be too heavy for models with large hidden sizes.')
+    parser.add_argument('--fsdp_min_params', default=2000, type=int, 
+                        help='How many parameters before we split into another group?')
     ## UL2 flags
     parser.add_argument('--ul2_denoising', action='store_true', 
                         help='Should we do UL2 denoising objectives or should we go back to the traditional mbart/mt5 objectives?')
+    parser.add_argument('--ul2_denoising_same_objective_per_batch', action='store_true', help="Should we use the same objective for the entire batch? If not then we will randomly sample an objective for each sentence in the batch. We do this mainly for padding efficiency since the same objective means we dont have widely differing sequence lengths.")
     parser.add_argument('--ignore_paradigm_token', action='store_true', 
                         help='Should we ignore the paradigm token to be appended to the beginning of the input?')
     parser.add_argument('--max_masking_retries', default=20, type=int, 
@@ -1349,7 +1389,7 @@ def run_demo():
     parser.add_argument('--ul2_r_max_to_mask', type=float, default=0.15, help="The UL2 R objective's maximum percentage of tokens to mask.")
     parser.add_argument('--ul2_r_spans_std', type=int, default=1, help="The UL2 R objective's mask span's standard deviation.")
     parser.add_argument('--ul2_r_spans_mean', nargs='+', type=int, default=[3, 8], help="The UL2 R objective's mask span's means.")
-    parser.add_argument('--ul2_s_min_prefix_to_keep', type=float, default=0.25, help="The UL2 S objective's minimum percentage of tokens to keep as prefix.")
+    parser.add_argument('--ul2_s_min_prefix_to_keep', type=float, default=0.50, help="The UL2 S objective's minimum percentage of tokens to keep as prefix.")
     parser.add_argument('--ul2_s_max_prefix_to_keep', type=float, default=0.75, help="The UL2 S objective's maximum percentage of tokens to keep as prefix.")
     parser.add_argument('--ul2_x_ll_max_to_mask', type=float, default=0.15, help="The UL2 X large span low ratio objective's maximum percentage of tokens to mask.")
     parser.add_argument('--ul2_x_ll_span_std', type=int, default=1, help="The UL2 X large span low ratio objective's mask span's standard deviation.")
