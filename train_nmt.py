@@ -782,52 +782,65 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
             if  args.use_fsdp:
                 assert args.no_eval
             if not args.no_eval: ## Evaluation will be done only on the prime/master process which is at rank 0. Other processes will sleep.  and not args.use_fsdp) or args.use_fsdp
-                if rank == 0: ## If we dont care about early stopping and only on training for a bazillion batches then you can save time by skipping evaluation.
-                    checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr} ## This training state will be saved.
-                    print("Running eval on dev set(s)")
-                    if args.mixed_wait_k:
-                        model.module.config.wait_k = args.wait_k
-                    hyp = [[dev_pair, []] for dev_pair, dev_pair_info in dev_files]
-                    sbleus = []
-                    model.eval() ## We go to eval mode so that there will be no dropout.
-                    for dev_idx, [dev_pair, dev_pair_info] in enumerate(dev_files): ## For each evaluation pair we will decode and compute scores.
-                        slangtlang =dev_pair.strip().split("-")
-                        if args.multi_source: ## In case we do multisource NMT
-                            slang=slangtlang[0]+"-"+slangtlang[1] ## This will be split in the generate_batches_eval function as we expect a triplet. 
-                            tlang=slangtlang[2]
-                        else:
-                            slang=slangtlang[0]
-                            tlang=slangtlang[1]
-                        eval_batch_counter = 0
-                        for dev_input_ids, dev_input_masks in generate_batches_eval_bilingual(tok, args, inps[dev_idx][1], slang):
-                            if args.multi_source:
-                                dev_input_ids_parent = dev_input_ids[1]
-                                dev_input_ids = dev_input_ids[0]
-                                dev_input_masks_parent = dev_input_masks[1]
-                                dev_input_masks = dev_input_masks[0]
-                                dev_input_ids_parent = dev_input_ids_parent.to(gpu) ## Move to GPU.
-                                dev_input_masks_parent = dev_input_masks_parent.to(gpu) ## Move to GPU.
-                                
-                            if args.prompt_tuning:
-                                dev_input_shape = dev_input_masks.size()
-                                encoder_pad = torch.ones(dev_input_shape[0], args.num_prompts).clone().detach()
-                                dev_input_masks = torch.cat([encoder_pad, dev_input_masks], dim=1)
-                            dev_input_ids = dev_input_ids.to(gpu) ## Move to GPU.
-                            dev_input_masks = dev_input_masks.to(gpu) ## Move to GPU.
-                            if args.is_summarization and rank==0: ## Things can be slow so best show progress
-                                print("Decoding batch from a pool of", len(inps[dev_idx][1]), "examples")
-                            with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
-                                translations = model.module.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int((len(dev_input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(dev_input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([tlang if args.use_official_pretrained else "<2"+tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, additional_input_ids=dev_input_ids_parent if args.multi_source else None, additional_input_ids_mask=dev_input_masks_parent if args.multi_source else None) ## We translate the batch.
-                            del dev_input_ids ## Delete to avoid retention.
-                            del dev_input_masks ## Delete to avoid retention.
-                            translations = translations.to('cpu') ## Delete to avoid retention.
-                            if args.multi_source:
-                                del dev_input_ids_parent ## Delete to avoid retention.
-                                del dev_input_masks_parent ## Delete to avoid retention.
-                            for translation in translations:
-                                translation  = decoding_tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
-                                hyp[dev_idx][1].append(translation)
-                            del translations ## Delete to avoid retention.
+                checkpoint_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), 'ctr': ctr} ## This training state will be saved.
+                if rank == 0:
+                    print("Running distributed eval on dev set(s)")
+                dist.barrier()
+                if args.mixed_wait_k:
+                    model.module.config.wait_k = args.wait_k
+                hyp = [[dev_pair, []] for dev_pair, dev_pair_info in dev_files]
+                sbleus = []
+                model.eval() ## We go to eval mode so that there will be no dropout.
+                for dev_idx, [dev_pair, dev_pair_info] in enumerate(dev_files): ## For each evaluation pair we will decode and compute scores.
+                    print("Decoding for language pair", dev_pair, "on rank", rank)
+                    sys.stdout.flush()
+                    if len(inps[dev_idx][1]) == 0: ## If there are no inputs for this pair then we skip it.
+                        continue
+                    slangtlang =dev_pair.strip().split("-")
+                    if args.multi_source: ## In case we do multisource NMT
+                        slang=slangtlang[0]+"-"+slangtlang[1] ## This will be split in the generate_batches_eval function as we expect a triplet. 
+                        tlang=slangtlang[2]
+                    else:
+                        slang=slangtlang[0]
+                        tlang=slangtlang[1]
+                    eval_batch_counter = 0
+                    num_lines = len(inps[dev_idx][1])
+                    lines_per_rank = int(num_lines//args.world_size)+1
+                    start_line = lines_per_rank*rank
+                    end_line = lines_per_rank*(rank+1)
+                    for dev_input_ids, dev_input_masks in generate_batches_eval_bilingual(tok, args, inps[dev_idx][1][start_line:end_line], slang):
+                        if args.multi_source:
+                            dev_input_ids_parent = dev_input_ids[1]
+                            dev_input_ids = dev_input_ids[0]
+                            dev_input_masks_parent = dev_input_masks[1]
+                            dev_input_masks = dev_input_masks[0]
+                            dev_input_ids_parent = dev_input_ids_parent.to(gpu) ## Move to GPU.
+                            dev_input_masks_parent = dev_input_masks_parent.to(gpu) ## Move to GPU.
+                            
+                        if args.prompt_tuning:
+                            dev_input_shape = dev_input_masks.size()
+                            encoder_pad = torch.ones(dev_input_shape[0], args.num_prompts).clone().detach()
+                            dev_input_masks = torch.cat([encoder_pad, dev_input_masks], dim=1)
+                        dev_input_ids = dev_input_ids.to(gpu) ## Move to GPU.
+                        dev_input_masks = dev_input_masks.to(gpu) ## Move to GPU.
+                        with torch.no_grad(): ## torch.no_grad is apparently known to prevent the code from allocating memory for gradient computation in addition to making things faster. I have not verified this but have kept it as a safety measure to ensure that my model is not being directly tuned on the development set.
+                            translations = model.module.generate(dev_input_ids, use_cache=True, num_beams=1, max_length=int((len(dev_input_ids[0])*args.max_decode_length_multiplier) if args.max_decode_length_multiplier > 0 else -args.max_decode_length_multiplier), min_length=int((len(dev_input_ids[0])*args.min_decode_length_multiplier) if args.min_decode_length_multiplier > 0 else -args.min_decode_length_multiplier), early_stopping=True, attention_mask=dev_input_masks, pad_token_id=tok.pad_token_id, eos_token_id=tok(["</s>"], add_special_tokens=False).input_ids[0][0], decoder_start_token_id=tok([tlang if args.use_official_pretrained else "<2"+tlang+">"], add_special_tokens=False).input_ids[0][0], bos_token_id=tok(["<s>"], add_special_tokens=False).input_ids[0][0], length_penalty=args.length_penalty, repetition_penalty=args.repetition_penalty, encoder_no_repeat_ngram_size=args.encoder_no_repeat_ngram_size, no_repeat_ngram_size=args.no_repeat_ngram_size, additional_input_ids=dev_input_ids_parent if args.multi_source else None, additional_input_ids_mask=dev_input_masks_parent if args.multi_source else None) ## We translate the batch.
+                        del dev_input_ids ## Delete to avoid retention.
+                        del dev_input_masks ## Delete to avoid retention.
+                        translations = translations.to('cpu') ## Delete to avoid retention.
+                        if args.multi_source:
+                            del dev_input_ids_parent ## Delete to avoid retention.
+                            del dev_input_masks_parent ## Delete to avoid retention.
+                        for translation in translations:
+                            translation  = decoding_tok.decode(translation, skip_special_tokens=args.no_skip_special_tokens, clean_up_tokenization_spaces=False) ### Get the raw sentences.
+                            hyp[dev_idx][1].append(translation)
+                        del translations ## Delete to avoid retention.
+                    ## Time to assemble the translations and references for this pair.
+                    assembled_translations = [None for _ in range(args.world_size)]
+                    dist.all_gather_object(assembled_translations, hyp[dev_idx][1])
+                    hyp[dev_idx][1] = [item for sublist in assembled_translations for item in sublist]
+                    
+                    if rank == 0: ## do all saving etc on the prime/master process.
                         if args.use_rouge: ## Get the evaluation metric score.
                             scores = 0
                             for curr_ref, curr_pred in zip(refs[dev_idx][1][0], hyp[dev_idx][1]):
@@ -858,6 +871,8 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                             torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+dev_pair)
                             # if not args.use_fsdp:
                             torch.save(model.module.state_dict(), CHECKPOINT_PATH+".best_dev_bleu."+dev_pair+".pure_model") 
+                    dist.barrier()
+                if rank == 0: ## We do all the global stuff on the prime/master process.
                     ## Global stats
                     sbleu = sum(sbleus)/len(sbleus) ## The global score.
                     global_sbleu_history.append([sbleu, ctr]) ## Update the global score history.
@@ -897,8 +912,9 @@ def model_create_load_run_save(gpu, args, train_files, dev_files, ewc_files):
                             with open(args.model_path + ".quitflag", "w") as f:
                                 f.write("1")
                     curr_eval_step += 1
-                    del checkpoint_dict
-                    model.train() ## Put the model back in training mode where dropout will be done.
+                dist.barrier()
+                del checkpoint_dict
+                model.train() ## Put the model back in training mode where dropout will be done.
 
             else: ## Regardless of evaluation I consider it prudent to save the model every 1000 checkpoints by default. Change this to whatever value you want.
                 pass
