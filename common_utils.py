@@ -2114,10 +2114,12 @@ def plot_attention(data, X_label=None, Y_label=None, num_layers=None, num_heads=
 
 def generate_batches_monolingual_masked_or_bilingual(tok, args, rank, files, train_files):
     """This will return masked monolingual or bilingual batches according to a fixed ratio."""
-    bilingual_generator = generate_batches_bilingual(tok, args, train_files, rank)
-    monolingual_generator = generate_batches_monolingual_masked(tok, args, files, rank)
-    while True:
-        if args.bilingual_train_frequency != 0.0 and random.random() <= args.bilingual_train_frequency:
-            yield next(bilingual_generator), True
-        else:
-            yield next(monolingual_generator), False
+    is_bilingual = args.bilingual_train_frequency != 0.0 and random.random() <= args.bilingual_train_frequency
+
+    if is_bilingual:
+        generator = generate_batches_bilingual(tok, args, train_files, rank)
+    else:
+        generator = generate_batches_monolingual_masked(tok, args, files, rank)
+
+    for output in generator:
+        yield output, is_bilingual
